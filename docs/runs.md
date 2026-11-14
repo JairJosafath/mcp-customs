@@ -65,3 +65,4 @@ the deadline. Cost and tokens come from each session's own report.
 | #36   | reviewer    | session_01SZoxcp3zrcJdDq3Mkeikns | 2026-11-14 12:56 | 1      | running                                                                                             |                     |
 | #23   | merge       |                                  | 2026-11-14 13:04 |        | PR #35 merged; PyPI seen-before gate lifted; follow-ups #39                                         |                     |
 | #38   | implementer | session_01SZoxcowQjAYcEXWU7pMpcX | 2026-11-14 13:04 | 1      | running: demo recording script, narration, results skeleton                                         |                     |
+| #10   | reviewer    | session_01SZoxcpE36Z6b89iW3kwyk9 | 2026-11-14 13:13 | 2      | running                                                                                             |                     |
