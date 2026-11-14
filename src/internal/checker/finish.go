@@ -17,7 +17,8 @@ import (
 // package, to APPROVED, and the verdict to the
 // check's META, last, so a check reads done only once its report and its
 // verdict step are there. A verdict step that can't be written fails the
-// check before any approval is.
+// check before any approval is. A re-check that didn't pass then
+// supersedes the approved check (supersede).
 func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (verdict.Verdict, error) {
 	r.current = "verdict"
 	if err := r.endSandbox(ctx); err != nil {
@@ -40,6 +41,9 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 		return true, r.writeVerdict(sc, report)
 	}); err != nil {
 		return "", fmt.Errorf("write the verdict of check %s: %w", r.in.CheckID, err)
+	}
+	if err := r.supersede(ctx, decided.Verdict); err != nil {
+		return "", err
 	}
 	return decided.Verdict, nil
 }

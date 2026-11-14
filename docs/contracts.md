@@ -161,12 +161,12 @@ What Lambda MicroVMs (`sandbox/Dockerfile`, `infra/sandbox.ts`,
 
 One DynamoDB table (`DYNAMODB_TABLE_NAME`), keys `pk` and `sk`:
 
-| Item      | `pk`            | `sk`            | Holds                                                                                                                 |
-| --------- | --------------- | --------------- | --------------------------------------------------------------------------------------------------------------------- |
-| A check   | `CHECK#<id>`    | `META`          | the submission, status, verdict, durable execution ARN, callback ID                                                   |
-| A step    | `CHECK#<id>`    | `STEP#<seq>`    | what ran, its findings, a one-line summary (the web page's timeline)                                                  |
-| A verdict | `HASH#<sha256>` | `VERDICT`       | the approved check's ID, its tool-list hash, the install spec                                                         |
-| A package | `APPROVED`      | `<kind>#<name>` | its approved version, that check's ID and tool-list hash, and `polled`, the newest version a re-check was started for |
+| Item      | `pk`            | `sk`            | Holds                                                                                                                                                                                      |
+| --------- | --------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A check   | `CHECK#<id>`    | `META`          | the submission, status, verdict, durable execution ARN, callback ID                                                                                                                        |
+| A step    | `CHECK#<id>`    | `STEP#<seq>`    | what ran, its findings, a one-line summary (the web page's timeline)                                                                                                                       |
+| A verdict | `HASH#<sha256>` | `VERDICT`       | the approved check's ID, its tool-list hash, the install spec                                                                                                                              |
+| A package | `APPROVED`      | `<kind>#<name>` | its approved version, that check's ID and tool-list hash, `polled`, the newest version a re-check was started for, and `retry`, a version whose re-check failed and is to be started again |
 
 A check's `status` is `running`, `waiting` (for a person's Approve or
 Block, under its `callbackId`), `done` or `failed`. A `STEP#` item's `name`
@@ -186,7 +186,10 @@ person approves it; its `installSpec` is the JSON
 A check's `META` also keeps `sandboxId`, the MicroVM its `resolve`
 launched, written before anything else, so a failure can end it, and, for
 a re-check, `recheckOf` and `recheckOfRef`: the check that approved the
-earlier version, and that version's ref.
+earlier version, and that version's ref. An approved check's `META`
+keeps `supersededBy`, the re-check of a newer version that ended at
+review or block, and `recheckFailed`, the retry of a re-check that failed
+twice.
 
 A pass of a package (not a remote server) also puts its `APPROVED` item,
 with `polled` set to its version.
@@ -232,6 +235,28 @@ then sets `polled`. A re-check never passes as seen before: it is
 installed, listed, compared with the approved tool list, probed and judged
 like a new server, whatever its tool list. Its pass puts the new version's
 `APPROVED` item; anything else leaves the earlier approval as it was.
+
+A re-check never ends silently:
+
+- **It fails** (an error, not a verdict): the Checker sets `retry` on the
+  package's `APPROVED` item to the version, only while it is still
+  `polled` (a re-check overtaken by a newer version is not retried), and
+  writes a `retry` step. The next poll starts it once more as
+  `recheck-<40 hex>-retry`, with the same `recheck` link plus
+  `"retry":true`, then removes `retry`. The poller's grant stays on the
+  `APPROVED` partition. The retry's failure is not retried: the Checker
+  sets `recheckFailed` on the approved check's `META`, writes a
+  `recheck-failed` step and logs `A re-check failed twice.` with
+  `"recheckFailedTwice":1`, which a metric filter on its log group counts
+  (`MCPCustoms`/`RecheckFailedTwice`) and the `RecheckFailedTwice-Critical`
+  alarm watches.
+- **It ends at review or block**: the Checker sets `supersededBy` on the
+  approved check's `META`, which the approved check's page shows, and puts
+  an event on the account's default EventBridge bus (`EVENT_BUS_NAME`):
+  source `mcp-customs`, detail-type `Approved check superseded`, detail
+  `{"approvedCheckId","approvedRef","recheckId","kind","ref","verdict"}`.
+  A user subscribes with a rule on that source and detail-type; a retried
+  step may send it twice, told apart by `recheckId`.
 
 ## A person's answer
 

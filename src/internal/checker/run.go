@@ -29,6 +29,7 @@ type Recorder interface {
 	GetVerdict(ctx context.Context, hash string) (store.Verdict, bool, error)
 	PutVerdict(ctx context.Context, v store.Verdict) error
 	PutApproved(ctx context.Context, a store.Approved, conditional bool) error
+	MarkRetry(ctx context.Context, kind, name, version string) (bool, error)
 }
 
 // Reports is where a check's report and raw observations go: the bucket.
@@ -49,6 +50,8 @@ type Deps struct {
 	// Token answers a check's run token, the same every time it is asked:
 	// it is derived, never kept in a checkpoint (sandbox.DeriveRunToken).
 	Token func(checkID string) string
+	// Events is where a superseded approval is announced.
+	Events Events
 }
 
 // Input is the event that starts a check.
@@ -315,8 +318,9 @@ var terminal = []error{ErrUnknownAction, ErrBadArguments, ErrBadWait, ErrTooLarg
 
 // fail closes a check that failed, unless err is the SDK suspending the
 // invocation: it ends the sandbox, records a failed step saying which
-// action failed, and sets the check's status to failed, each in a step.
-// It answers err, with any failure of its own joined.
+// action failed, and sets the check's status to failed, each in a step;
+// a re-check is then retried once, or its second failure recorded
+// (afterFailedRecheck). It answers err, with any failure of its own joined.
 func (r *run) fail(ctx durable.Context, err error) error {
 	var opErr *durable.OperationError
 	if !errors.As(err, &opErr) && !slices.ContainsFunc(terminal, func(t error) bool { return errors.Is(err, t) }) {
@@ -338,6 +342,7 @@ func (r *run) fail(ctx durable.Context, err error) error {
 	}); updateErr != nil {
 		errs = append(errs, fmt.Errorf("record check %s as failed: %w", r.in.CheckID, updateErr))
 	}
+	errs = append(errs, r.afterFailedRecheck(ctx))
 	return errors.Join(errs...)
 }
 

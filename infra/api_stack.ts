@@ -22,6 +22,7 @@ import { Alarms } from './alarms';
 import { Backups } from './backups';
 import { goFunction } from './go_function';
 import { Recheck, POLLER_TIMEOUT } from './recheck';
+import { RecheckOutcomes } from './recheck_outcomes';
 import { Sandbox } from './sandbox';
 import { TIER_RULES } from './standard';
 import type { Operations, Tier, TierRules } from './standard';
@@ -206,8 +207,9 @@ export class ApiStack extends Stack {
     checker.addEnvironment(REPORTS_BUCKET_NAME, reports.bucketName);
     // Only the calls the Checker makes: it records a check and its steps,
     // reads a check it finds already made when a step is retried and an
-    // earlier verdict, writes a verdict and a package's approval, and
-    // updates the check's status.
+    // earlier verdict, writes a verdict and a package's approval, updates
+    // the check's status, marks an approved check a re-check superseded or
+    // failed twice, and asks the poller for a re-check's retry.
     table.grant(checker, 'dynamodb:PutItem', 'dynamodb:GetItem', 'dynamodb:UpdateItem');
     this.grantReportWrites(checker, reports);
     this.grantRunTokenKey(checker, rules);
@@ -235,6 +237,7 @@ export class ApiStack extends Stack {
     this.url = api.apiEndpoint;
 
     const recheck = new Recheck(this, 'Recheck', { table, checker, rules });
+    const outcomes = new RecheckOutcomes(this, 'RecheckOutcomes', { checker });
 
     const alarms = this.addAlarms(alerts.email, api, [
       ['Checker', checker, CHECKER_TIMEOUT],
@@ -245,6 +248,7 @@ export class ApiStack extends Stack {
         : [['ReportsAutoDelete', emptier, AUTO_DELETE_TIMEOUT] as const]),
     ]);
     recheck.addAlarms(alarms);
+    outcomes.addAlarms(alarms);
     alarms.monitoring.monitorDynamoTable({
       table: Table.fromTableName(this, 'MonitoredTable', table.tableName),
       alarmFriendlyName: 'Table',

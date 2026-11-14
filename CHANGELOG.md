@@ -8,6 +8,15 @@ Every user-visible change, newest first. The format follows
 
 ### Added
 
+- A re-check of an approved package never ends silently (#42). One that
+  fails is started once more by the next poll, under a new check ID
+  linked to the same approved check and version; a retry that fails too
+  is shown on the approved check and raises the
+  `RecheckFailedTwice-Critical` alarm. One that ends at review or block
+  marks the approved check superseded, shown on its page and as
+  `supersededBy` in `GET /api/checks/<id>`, and puts an
+  `Approved check superseded` event (source `mcp-customs`) on the
+  account's default EventBridge bus.
 - `demo/record.ts` records the demo against a deployed stack: the weather
   server blocked with the SSH key seen leaving base64-encoded, the mail
   server's v1.0.0 passed and its v1.0.1 blocked, as a 1280×720 video under

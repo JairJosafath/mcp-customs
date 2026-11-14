@@ -24,7 +24,7 @@ type DynamoAPI interface {
 var (
 	ErrCheckExists = errors.New("the check already exists")
 	ErrNoCheck     = errors.New("there is no such check")
-	ErrEmptyUpdate = errors.New("an update must set a status, a verdict, a callback ID or a sandbox ID")
+	ErrEmptyUpdate = errors.New("an update must set a status, a verdict, a callback ID, a sandbox ID or a re-check's outcome")
 )
 
 // ErrItemTooLarge says an item is larger than DynamoDB keeps, so it was
@@ -38,6 +38,10 @@ type CheckUpdate struct {
 	Verdict    string
 	CallbackID string
 	SandboxID  string
+	// SupersededBy and RecheckFailed mark an approved check with the
+	// re-check that didn't pass, or the retry that failed again.
+	SupersededBy  string
+	RecheckFailed string
 }
 
 // Store keeps checks, their steps and verdicts in one table keyed by pk
@@ -92,6 +96,8 @@ func (s *Store) UpdateCheck(ctx context.Context, id string, u CheckUpdate) error
 		{"verdict", u.Verdict},
 		{"callbackId", u.CallbackID},
 		{"sandboxId", u.SandboxID},
+		{"supersededBy", u.SupersededBy},
+		{"recheckFailed", u.RecheckFailed},
 	} {
 		if field.value == "" {
 			continue

@@ -28,7 +28,17 @@
     </p>
     {{end}}
     <p>Status: <strong>{{.Status}}</strong></p>
-    {{with .Verdict}}
+    {{with .SupersededBy}}
+    <p class="superseded">
+      <strong>Superseded.</strong> Don't take the newer version as approved: its re-check did not
+      pass, check <a href="/checks/{{.}}"><code>{{.}}</code></a>
+    </p>
+    {{end}} {{with .RecheckFailed}}
+    <p class="superseded">
+      <strong>The re-check of a newer version failed twice;</strong> it is not checked. The retry is
+      check <a href="/checks/{{.}}"><code>{{.}}</code></a>
+    </p>
+    {{end}} {{with .Verdict}}
     <p>
       Verdict: <strong class="verdict-{{.}}">{{.}}</strong>{{with $.DecidedBy}}, decided by
       {{.}}{{end}}

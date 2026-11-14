@@ -13,6 +13,7 @@ import (
 
 	"github.com/JairJosafath/mcp-customs/src/internal/canary"
 	"github.com/JairJosafath/mcp-customs/src/internal/checker/sandbox"
+	"github.com/JairJosafath/mcp-customs/src/internal/events"
 	"github.com/JairJosafath/mcp-customs/src/internal/findings"
 	"github.com/JairJosafath/mcp-customs/src/internal/store"
 )
@@ -38,6 +39,21 @@ type memoryRecorder struct {
 	failStep       string
 	loseFirstReply bool
 	puts           int
+	retries        []string
+	overtaken      bool
+}
+
+// memoryEvents keeps every event the Checker sends.
+type memoryEvents struct {
+	mu         sync.Mutex
+	superseded []events.Superseded
+}
+
+func (m *memoryEvents) PutSuperseded(_ context.Context, s events.Superseded) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.superseded = append(m.superseded, s)
+	return nil
 }
 
 func (m *memoryRecorder) PutCheck(_ context.Context, c store.Check) error {
@@ -89,7 +105,25 @@ func (m *memoryRecorder) UpdateCheck(_ context.Context, id string, u store.Check
 	if u.SandboxID != "" {
 		c.SandboxID = u.SandboxID
 	}
+	if u.SupersededBy != "" {
+		c.SupersededBy = u.SupersededBy
+	}
+	if u.RecheckFailed != "" {
+		c.RecheckFailed = u.RecheckFailed
+	}
 	return nil
+}
+
+// MarkRetry keeps each ask for a retry, and answers marked unless
+// overtaken is set, as when a newer version was polled since.
+func (m *memoryRecorder) MarkRetry(_ context.Context, kind, name, version string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.overtaken {
+		return false, nil
+	}
+	m.retries = append(m.retries, kind+"#"+name+"@"+version)
+	return true, nil
 }
 
 func (m *memoryRecorder) AppendStep(_ context.Context, checkID string, step store.Step) error {
@@ -420,10 +454,11 @@ type world struct {
 	vms     *sandbox.Fake
 	srv     *server
 	judge   *recordedJudge
+	events  *memoryEvents
 }
 
 func newWorld(srv *server) *world {
-	w := &world{rec: &memoryRecorder{}, reports: &memoryReports{}, srv: srv, judge: cleanJudge()}
+	w := &world{rec: &memoryRecorder{}, reports: &memoryReports{}, srv: srv, judge: cleanJudge(), events: &memoryEvents{}}
 	w.vms = &sandbox.Fake{Respond: srv.respond}
 	return w
 }
@@ -436,6 +471,7 @@ func (w *world) deps() Deps {
 		Judge:    w.judge,
 		Canaries: func() canary.Set { return fixedCanaries },
 		Token:    func(checkID string) string { return "run-token-" + checkID },
+		Events:   w.events,
 	}
 }
 

@@ -127,6 +127,11 @@ type checkView struct {
 	// RecheckOf, for the re-check of a newer version of an approved
 	// package, is the check that approved the earlier one.
 	RecheckOf *recheckView `json:"recheckOf,omitempty"`
+	// SupersededBy, on an approved check, is the re-check of a newer
+	// version that ended at review or block; RecheckFailed is the retry of
+	// a re-check that failed twice.
+	SupersededBy  string `json:"supersededBy,omitempty"`
+	RecheckFailed string `json:"recheckFailed,omitempty"`
 	// Verdict is pass, review or block once the check is done.
 	Verdict   string        `json:"verdict,omitempty"`
 	DecidedBy string        `json:"decidedBy,omitempty"`
@@ -195,6 +200,12 @@ func buildView(c store.Check, steps []store.Step, report []byte) (checkView, err
 	// The ID goes into a link: only one that can name a check is shown.
 	if store.ValidCheckID(c.RecheckOf) {
 		v.RecheckOf = &recheckView{CheckID: c.RecheckOf, Ref: visible(c.RecheckOfRef)}
+	}
+	if store.ValidCheckID(c.SupersededBy) {
+		v.SupersededBy = c.SupersededBy
+	}
+	if store.ValidCheckID(c.RecheckFailed) {
+		v.RecheckFailed = c.RecheckFailed
 	}
 	v.Waiting = c.Status == store.StatusWaiting && c.CallbackID != ""
 	for _, s := range steps {

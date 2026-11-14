@@ -62,13 +62,18 @@ func (f *fakeDynamo) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput,
 	if err := f.holds(in.ConditionExpression, key, in.ExpressionAttributeValues); err != nil {
 		return nil, err
 	}
-	sets, ok := strings.CutPrefix(aws.ToString(in.UpdateExpression), "SET ")
-	if !ok {
-		return nil, errors.New("unexpected update " + aws.ToString(in.UpdateExpression))
-	}
 	item := maps.Clone(f.items[key])
 	if item == nil {
 		item = maps.Clone(in.Key)
+	}
+	if removed, ok := strings.CutPrefix(aws.ToString(in.UpdateExpression), "REMOVE "); ok {
+		delete(item, in.ExpressionAttributeNames[removed])
+		f.items[key] = item
+		return &dynamodb.UpdateItemOutput{}, nil
+	}
+	sets, ok := strings.CutPrefix(aws.ToString(in.UpdateExpression), "SET ")
+	if !ok {
+		return nil, errors.New("unexpected update " + aws.ToString(in.UpdateExpression))
 	}
 	for set := range strings.SplitSeq(sets, ", ") {
 		name, value, ok := strings.Cut(set, " = ")
@@ -98,6 +103,11 @@ func (f *fakeDynamo) holds(condition *string, key [2]string, values row) error {
 		version, _ := readStr(values, ":version")
 		existing, _ := readStr(item, "polled")
 		ok = !exists || existing == version
+	case "polled = :version", "#retry = :version":
+		attribute := map[string]string{"polled = :version": "polled", "#retry = :version": "retry"}[aws.ToString(condition)]
+		version, _ := readStr(values, ":version")
+		existing, _ := readStr(item, attribute)
+		ok = exists && existing == version
 	default:
 		return errors.New("unexpected condition " + aws.ToString(condition))
 	}
@@ -200,6 +210,10 @@ func TestStoreUpdatesOnlyTheFieldsItIsGiven(t *testing.T) {
 		"the status":      {CheckUpdate{Status: StatusDone}, func(c Check) Check { c.Status = StatusDone; return c }},
 		"the verdict":     {CheckUpdate{Verdict: "block"}, func(c Check) Check { c.Verdict = "block"; return c }},
 		"the callback ID": {CheckUpdate{CallbackID: "cb-1"}, func(c Check) Check { c.CallbackID = "cb-1"; return c }},
+		"a re-check's outcome": {CheckUpdate{SupersededBy: "recheck-1", RecheckFailed: "recheck-2"}, func(c Check) Check {
+			c.SupersededBy, c.RecheckFailed = "recheck-1", "recheck-2"
+			return c
+		}},
 		"all three": {CheckUpdate{Status: StatusFailed, Verdict: "review", CallbackID: "cb-2"}, func(c Check) Check {
 			c.Status, c.Verdict, c.CallbackID = StatusFailed, "review", "cb-2"
 			return c
