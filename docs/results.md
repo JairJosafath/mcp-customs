@@ -123,15 +123,21 @@ merged pull request is a squash commit on main whose subject ends in its
 number. A session's cost is its last reported total when it has one, never
 that total plus its per-round figures.
 
-Seven pull requests merged with final commits no reviewer read: #34, #37,
-#44 and #45 were checked instead by the orchestrator running their new
-tests, and seeing each fail with its fix removed
+Seven pull requests merged with final commits no reviewer read. For #34,
+#37, #44 and #45, the orchestrator's comment says it ran their new tests
+and saw each fail with its fix removed
 ([#34](https://github.com/JairJosafath/mcp-customs/pull/34#issuecomment-6878316223),
 [#37](https://github.com/JairJosafath/mcp-customs/pull/37#issuecomment-6878547918),
 [#44](https://github.com/JairJosafath/mcp-customs/pull/44#issuecomment-6880032402),
 [#45](https://github.com/JairJosafath/mcp-customs/pull/45#issuecomment-6879319000);
-#34's covers its re-check guard, not its approval-condition change), and
-for #28, #41 and #49 no comment says what was checked. #21, #22
+#34's covers its re-check guard, not its approval-condition change). For
+the other three, the squash commit's message on main is the record:
+#49's (`f62d00d`) says the orchestrator verified round 3, with
+`TestARetryThatPassesLiftsTheMarkTheFailedRecheckLeft` failing when a
+retry may lift only its own ID; #41's (`7e26428`) says the orchestrator
+read the post-approval `docs/results.md` changes; #28's (`4ae4677`) names
+round 3's fixes, each with tests, and a green check on `7d11024`, but not
+who read them. #21, #22
 and #24 merged on the round limit with the last review still asking for
 changes. The orchestrator's
 [note on #24](https://github.com/JairJosafath/mcp-customs/pull/24#issuecomment-6877384416)
