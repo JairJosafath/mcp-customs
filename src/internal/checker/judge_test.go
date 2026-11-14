@@ -336,16 +336,19 @@ func TestAJudgesAnswerTooLargeForAStepGivesReview(t *testing.T) {
 	}
 }
 
-func TestAPyPISubmissionSeenBeforeIsCheckedInFull(t *testing.T) {
+// A PyPI submission's set is pip's resolver's, read before anything is
+// installed (#23), so it is as trustworthy as any other kind's and takes the
+// "seen before" shortcut too.
+func TestAPyPISubmissionSeenBeforePassesAfterResolveLookupAndListAlone(t *testing.T) {
 	w := newWorld(cleanServer())
 	approve(t, w)
 	pypi := store.Submission{Kind: "pypi", Ref: "weather-mcp==1.0.0"}
 	_, out, report := runToEnd(t, w, pypi)
-	if out.Verdict != verdict.Pass || report.SeenBefore != "" || report.DecidedBy != "code" {
-		t.Errorf("output %+v, report %+v; want a pass decided by the full check", out, report)
+	if out.Verdict != verdict.Pass || report.SeenBefore != "c0" || report.DecidedBy != "seen before" {
+		t.Errorf("output %+v, report %+v; want a pass seen before in c0", out, report)
 	}
-	if names := w.rec.stepNames(); !slices.Contains(names, "probe") || !slices.Contains(names, "judge") {
-		t.Errorf("steps %v, want the full check", names)
+	if got, want := w.rec.stepNames(), []string{"start", "resolve", "lookup", "list", "verdict"}; !slices.Equal(got, want) {
+		t.Errorf("steps %v, want %v", got, want)
 	}
 }
 

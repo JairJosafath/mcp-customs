@@ -44,6 +44,15 @@ invocation and no execution history keeps it. JSON in and out; every response ca
 | `POST /download`    | `{"path":"/home/dev/.cache/x"}`, a file the server wrote                                | `{"path","size","sha256","kind","excerpt"}`            |
 | `GET /observations` |                                                                                         | all observations of the run                            |
 
+The resolved dependency set is the resolver's, taken before any code of the
+package runs, never what the installed files say of themselves: for npm, the
+lockfile of `npm install --package-lock-only --ignore-scripts`, read before
+`npm ci` installs exactly it; for PyPI, pip's `--dry-run --report` in a clean
+venv, as a requirements file with every file's SHA-256, which
+`pip install --no-deps --require-hashes` then installs; for Go, the modules
+of `go version -m`. After every install step the harness kills every process
+of the unprivileged account.
+
 The investigation's calls (`/call` again, `/source`, `/download`, `/clock`)
 and `/allow` are best effort: an error answer is told to the judge, and the
 check goes on.

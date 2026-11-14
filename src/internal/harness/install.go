@@ -79,7 +79,9 @@ type Installed struct {
 	// Log is the install's output.
 	Log string
 	// Resolved is the resolved dependency set: go.sum's equivalent, the npm
-	// lockfile, or pip's resolved list. Its SHA-256 identifies the install.
+	// lockfile, or pip's pinned requirements with their hashes. It is what
+	// the resolver chose before any code of the package ran, never what the
+	// installed files say of themselves. Its SHA-256 identifies the install.
 	Resolved []byte
 	// Command starts the installed server, the start call's default.
 	Command []string
@@ -94,6 +96,9 @@ type Sandbox struct {
 	// Run runs args as the account in Workdir with Env, writing the output
 	// to out.
 	Run func(ctx context.Context, args []string, out io.Writer) error
+	// KillAll kills every process of the account, so nothing an install
+	// step started outlives it. Nil kills nothing.
+	KillAll func(ctx context.Context) error
 }
 
 // An Installer installs a package into a sandbox.
@@ -164,13 +169,20 @@ func goModules(info string) []byte {
 	return []byte(out.String())
 }
 
+// installNPM resolves the lockfile first, with no script run, and reads it
+// before anything of the package runs; npm ci then installs exactly that
+// lockfile, scripts and all. Nothing an install script does to
+// package-lock.json afterwards can change the reported set.
 func installNPM(ctx context.Context, p Package, sb Sandbox, log io.Writer) (Installed, error) {
 	if err := step(ctx, sb, log, "npm", "install", "--prefix", sb.Workdir, "--no-audit", "--no-fund",
-		"--save-exact", p.Name+"@"+p.Version); err != nil {
+		"--save-exact", "--package-lock-only", "--ignore-scripts", p.Name+"@"+p.Version); err != nil {
 		return Installed{}, err
 	}
 	lock, err := readAsAccount(ctx, sb, filepath.Join(sb.Workdir, "package-lock.json"))
 	if err != nil {
+		return Installed{}, err
+	}
+	if err := step(ctx, sb, log, "npm", "ci", "--prefix", sb.Workdir, "--no-audit", "--no-fund"); err != nil {
 		return Installed{}, err
 	}
 	manifest, err := readAsAccount(ctx, sb, filepath.Join(sb.Workdir, "node_modules", p.Name, "package.json"))
@@ -218,47 +230,18 @@ func npmBinary(name string, manifest []byte) (string, error) {
 	return "", fmt.Errorf("%s names several commands (%s); give the start call one", name, strings.Join(names, ", "))
 }
 
-func installPyPI(ctx context.Context, p Package, sb Sandbox, log io.Writer) (Installed, error) {
-	venv := filepath.Join(sb.Workdir, "venv")
-	if err := step(ctx, sb, log, "python3", "-m", "venv", venv); err != nil {
-		return Installed{}, err
-	}
-	pip := filepath.Join(venv, "bin", "pip")
-	if err := step(ctx, sb, log, pip, "install", "--disable-pip-version-check", p.Name+"=="+p.Version); err != nil {
-		return Installed{}, err
-	}
-	resolved, err := listVenv(ctx, sb, venv)
-	if err != nil {
-		return Installed{}, err
-	}
-	return Installed{Resolved: resolved, Command: []string{filepath.Join(venv, "bin", p.Name)}}, nil
-}
-
-// venvDistributions prints the distributions in the site-packages of the
-// venv named by its argument, one "name==version" a line, sorted. It reads
-// their metadata only, with the standard library: no code of the venv runs.
-const venvDistributions = `import importlib.metadata as m, sys, sysconfig
-site = sysconfig.get_path("purelib", vars={"base": sys.argv[1], "platbase": sys.argv[1]})
-names = {d.metadata["Name"] + "==" + d.version for d in m.distributions(path=[site]) if d.metadata["Name"]}
-print("".join(n + "\n" for n in sorted(names, key=str.lower)), end="")
-`
-
-// listVenv is what pip resolved into venv, read by the harness's own
-// python3 (isolated, found on the trusted PATH), never by a file in the
-// venv: the package can replace venv/bin/pip and venv/bin/python3 with
-// console scripts of its own.
-func listVenv(ctx context.Context, sb Sandbox, venv string) ([]byte, error) {
-	var out bytes.Buffer
-	if err := sb.Run(ctx, []string{"python3", "-I", "-c", venvDistributions, venv}, &out); err != nil {
-		return nil, fmt.Errorf("list what pip resolved: %w", err)
-	}
-	return out.Bytes(), nil
-}
-
-// step runs one install command, logging it and its output.
+// step runs one install command, logging it and its output, then kills
+// whatever the command left running as the account, so no process of the
+// package can change the install's files after the step returns.
 func step(ctx context.Context, sb Sandbox, log io.Writer, args ...string) error {
 	fmt.Fprintf(log, "$ %s\n", strings.Join(args, " "))
-	if err := sb.Run(ctx, args, log); err != nil {
+	err := sb.Run(ctx, args, log)
+	if sb.KillAll != nil {
+		if killErr := sb.KillAll(ctx); killErr != nil {
+			return fmt.Errorf("end what %s left running: %w", strings.Join(args[:2], " "), killErr)
+		}
+	}
+	if err != nil {
 		return fmt.Errorf("%s: %w", strings.Join(args[:2], " "), err)
 	}
 	return nil
