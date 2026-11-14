@@ -127,3 +127,38 @@ func TestTheLogNotesWhatTheVenvClaimsBeyondTheSet(t *testing.T) {
 		t.Errorf("log %q notes what agrees", log.String())
 	}
 }
+
+// pipNoWheel is what pip writes when --only-binary leaves a dependency
+// with nothing to install.
+const pipNoWheel = "ERROR: Could not find a version that satisfies the requirement httpx==0.27.0 (from weather-mcp) (from versions: none)\n" +
+	"ERROR: No matching distribution found for httpx==0.27.0\n"
+
+func TestTheDryRunResolvesWheelsOnlySoNoSdistsBuildBackendRuns(t *testing.T) {
+	f := &fakeRun{outputs: map[string]string{"python3 -I": "pip==26.0\n", "cat --": pipReportJSON}}
+	var dryRun []string
+	run := func(ctx context.Context, args []string, out io.Writer) error {
+		if slices.Contains(args, "--dry-run") {
+			dryRun = args
+			_, _ = io.WriteString(out, pipNoWheel)
+			return errors.New("exit status 1")
+		}
+		return f.run(ctx, args, out)
+	}
+	got, err := Toolchain{}.Install(t.Context(), Package{EcosystemPyPI, "weather-mcp", "1.0.0"}, Sandbox{Workdir: "/w", Run: run})
+	if !slices.Contains(dryRun, "--only-binary=:all:") {
+		t.Errorf("dry run %q, want --only-binary=:all:", dryRun)
+	}
+	if err == nil {
+		t.Fatalf("install = %+v, want it to fail", got)
+	}
+	for _, want := range []string{"No matching distribution found for httpx==0.27.0", "the install failed:"} {
+		if !strings.Contains(got.Log, want) {
+			t.Errorf("log %q does not say %q", got.Log, want)
+		}
+	}
+	for _, args := range f.ran {
+		if slices.Contains(args, "--require-hashes") {
+			t.Errorf("ran %q after the dry run failed", args)
+		}
+	}
+}

@@ -138,3 +138,12 @@ func TestGuardRefusesANameThatResolvesInsideANetwork(t *testing.T) {
 		t.Errorf("the metadata address itself: err %v, dialed %v; want refused", err, dialed)
 	}
 }
+
+func TestGuardRefusesAnInstallsGetToANameThatResolvesInsideANetwork(t *testing.T) {
+	answers := map[string][][]string{"metadata.attacker.net": {{"169.254.169.254"}}}
+	var dialed []string
+	_, err := testGuard(answers, &dialed).DialContext(withInstallGet(t.Context()), "tcp", "metadata.attacker.net:443")
+	if !errors.Is(err, ErrRefusedAddress) || len(dialed) != 0 {
+		t.Errorf("err %v, dialed %v; want refused, nothing dialed", err, dialed)
+	}
+}

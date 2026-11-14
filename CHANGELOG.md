@@ -55,6 +55,16 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- Follow-ups from #64 and #65 (#67). The judge tries a call again after
+  the transient errors the SDK used to retry (`InternalServerException`,
+  `ModelTimeoutException`, a 5xx, a connection reset), so one of them no
+  longer turns a pass into a review. An install's GET under an
+  `InstallGet` prefix must reach a public address too. 6to4
+  (`2002::/16`), Teredo (`2001::/32`) and site-local (`fec0::/10`)
+  addresses are not public. The allow action's refusal names the host it
+  refused. pip resolves PyPI packages with `--only-binary=:all:`, so an
+  sdist is refused before its build backend runs.
+
 - Hidden text is read more closely (#33). Characters Unicode assigned
   after Go's tables (15.0), such as 🫩 U+1FAE9 and the newest CJK, are no
   longer `hidden-unassigned`. U+FE0E and U+FE0F are
@@ -73,6 +83,7 @@ Every user-visible change, newest first. The format follows
   is not passed as seen before. A check marked done stays done: a failure
   after it is never recorded as `failed` over it, and a pass's lift of a
   superseded mark, or its event, that fails is logged instead.
+
 - A server the sandbox can't install ends at review, decided by code,
   with an `install-failed` finding naming what failed, instead of failing
   the check (#39). A PyPI dependency only an sdist ships fails the

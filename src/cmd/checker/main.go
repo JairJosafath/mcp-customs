@@ -40,6 +40,11 @@ func oneRetryPolicy(o *bedrockruntime.Options) {
 	o.RetryMaxAttempts = 1
 }
 
+// judgeClient is the Bedrock Runtime client the judge asks through.
+func judgeClient(cfg aws.Config) *bedrockruntime.Client {
+	return bedrockruntime.NewFromConfig(cfg, oneRetryPolicy)
+}
+
 func main() {
 	// Lambda sends what the function writes to CloudWatch Logs, one entry a line.
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -83,7 +88,7 @@ func main() {
 		Store:    store.New(dynamodb.NewFromConfig(cfg), env["DYNAMODB_TABLE_NAME"]),
 		Reports:  store.NewBucket(s3.NewFromConfig(cfg), env["REPORTS_BUCKET_NAME"]),
 		Sandbox:  vms,
-		Judge:    bedrock.New(bedrockruntime.NewFromConfig(cfg, oneRetryPolicy), env["JUDGE_MODEL_ID"]),
+		Judge:    bedrock.New(judgeClient(cfg), env["JUDGE_MODEL_ID"]),
 		Canaries: canary.New,
 		Token:    func(checkID string) string { return sandbox.DeriveRunToken(key, checkID) },
 		// The stack's own API, which no allowlist may reach.
