@@ -46,8 +46,9 @@ type Input struct {
 	Code []findings.Finding
 	// Model are the findings the judge made; each gives at least review.
 	Model []findings.Finding
-	// ModelVerdict is the judge's own verdict. Anything but pass, review or
-	// block gives review.
+	// ModelVerdict is the judge's own verdict, the strictest it gave.
+	// Anything but pass, review or block gives review. It counts even when
+	// the judge later failed or ran out of turns.
 	ModelVerdict Verdict
 	// JudgeErr is the judge's failure, if it failed.
 	JudgeErr error
@@ -93,9 +94,10 @@ func Decide(in Input) Result {
 		verdict = stricter(verdict, Review)
 		all = append(all, f)
 	}
-	if in.JudgeErr == nil && !in.OutOfTurns {
-		verdict = stricter(verdict, modelVerdict(in.ModelVerdict))
-	}
+	// A verdict the judge gave before it failed or ran out of turns still
+	// counts: it can only make the verdict stricter, and the failure's own
+	// finding already gives review.
+	verdict = stricter(verdict, modelVerdict(in.ModelVerdict))
 	switch in.Human {
 	case HumanApprove:
 		verdict = Pass

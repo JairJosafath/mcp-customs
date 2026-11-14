@@ -10,11 +10,13 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/canary"
 	"github.com/JairJosafath/mcp-customs/src/internal/checker"
@@ -46,15 +48,22 @@ func recorded(t *testing.T, name string) any {
 	return v
 }
 
-// fakeBedrock answers every Converse with out, and keeps what it was sent.
+// fakeBedrock answers each Converse with the next of errs, then with out
+// or err, and keeps what it was sent.
 type fakeBedrock struct {
 	out  *bedrockruntime.ConverseOutput
 	err  error
+	errs []error
 	sent []*bedrockruntime.ConverseInput
 }
 
 func (f *fakeBedrock) Converse(_ context.Context, in *bedrockruntime.ConverseInput, _ ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseOutput, error) {
 	f.sent = append(f.sent, in)
+	if len(f.errs) > 0 {
+		err := f.errs[0]
+		f.errs = f.errs[1:]
+		return nil, err
+	}
 	return f.out, f.err
 }
 
@@ -71,6 +80,7 @@ func answering(tool string, input any) *fakeBedrock {
 func judgeWith(f *fakeBedrock) *Judge {
 	j := New(f, model)
 	j.nonce = func() (string, error) { return "0123456789abcdef0123456789abcdef", nil }
+	j.wait = func(context.Context, time.Duration) error { return nil }
 	return j
 }
 
@@ -275,5 +285,43 @@ func TestAnAnswerThatIsntTheToolsIsAnError(t *testing.T) {
 		if err == nil || (tc.want != nil && !errors.Is(err, tc.want)) {
 			t.Errorf("%s: %v, want %v", name, err, tc.want)
 		}
+	}
+}
+
+func TestABusyModelIsAskedAgainWithBackoffAndThenGivenUpOn(t *testing.T) {
+	throttled := &smithy.GenericAPIError{Code: "ThrottlingException", Message: "Too many requests"}
+	invalid := &smithy.GenericAPIError{Code: "ValidationException", Message: "bad model"}
+	for name, tc := range map[string]struct {
+		errs  []error
+		err   error
+		calls int
+		waits []time.Duration
+		ok    bool
+	}{
+		"busy twice, then answers": {[]error{throttled, throttled}, nil, 3, []time.Duration{2 * time.Second, 4 * time.Second}, true},
+		"busy every time":          {nil, throttled, attempts, []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second}, false},
+		"refused, not busy":        {nil, invalid, 1, nil, false},
+	} {
+		f := answering(checker.ToolMove, recorded(t, "move_done_pass"))
+		f.errs = tc.errs
+		if tc.err != nil {
+			f.out, f.err = nil, tc.err
+		}
+		j := judgeWith(f)
+		var waits []time.Duration
+		j.wait = func(_ context.Context, d time.Duration) error {
+			waits = append(waits, d)
+			return nil
+		}
+		_, err := j.Next(context.Background(), checker.Investigation{})
+		if (err == nil) != tc.ok || len(f.sent) != tc.calls || !reflect.DeepEqual(waits, tc.waits) {
+			t.Errorf("%s: error %v, %d calls, waits %v; want ok %v, %d calls, waits %v", name, err, len(f.sent), waits, tc.ok, tc.calls, tc.waits)
+		}
+	}
+	// A cancelled invocation stops waiting.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := wait(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Errorf("wait = %v, want cancelled", err)
 	}
 }

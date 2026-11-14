@@ -215,7 +215,7 @@ func (r *run) judge(ctx durable.Context) (verdict.Input, error) {
 	evidence := r.evidence()
 	j, err := durable.Step(ctx, "judge", func(sc durable.StepContext) (Judgement, error) {
 		got, err := r.deps.Judge.Judge(sc, evidence)
-		got.ExpectedHosts = slices.DeleteFunc(got.ExpectedHosts, func(h string) bool { return !hostPattern.MatchString(h) })
+		got.ExpectedHosts = slices.DeleteFunc(got.ExpectedHosts, func(h string) bool { return !allowedHost(h) })
 		if len(got.ExpectedHosts) > maxHosts {
 			got.ExpectedHosts = got.ExpectedHosts[:maxHosts]
 		}

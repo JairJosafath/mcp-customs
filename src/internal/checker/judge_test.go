@@ -2,6 +2,7 @@ package checker
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -268,6 +269,24 @@ func TestTheJudgesFindingsGoThroughDecideAndOnlyMakeTheVerdictStricter(t *testin
 		"a judge that asks for a person gets one": {
 			cleanServer, func(j *recordedJudge) { j.moves = []string{"move_ask_human"} }, verdict.Review, "model:" + RuleAskedForHuman,
 		},
+		"a judge's block isn't undone by a later move's pass": {
+			cleanServer, func(j *recordedJudge) {
+				j.judgeAnswer = &Judgement{Verdict: verdict.Block, ExpectedHosts: []string{}}
+				j.moves = []string{"move_done_pass"}
+			}, verdict.Block, "",
+		},
+		"a judge's block stands when its turns run out": {
+			cleanServer, func(j *recordedJudge) {
+				j.judgeAnswer = &Judgement{Verdict: verdict.Block, ExpectedHosts: []string{}}
+				j.moves = []string{"move_clock"}
+			}, verdict.Block, "code:" + findings.RuleJudgeOutOfTurn,
+		},
+		"a judge's block stands when a later turn fails": {
+			cleanServer, func(j *recordedJudge) {
+				j.judgeAnswer = &Judgement{Verdict: verdict.Block, ExpectedHosts: []string{}}
+				j.moves = []string{"move_clock", ""}
+			}, verdict.Block, "code:" + findings.RuleJudgeError,
+		},
 		"a block from the investigation stands": {
 			cleanServer, func(j *recordedJudge) { j.moves = []string{"move_done_block"} }, verdict.Block, "model:" + RulePurposeMismatch,
 		},
@@ -275,12 +294,45 @@ func TestTheJudgesFindingsGoThroughDecideAndOnlyMakeTheVerdictStricter(t *testin
 		w := newWorld(tc.srv())
 		tc.judge(w.judge)
 		_, out, report := runToEnd(t, w, npm)
-		if out.Verdict != tc.want || !slices.Contains(rulesOf(report.Findings), tc.rule) {
+		if out.Verdict != tc.want || (tc.rule != "" && !slices.Contains(rulesOf(report.Findings), tc.rule)) {
 			t.Errorf("%s: verdict %s, findings %v; want %s with %s", name, out.Verdict, rulesOf(report.Findings), tc.want, tc.rule)
 		}
 		if _, approved := w.rec.verdicts[depsHash]; approved {
 			t.Errorf("%s: approved the server", name)
 		}
+	}
+}
+
+func TestAJudgesAnswerTooLargeForAStepGivesReview(t *testing.T) {
+	big := strings.Repeat("x", maxProbeArgsBytes-64)
+	srv := cleanServer()
+	srv.tools, srv.results = nil, map[string]string{}
+	var written []ProbeArgs
+	for i := range 30 {
+		name := fmt.Sprintf("tool_%d", i)
+		srv.tools = append(srv.tools, `{"name":"`+name+`","inputSchema":{"properties":{"q":{"type":"string"}}}}`)
+		srv.results[name] = `{"content":[]}`
+		written = append(written, ProbeArgs{Tool: i, Arguments: map[string]any{"q": big}})
+	}
+	w := newWorld(srv)
+	w.judge.probesAnswer = written
+	_, out, report := runToEnd(t, w, npm)
+	if out.Verdict != verdict.Review || !slices.Contains(rulesOf(report.Findings), "code:"+findings.RuleJudgeError) {
+		t.Errorf("probes over the bound: verdict %s, findings %v; want review for the judge's error", out.Verdict, rulesOf(report.Findings))
+	}
+	if args := callBodies(w)[0]["arguments"]; !reflect.DeepEqual(args, map[string]any{"q": "test"}) {
+		t.Errorf("probe arguments %v, want the stubs", args)
+	}
+
+	var many []findings.Finding
+	for range maxStepResult / maxEvidenceLength {
+		many = append(many, findings.Finding{Rule: RuleJudgeConcern, Evidence: strings.Repeat("y", maxEvidenceLength)})
+	}
+	w = newWorld(cleanServer())
+	w.judge.judgeAnswer = &Judgement{Verdict: verdict.Pass, Findings: many}
+	_, out, report = runToEnd(t, w, npm)
+	if out.Verdict != verdict.Review || !slices.Contains(rulesOf(report.Findings), "code:"+findings.RuleJudgeError) || slices.Contains(w.paths(), "/allow") {
+		t.Errorf("a judgement over the bound: verdict %s, findings %d, calls %v; want review, no allowlist", out.Verdict, len(report.Findings), w.paths())
 	}
 }
 

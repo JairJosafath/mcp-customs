@@ -211,7 +211,7 @@ func allow(ctx durable.Context, r *run, args json.RawMessage) (outcome, error) {
 	if a.Hosts == nil {
 		a.Hosts = []string{}
 	}
-	if len(a.Hosts) > maxHosts || slices.ContainsFunc(a.Hosts, func(h string) bool { return !hostPattern.MatchString(h) }) {
+	if len(a.Hosts) > maxHosts || slices.ContainsFunc(a.Hosts, func(h string) bool { return !allowedHost(h) }) {
 		return outcome{}, fmt.Errorf("%w: at most %d host names", ErrBadArguments, maxHosts)
 	}
 	got, err := r.harnessStep(ctx, ActAllow, "/allow", map[string]any{"hosts": a.Hosts}, func(json.RawMessage) string { return "" })

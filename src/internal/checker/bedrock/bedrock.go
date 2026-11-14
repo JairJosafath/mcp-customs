@@ -7,11 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/checker"
 )
@@ -34,11 +37,59 @@ type Judge struct {
 	model  string
 	// nonce makes each call's marker; crypto/rand unless a test sets it.
 	nonce func() (string, error)
+	// wait pauses before a call is tried again; a timer unless a test sets it.
+	wait func(ctx context.Context, d time.Duration) error
 }
 
 // New is a judge asking model through client.
 func New(client Converser, model string) *Judge {
-	return &Judge{client: client, model: model, nonce: randomNonce}
+	return &Judge{client: client, model: model, nonce: randomNonce, wait: wait}
+}
+
+// attempts bounds the tries of one call a busy model turned away, and
+// firstBackoff is the wait before the second, doubled before each next:
+// 2, 4 and 8 seconds, well inside the Checker's five minutes.
+const (
+	attempts     = 4
+	firstBackoff = 2 * time.Second
+)
+
+// busy are the Bedrock errors of a model too busy to answer now: a call
+// is safe to try again, as it changes nothing.
+var busy = []string{"ThrottlingException", "ServiceUnavailableException", "ModelNotReadyException"}
+
+func isBusy(err error) bool {
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && slices.Contains(busy, apiErr.ErrorCode())
+}
+
+func wait(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("wait to ask again: %w", ctx.Err())
+	case <-t.C:
+		return nil
+	}
+}
+
+// converse sends in, trying again with backoff while the model is busy.
+func (j *Judge) converse(ctx context.Context, in *bedrockruntime.ConverseInput) (*bedrockruntime.ConverseOutput, error) {
+	backoff := firstBackoff
+	for attempt := 1; ; attempt++ {
+		out, err := j.client.Converse(ctx, in)
+		if err == nil {
+			return out, nil
+		}
+		if attempt == attempts || !isBusy(err) {
+			return nil, fmt.Errorf("ask %s, attempt %d: %w", j.model, attempt, err)
+		}
+		if err := j.wait(ctx, backoff); err != nil {
+			return nil, err
+		}
+		backoff *= 2
+	}
 }
 
 func randomNonce() (string, error) {
@@ -92,9 +143,9 @@ func (j *Judge) ask(ctx context.Context, build func(nonce string) (prompt, error
 	if err != nil {
 		return nil, err
 	}
-	out, err := j.client.Converse(ctx, in)
+	out, err := j.converse(ctx, in)
 	if err != nil {
-		return nil, fmt.Errorf("ask %s: %w", j.model, err)
+		return nil, err
 	}
 	return toolInput(out, p.tool)
 }

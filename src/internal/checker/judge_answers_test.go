@@ -57,6 +57,22 @@ func TestAnAnswerOutsideItsSchemaIsRefused(t *testing.T) {
 			_, err := DecodeMove(json.RawMessage(`{"action":"call","arguments":"get_forecast","reason":"x"}`))
 			return err
 		},
+		"probes: more than the tools": func() error {
+			_, err := DecodeProbes(json.RawMessage(`{"probes":[{"tool":0,"arguments":{}},{"tool":1,"arguments":{}}]}`), 1)
+			return err
+		},
+		"probes: one tool twice": func() error {
+			_, err := DecodeProbes(json.RawMessage(`{"probes":[{"tool":0,"arguments":{}},{"tool":0,"arguments":{"a":1}}]}`), 2)
+			return err
+		},
+		"move: a verdict it can't give": func() error {
+			_, err := DecodeMove(json.RawMessage(`{"action":"done","arguments":{},"reason":"x","verdict":"approve"}`))
+			return err
+		},
+		"judgement: an address, not a name": func() error {
+			_, err := DecodeJudgement(json.RawMessage(`{"verdict":"pass","fitsPurpose":true,"instructsModel":false,"findings":[],"expectedHosts":["169.254.169.254"]}`))
+			return err
+		},
 		"move: two values": func() error {
 			_, err := DecodeMove(json.RawMessage(`{"action":"done","arguments":{},"reason":"x"} {}`))
 			return err
@@ -114,5 +130,25 @@ func TestProbeArgumentsKeepOnlyWhatTheSchemaAllows(t *testing.T) {
 		if got := argumentsFor(tl, tc.model); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%s: %v, want %v", name, got, tc.want)
 		}
+	}
+}
+
+func TestInternalAndMetadataHostsNeverReachTheAllowlist(t *testing.T) {
+	for h, want := range map[string]bool{
+		"api.github.com": true, "api.open-meteo.com": true,
+		"localhost": false, "db.localhost": false, "printer.local": false, "metadata.google.internal": false,
+		"instance-data.ec2.internal": false, "service.corp": false, "metadata.azure.com": false,
+		"metadata.example.com": false, "169.254.169.254": false, "fd00::1": false, "router.home.arpa": false,
+	} {
+		if got := allowedHost(h); got != want {
+			t.Errorf("allowedHost(%q) = %v, want %v", h, got, want)
+		}
+	}
+	j, err := DecodeJudgement(json.RawMessage(`{"verdict":"pass","fitsPurpose":true,"instructsModel":false,"findings":[],"expectedHosts":["api.github.com","metadata.google.internal"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(j.ExpectedHosts, []string{"api.github.com"}) || len(j.Findings) != 1 || j.Findings[0].Rule != RuleJudgeConcern {
+		t.Errorf("judgement %+v, want the internal host dropped, with a finding", j)
 	}
 }

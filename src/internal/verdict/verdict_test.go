@@ -45,6 +45,8 @@ func TestDecide(t *testing.T) {
 		{"judge error ignores a stale model pass", Input{JudgeErr: errJudge, ModelVerdict: Pass}, Review},
 		{"judge error keeps a code block", Input{Code: []findings.Finding{code(findings.RuleCanaryLeft)}, JudgeErr: errJudge}, Block},
 		{"out of turns gives review", Input{OutOfTurns: true, ModelVerdict: Pass}, Review},
+		{"judge error keeps the judge's earlier block", Input{JudgeErr: errJudge, ModelVerdict: Block}, Block},
+		{"out of turns keeps the judge's earlier block", Input{OutOfTurns: true, ModelVerdict: Block}, Block},
 		{"missing model verdict gives review", Input{}, Review},
 		{"unknown model verdict gives review", Input{ModelVerdict: "approve"}, Review},
 	}

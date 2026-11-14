@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/findings"
 	"github.com/JairJosafath/mcp-customs/src/internal/verdict"
@@ -132,10 +133,13 @@ func DecodeProbes(raw json.RawMessage, n int) ([]ProbeArgs, error) {
 	if err := strictDecode(raw, &a); err != nil {
 		return nil, err
 	}
+	// Each tool at most once: so no more probes than tools.
+	seen := map[int]bool{}
 	for _, p := range a.Probes {
-		if p.Tool < 0 || p.Tool >= n || p.Arguments == nil {
-			return nil, fmt.Errorf("%w: a probe names tool %d of %d, or has no arguments", ErrBadAnswer, p.Tool, n)
+		if p.Tool < 0 || p.Tool >= n || p.Arguments == nil || seen[p.Tool] {
+			return nil, fmt.Errorf("%w: a probe names tool %d of %d twice, or not at all, or has no arguments", ErrBadAnswer, p.Tool, n)
 		}
+		seen[p.Tool] = true
 		if sizeOf(p.Arguments) > maxProbeArgsBytes {
 			return nil, fmt.Errorf("%w: the arguments of tool %d are over %d bytes", ErrBadAnswer, p.Tool, maxProbeArgsBytes)
 		}
@@ -168,8 +172,29 @@ func validVerdict(v verdict.Verdict, optional bool) bool {
 	return v == verdict.Pass || v == verdict.Review || v == verdict.Block || (optional && v == "")
 }
 
-// hostPattern is a lowercase DNS name: what an egress allowlist takes.
+// hostPattern is a lowercase DNS name: what an egress allowlist takes. An
+// IP address never matches: its last label is digits.
 var hostPattern = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
+
+// internalSuffixes are names that reach the sandbox's own network, its
+// host or a cloud's metadata service, never a server's purpose; attacker
+// text can suggest them to the judge.
+var internalSuffixes = []string{
+	"localhost", "local", "internal", "localdomain", "home.arpa", "intranet", "lan", "corp",
+	"in-addr.arpa", "ip6.arpa",
+}
+
+// internalNames are metadata services reached by a public-looking name.
+var internalNames = []string{"metadata.google.internal", "metadata.azure.com", "instance-data.ec2.internal"}
+
+// allowedHost says whether h may be on the sandbox's egress allowlist: a
+// public DNS name, never an address or an internal or metadata name.
+func allowedHost(h string) bool {
+	if !hostPattern.MatchString(h) || slices.Contains(internalNames, h) || strings.HasPrefix(h, "metadata.") {
+		return false
+	}
+	return !slices.ContainsFunc(internalSuffixes, func(s string) bool { return h == s || strings.HasSuffix(h, "."+s) })
+}
 
 // DecodeJudgement reads a judge_server answer. A server that doesn't fit
 // its purpose, or whose text instructs the model, is a finding even when
@@ -206,10 +231,15 @@ func DecodeJudgement(raw json.RawMessage) (Judgement, error) {
 	}
 	hosts := []string{}
 	for _, h := range a.ExpectedHosts {
-		if !hostPattern.MatchString(h) {
+		switch {
+		case !hostPattern.MatchString(h):
 			return Judgement{}, fmt.Errorf("%w: %q is not a host name", ErrBadAnswer, h)
-		}
-		if !slices.Contains(hosts, h) {
+		case !allowedHost(h):
+			fs = append(fs, findings.Finding{
+				Source: findings.Model, Rule: RuleJudgeConcern,
+				Evidence: fmt.Sprintf("the judge expected the internal host %q, which is never allowed", h),
+			})
+		case !slices.Contains(hosts, h):
 			hosts = append(hosts, h)
 		}
 	}

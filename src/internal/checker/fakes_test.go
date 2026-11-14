@@ -394,11 +394,13 @@ type recordedJudge struct {
 	probes    string
 	judgement string
 	moves     []string
-	// judgeAnswer, when set, is answered instead of a fixture.
-	judgeAnswer *Judgement
-	requests    []ProbeRequest
-	evidence    []Evidence
-	asked       []Investigation
+	// judgeAnswer and probesAnswer, when set, are answered instead of a
+	// fixture.
+	judgeAnswer  *Judgement
+	probesAnswer []ProbeArgs
+	requests     []ProbeRequest
+	evidence     []Evidence
+	asked        []Investigation
 }
 
 var errModel = errors.New("ThrottlingException: the model is busy")
@@ -411,6 +413,9 @@ func (j *recordedJudge) WriteProbes(_ context.Context, req ProbeRequest) ([]Prob
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.requests = append(j.requests, req)
+	if j.probesAnswer != nil {
+		return j.probesAnswer, nil
+	}
 	if j.probes == "" {
 		return nil, errModel
 	}
