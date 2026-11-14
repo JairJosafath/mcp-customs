@@ -292,3 +292,40 @@ func TestADoneCheckWhoseReportIsNotYetReadableShowsItsVerdict(t *testing.T) {
 		t.Errorf("= %s", body)
 	}
 }
+
+func TestTheCheckPageOfARecheckLinksTheApprovedVersion(t *testing.T) {
+	f := newFixture(t)
+	f.running()
+	c := f.checks.checks["c1"]
+	c.Submission.Ref, c.RecheckOf, c.RecheckOfRef = "weather-mcp@1.0.1", "c0", "weather-mcp@1.0.0"
+	f.checks.checks["c1"] = c
+	page := f.answer(t, request(http.MethodGet, "/checks/c1", "GET /checks/{id}"))
+	for _, want := range []string{`The approved version, <code>weather-mcp@1.0.0</code>, is check`, `<a href="/checks/c0"><code>c0</code></a>`, `<code>weather-mcp@1.0.1</code>`} {
+		if !strings.Contains(page.Body, want) {
+			t.Errorf("page lacks %q:\n%s", want, page.Body)
+		}
+	}
+	api := f.answer(t, request(http.MethodGet, "/api/checks/c1", "GET /api/{proxy+}"))
+	var got struct {
+		RecheckOf recheckView `json:"recheckOf"`
+	}
+	if err := json.Unmarshal([]byte(api.Body), &got); err != nil || got.RecheckOf != (recheckView{CheckID: "c0", Ref: "weather-mcp@1.0.0"}) {
+		t.Errorf("API %s, want recheckOf c0 at weather-mcp@1.0.0", api.Body)
+	}
+}
+
+func TestACheckThatIsNoRecheckShowsNoLink(t *testing.T) {
+	f := newFixture(t)
+	f.running()
+	page := f.answer(t, request(http.MethodGet, "/checks/c1", "GET /checks/{id}"))
+	api := f.answer(t, request(http.MethodGet, "/api/checks/c1", "GET /api/{proxy+}"))
+	if strings.Contains(page.Body, "re-checked") || strings.Contains(api.Body, "recheckOf") {
+		t.Errorf("a check that is no re-check shows a link:\n%s\n%s", page.Body, api.Body)
+	}
+	c := f.checks.checks["c1"]
+	c.RecheckOf, c.RecheckOfRef = `"><script>`, hostile
+	f.checks.checks["c1"] = c
+	if page := f.answer(t, request(http.MethodGet, "/checks/c1", "GET /checks/{id}")); strings.Contains(page.Body, "re-checked") {
+		t.Errorf("a link to an ID that names no check is shown:\n%s", page.Body)
+	}
+}

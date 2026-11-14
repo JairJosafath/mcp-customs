@@ -54,6 +54,8 @@ func checkRow(pk string, c Check) row {
 		"executionArn":   str(c.ExecutionARN),
 		"callbackId":     str(c.CallbackID),
 		"sandboxId":      str(c.SandboxID),
+		"recheckOf":      str(c.RecheckOf),
+		"recheckOfRef":   str(c.RecheckOfRef),
 	}
 }
 
@@ -70,9 +72,11 @@ func checkFrom(r row) (Check, error) {
 		"callbackId":     &c.CallbackID,
 	})
 	c.Status = Status(status)
-	// Checks made before the sandbox ID was kept have none.
-	if id, ok := r["sandboxId"].(*types.AttributeValueMemberS); ok {
-		c.SandboxID = id.Value
+	// Checks made before these were kept have none.
+	for name, field := range map[string]*string{"sandboxId": &c.SandboxID, "recheckOf": &c.RecheckOf, "recheckOfRef": &c.RecheckOfRef} {
+		if value, ok := r[name].(*types.AttributeValueMemberS); ok {
+			*field = value.Value
+		}
 	}
 	return c, err
 }

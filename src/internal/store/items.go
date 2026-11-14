@@ -38,6 +38,11 @@ type Check struct {
 	CallbackID   string
 	// SandboxID is the MicroVM the check launched, so a failure can end it.
 	SandboxID string
+	// RecheckOf is the check that approved an earlier version of the
+	// package, when this check is the re-check of a newer one, and
+	// RecheckOfRef that version's ref.
+	RecheckOf    string
+	RecheckOfRef string
 }
 
 // Finding is one reason for a verdict: who found it (code or model), the
