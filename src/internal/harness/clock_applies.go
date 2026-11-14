@@ -133,7 +133,8 @@ var errUnreadable = errors.New("not a regular file the account can read")
 
 // openReadable opens, as the root harness, only what the account could
 // read itself: a regular file it owns or anyone may read, along a path it
-// may search. The look and the open run as the account (asAccount). It
+// may search and through no /proc magic link. The look and the open run
+// as the account (asAccount), each through openNoMagic. It
 // looks before it opens, so no device or FIFO is ever opened, and the file
 // opened must be the one it looked at.
 func (a Account) openReadable(name string) (*os.File, error) {
@@ -146,11 +147,16 @@ func (a Account) openReadable(name string) (*os.File, error) {
 }
 
 func (a Account) openLooked(name string) *os.File {
-	seen, err := os.Stat(name)
+	look, err := openNoMagic(name, oPath) // an O_PATH open only looks: it opens no device
+	if err != nil {
+		return nil
+	}
+	seen, err := look.Stat()
+	_ = look.Close()
 	if err != nil || !a.mayRead(seen) {
 		return nil
 	}
-	f, err := os.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := openNoMagic(name, os.O_RDONLY|syscall.O_NONBLOCK)
 	if err != nil {
 		return nil
 	}
