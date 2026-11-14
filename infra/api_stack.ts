@@ -1,39 +1,76 @@
-import { AssetHashType, CfnOutput, DockerImage, Duration, RemovalPolicy, Stack } from 'aws-cdk-lib';
+import {
+  AssetHashType,
+  CfnOutput,
+  DockerImage,
+  Duration,
+  RemovalPolicy,
+  Stack,
+  Validations,
+} from 'aws-cdk-lib';
 import type { StackProps } from 'aws-cdk-lib';
 import { AccessLogFormat } from 'aws-cdk-lib/aws-apigateway';
-import { HttpApi, HttpMethod, LogGroupLogDestination } from 'aws-cdk-lib/aws-apigatewayv2';
+import {
+  HttpApi,
+  HttpMethod,
+  HttpNoneAuthorizer,
+  LogGroupLogDestination,
+} from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpIamAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { AttributeType, BillingMode, Table, TableEncryption } from 'aws-cdk-lib/aws-dynamodb';
-import { Role, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
+import { Policy, PolicyStatement, Role, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
 import {
   Architecture,
+  CfnFunction,
   Code,
-  Function,
+  Function as LambdaFunction,
   LoggingFormat,
   Runtime,
   Tracing,
 } from 'aws-cdk-lib/aws-lambda';
+import type { DurableConfig } from 'aws-cdk-lib/aws-lambda';
 import { LogGroup } from 'aws-cdk-lib/aws-logs';
-import { CfnDBCluster } from 'aws-cdk-lib/aws-rds';
-import type { DatabaseCluster } from 'aws-cdk-lib/aws-rds';
+import { BlockPublicAccess, Bucket, BucketEncryption } from 'aws-cdk-lib/aws-s3';
 import type { Construct } from 'constructs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
 import { Alarms } from './alarms';
 import { Backups } from './backups';
-import { DATA_STORES } from './connectors';
-import type { Connect, DataStore } from './connectors';
 import { TIER_RULES } from './standard';
-import type { Operations, Tier } from './standard';
+import type { Operations, Tier, TierRules } from './standard';
 
-// The function's Go module: its own go.mod, apart from node_modules/, whose
+// The functions' Go module: its own go.mod, apart from node_modules/, whose
 // stray .go files would otherwise be part of it.
 const SRC = path.join(import.meta.dirname, '..', 'src');
 
-// The function's time limit, which its duration alarm is a share of.
-const TIMEOUT = Duration.seconds(10);
+/** The environment variable that hands a function the table's name, as docs/contracts.md names it. */
+export const DYNAMODB_TABLE_NAME = 'DYNAMODB_TABLE_NAME';
+
+/** The web function's time limit: under API Gateway's 30 seconds. */
+export const WEB_TIMEOUT = Duration.seconds(10);
+
+/**
+ * The Checker's time limit for one invocation. A durable execution spans many
+ * invocations; each runs until the handler suspends or its work is checkpointed.
+ */
+export const CHECKER_TIMEOUT = Duration.minutes(5);
+
+/**
+ * The Checker's durable execution: up to 8 days, so a check waiting a week
+ * for a person's Approve or Block still finishes, and its history kept 30
+ * days after it ends.
+ */
+export const CHECKER_DURABLE_CONFIG: DurableConfig = {
+  executionTimeout: Duration.days(8),
+  retentionPeriod: Duration.days(30),
+};
+
+/** The Lambda API calls the durable execution SDK makes on the function's own executions. */
+export const DURABLE_EXECUTION_ACTIONS = [
+  'lambda:CheckpointDurableExecution',
+  'lambda:GetDurableExecutionState',
+] as const;
 
 /**
  * The stage's access log: a JSON object per request with the request id,
@@ -56,11 +93,16 @@ export const ACCESS_LOG_FIELDS = {
 };
 
 /**
- * The function's code: `src/` built by the installed Go for Lambda's arm64
- * Linux into one `bootstrap` binary, the file the provided.al2023 runtime
- * runs. Never Docker, which CI doesn't have: a failed build fails synth.
+ * A function's code: the Go package `pkg` of `src/` (`./cmd/checker`) built
+ * by the installed Go for Lambda's arm64 Linux into one `bootstrap` binary,
+ * the file the provided.al2023 runtime runs. Never Docker, which CI doesn't
+ * have: a failed build fails synth.
  */
-function goFunctionCode(): Code {
+function goFunctionCode(pkg: string): Code {
+  // The build's environment, in the bundling options too: CDK keys an
+  // asset's staging on them, not on the local build, so without the package
+  // every function would get the first one's binary.
+  const environment = { GOOS: 'linux', GOARCH: 'arm64', CGO_ENABLED: '0', GO_PACKAGE: pkg };
   return Code.fromAsset(SRC, {
     // The hash of the binary, what the source builds to: -trimpath and
     // -buildvcs=false keep it the same from one build to the next.
@@ -68,6 +110,7 @@ function goFunctionCode(): Code {
     bundling: {
       // Required by the type, never pulled: local bundling always succeeds or throws.
       image: DockerImage.fromRegistry('public.ecr.aws/docker/library/golang'),
+      environment,
       local: {
         tryBundle(outputDir: string): boolean {
           execFileSync(
@@ -82,11 +125,11 @@ function goFunctionCode(): Code {
               '-s -w',
               '-o',
               path.join(outputDir, 'bootstrap'),
-              '.',
+              pkg,
             ],
             {
               cwd: SRC,
-              env: { ...process.env, GOOS: 'linux', GOARCH: 'arm64', CGO_ENABLED: '0' },
+              env: { ...process.env, ...environment },
               stdio: ['ignore', 'inherit', 'inherit'],
             },
           );
@@ -97,60 +140,54 @@ function goFunctionCode(): Code {
   });
 }
 
-// Aurora PostgreSQL's max_connections at a Serverless v2 cluster's largest
-// capacity, the lowest column of the table in the Aurora User Guide's
-// "Maximum connections for Aurora Serverless v2", interpolated between its
-// rows: the documented formula, LEAST(DBInstanceClassMemory / 9531392, 5000),
-// counts memory after what the OS keeps, so 2 GiB an ACU overstates it.
-const MAX_CONNECTIONS_BY_ACU: readonly (readonly [number, number])[] = [
-  [1, 189],
-  [4, 823],
-  [8, 1669],
-  [16, 3360],
-  [32, 5000],
-];
-// A cluster whose minimum is 0 or 0.5 ACU stops at 2,000 whatever its largest.
-const LOW_MINIMUM_MAX_CONNECTIONS = 2000;
-
-/** The documented max_connections at `acu`, the first row's below it and the last's above. */
-function documentedMaxConnections(acu: number): number {
-  let previous: readonly [number, number] | undefined;
-  for (const row of MAX_CONNECTIONS_BY_ACU) {
-    const [rowAcu, rowConnections] = row;
-    if (acu >= rowAcu) {
-      previous = row;
-      continue;
-    }
-    if (previous === undefined) {
-      return rowConnections;
-    }
-    const [belowAcu, below] = previous;
-    return Math.floor(below + ((rowConnections - below) * (acu - belowAcu)) / (rowAcu - belowAcu));
-  }
-  return previous === undefined ? 0 : previous[1];
+/** What makes one of the stack's Go functions. */
+interface GoFunctionProps {
+  /** The Go package it runs, relative to `src/`. */
+  readonly pkg: string;
+  readonly timeout: Duration;
+  readonly memorySize: number;
+  readonly rules: TierRules;
+  readonly durableConfig?: DurableConfig;
 }
 
 /**
- * Nine tenths of the connections `cluster` allows at its largest, from the
- * Serverless v2 scaling configuration its Connector gave it; 1 ACU's when it
- * has none the stack can read.
+ * A Go function on arm64 and Amazon Linux 2023, with its own log group and
+ * its own role, allowed only to write that log group: the default role would
+ * carry an AWS managed policy (AWSLambdaBasicExecutionRole, or
+ * AWSLambdaBasicDurableExecutionRolePolicy for a durable function), which may
+ * write to every log group in the account.
  */
-export function maxConnections(cluster: DatabaseCluster): number {
-  // The configuration is a lazy token until resolved; a provisioned cluster has none.
-  const scaling: unknown = Stack.of(cluster).resolve(
-    (cluster.node.defaultChild as CfnDBCluster).serverlessV2ScalingConfiguration,
-  );
-  const capacity = (name: 'minCapacity' | 'maxCapacity'): number =>
-    typeof scaling === 'object' &&
-    scaling !== null &&
-    name in scaling &&
-    typeof (scaling as Record<string, unknown>)[name] === 'number'
-      ? ((scaling as Record<string, unknown>)[name] as number)
-      : 1;
-  const documented = documentedMaxConnections(capacity('maxCapacity'));
-  const connections =
-    capacity('minCapacity') < 1 ? Math.min(documented, LOW_MINIMUM_MAX_CONNECTIONS) : documented;
-  return Math.floor(connections * 0.9);
+function goFunction(scope: Construct, id: string, props: GoFunctionProps): LambdaFunction {
+  const logGroup = new LogGroup(scope, `${id}Logs`, {
+    retention: props.rules.logRetention,
+    removalPolicy: RemovalPolicy.DESTROY,
+  });
+  const role = new Role(scope, `${id}Role`, {
+    assumedBy: new ServicePrincipal('lambda.amazonaws.com'),
+  });
+  logGroup.grantWrite(role);
+  return new LambdaFunction(scope, id, {
+    role,
+    code: goFunctionCode(props.pkg),
+    handler: 'bootstrap',
+    runtime: Runtime.PROVIDED_AL2023,
+    architecture: Architecture.ARM_64,
+    memorySize: props.memorySize,
+    timeout: props.timeout,
+    logGroup,
+    loggingFormat: LoggingFormat.JSON,
+    // Lambda traces each call itself; the functions add no subsegments.
+    tracing: props.rules.tracing ? Tracing.ACTIVE : Tracing.DISABLED,
+    ...(props.durableConfig === undefined ? {} : { durableConfig: props.durableConfig }),
+  });
+}
+
+/**
+ * The days a bucket keeps the earlier versions of an object: as long as a
+ * table recovers (point-in-time recovery's 35 days) or the backups last.
+ */
+export function noncurrentVersionDays(operations: Operations): number {
+  return Math.max(35, operations.backups.retentionDays);
 }
 
 /** What the stack is built for. */
@@ -159,15 +196,14 @@ export interface ApiStackProps extends StackProps {
   readonly tier: Tier;
   /** What the Container promises whatever the tier: `OPERATIONS`. */
   readonly operations: Operations;
-  /** The data stores it connects the function to: `DATA_STORES` unless a test names others. */
-  readonly dataStores?: readonly (readonly [string, Connect])[];
 }
 
 /**
- * The Container's one stack: an HTTP API whose routes call a Lambda function
- * that keeps items in a DynamoDB table, and the data stores its Connectors make. Callers sign their requests with IAM
- * (SigV4); the API refuses everyone else. Every part has alarms, to a topic
- * the stack outputs with its URL; production keeps and backs up the data.
+ * MCP Customs' one stack: the Checker, a Lambda durable function; the web
+ * function behind an HTTP API whose pages and `/api/` routes are public; one
+ * DynamoDB table of checks, steps and verdicts (docs/contracts.md, "Store");
+ * and a bucket for reports. Every part has alarms, to a topic the stack
+ * outputs with its URL; production keeps and backs up the data.
  */
 export class ApiStack extends Stack {
   /** The API's URL, `https://<id>.execute-api.<region>.amazonaws.com/`. */
@@ -180,8 +216,9 @@ export class ApiStack extends Stack {
 
     // The table holds data: kept, protected and recoverable where the tier
     // keeps data, thrown away with the stack where it doesn't.
-    const table = new Table(this, 'Items', {
-      partitionKey: { name: 'id', type: AttributeType.STRING },
+    const table = new Table(this, 'Table', {
+      partitionKey: { name: 'pk', type: AttributeType.STRING },
+      sortKey: { name: 'sk', type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
       encryption: TableEncryption.AWS_MANAGED,
       pointInTimeRecoverySpecification: {
@@ -191,46 +228,112 @@ export class ApiStack extends Stack {
       removalPolicy: rules.keepData ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
     });
 
-    const functionLogs = new LogGroup(this, 'HandlerLogs', {
-      retention: rules.logRetention,
-      removalPolicy: RemovalPolicy.DESTROY,
+    // Reports and raw observations, `reports/<check-id>.json`: data, kept
+    // with its earlier versions where the tier keeps data.
+    const reports = new Bucket(this, 'Reports', {
+      encryption: BucketEncryption.S3_MANAGED,
+      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      versioned: true,
+      lifecycleRules: [
+        { noncurrentVersionExpiration: Duration.days(noncurrentVersionDays(props.operations)) },
+      ],
+      removalPolicy: rules.keepData ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
     });
-    // The function's own role, allowed only to write its log group: the
-    // default role would carry the AWS managed AWSLambdaBasicExecutionRole,
-    // which may write to every log group in the account.
-    const role = new Role(this, 'HandlerRole', {
-      assumedBy: new ServicePrincipal('lambda.amazonaws.com'),
+    Validations.of(reports).acknowledge({
+      id: 'AwsSolutions-S1',
+      reason:
+        'Only the stack’s own functions read and write the reports bucket, and their logs name each check they work on; server access logs would need a second bucket, itself unlogged, for no reader.',
     });
-    functionLogs.grantWrite(role);
-    const handler = new Function(this, 'Handler', {
-      role,
-      code: goFunctionCode(),
-      handler: 'bootstrap',
-      runtime: Runtime.PROVIDED_AL2023,
-      architecture: Architecture.ARM_64,
-      memorySize: 256,
-      timeout: TIMEOUT,
-      logGroup: functionLogs,
-      loggingFormat: LoggingFormat.JSON,
-      // Lambda traces each call itself; the function adds no subsegments.
-      tracing: rules.tracing ? Tracing.ACTIVE : Tracing.DISABLED,
-      environment: { TABLE_NAME: table.tableName },
-    });
-    // Only the calls the handler makes.
-    table.grant(handler, 'dynamodb:GetItem', 'dynamodb:PutItem');
-    // The DataStores the Container's Relationships name, from their
-    // Connectors: a table or an Aurora cluster each.
-    const stores = (props.dataStores ?? DATA_STORES).map(
-      ([name, connect]) => [name, connect(this, handler, rules)] as const,
-    );
-    const isTable = (store: DataStore): store is Table => store instanceof Table;
-    const tables = stores.flatMap(([name, store]) =>
-      isTable(store) ? [[name, store] as const] : [],
-    );
-    const clusters = stores.flatMap(([name, store]) =>
-      isTable(store) ? [] : [[name, store] as const],
-    );
 
+    const checker = goFunction(this, 'Checker', {
+      pkg: './cmd/checker',
+      timeout: CHECKER_TIMEOUT,
+      memorySize: 256,
+      rules,
+      durableConfig: CHECKER_DURABLE_CONFIG,
+    });
+    checker.addEnvironment(DYNAMODB_TABLE_NAME, table.tableName);
+    // Only the calls the Checker makes: it records a check and its steps.
+    table.grant(checker, 'dynamodb:PutItem');
+    this.grantDurableExecution(checker);
+    // Nothing invokes the Checker yet: the web function starts checks in a
+    // later issue, and a durable execution keeps its own failures.
+    Validations.of(checker).acknowledge({
+      id: 'Serverless-LambdaDLQ',
+      reason:
+        'The Checker is a durable function: Lambda records each execution’s failure, with its error, in the execution (GetDurableExecution), so a dead-letter queue would hold a second copy of what the execution already keeps.',
+    });
+
+    const web = goFunction(this, 'Web', {
+      pkg: './cmd/web',
+      timeout: WEB_TIMEOUT,
+      memorySize: 256,
+      rules,
+    });
+
+    const api = this.httpApi(web, rules);
+    this.url = api.apiEndpoint;
+
+    this.addAlarms(alerts.email, api, [
+      ['Checker', checker, CHECKER_TIMEOUT],
+      ['Web', web, WEB_TIMEOUT],
+    ]).monitorDynamoTable({
+      table: Table.fromTableName(this, 'MonitoredTable', table.tableName),
+      alarmFriendlyName: 'Table',
+      billingMode: BillingMode.PAY_PER_REQUEST,
+      addSystemErrorCountAlarm: { Critical: { maxErrorCount: 0 } },
+      addReadThrottledEventsCountAlarm: { Critical: { maxThrottledEventsThreshold: 0 } },
+      addWriteThrottledEventsCountAlarm: { Critical: { maxThrottledEventsThreshold: 0 } },
+    });
+
+    if (rules.backups && backups.retentionDays > 0) {
+      new Backups(this, 'Backups', {
+        retentionDays: backups.retentionDays,
+        copyToRegion: backups.copyToRegion,
+        tables: [table],
+      });
+    }
+
+    new CfnOutput(this, 'EntryPoint', {
+      value: this.url,
+      description: 'The URL of the HTTP API.',
+    });
+  }
+
+  /**
+   * Lets `fn` checkpoint and read its own durable executions, whose ARNs
+   * start with its own, qualified: `<function ARN>:<version>/durable-execution/...`.
+   * A policy apart from the role's default one: the function depends on that
+   * one, and this one names the function.
+   */
+  private grantDurableExecution(fn: LambdaFunction): void {
+    const policy = new Policy(this, `${fn.node.id}DurableExecution`, {
+      statements: [
+        new PolicyStatement({
+          actions: [...DURABLE_EXECUTION_ACTIONS],
+          resources: [`${fn.functionArn}:*`],
+        }),
+      ],
+    });
+    fn.role?.attachInlinePolicy(policy);
+    const cfnFunction = fn.node.defaultChild;
+    if (!(cfnFunction instanceof CfnFunction)) {
+      throw new Error(`${fn.node.path} has no CfnFunction to name in its acknowledgement.`);
+    }
+    Validations.of(policy).acknowledge({
+      id: `AwsSolutions-IAM5[Resource::<${this.getLogicalId(cfnFunction)}.Arn>:*]`,
+      reason:
+        'A durable execution’s ARN is the function’s qualified ARN followed by its own path, unknown until it starts; the wildcard reaches only this function’s own executions.',
+    });
+  }
+
+  /**
+   * The HTTP API: `GET /` and `GET /api/{proxy+}` call `web`, open to the
+   * public. Any other route is signed with IAM (SigV4), the scaffold's
+   * default, and the stage logs and throttles every request.
+   */
+  private httpApi(web: LambdaFunction, rules: TierRules): HttpApi {
     const accessLogs = new LogGroup(this, 'ApiAccessLogs', {
       retention: rules.logRetention,
       removalPolicy: RemovalPolicy.DESTROY,
@@ -249,72 +352,54 @@ export class ApiStack extends Stack {
         format: AccessLogFormat.custom(JSON.stringify(ACCESS_LOG_FIELDS)),
       },
     });
-    api.addRoutes({
-      path: '/items/{id}',
-      methods: [HttpMethod.GET, HttpMethod.PUT],
-      integration: new HttpLambdaIntegration('Items', handler),
-    });
-    this.url = api.apiEndpoint;
+    const integration = new HttpLambdaIntegration('Web', web);
+    for (const routePath of ['/', '/api/{proxy+}']) {
+      for (const route of api.addRoutes({
+        path: routePath,
+        methods: [HttpMethod.GET],
+        integration,
+        authorizer: new HttpNoneAuthorizer(),
+      })) {
+        Validations.of(route).acknowledge({
+          id: 'AwsSolutions-APIG4',
+          reason:
+            'MCP Customs is a public service: anyone may read its pages and its JSON API, as the demo and the judges do, without an AWS identity. The stage is throttled; routes that change state come later, with their own authorization.',
+        });
+      }
+    }
+    return api;
+  }
 
-    // Each alarm fires on the first bad five minutes: a server error, a
-    // failed or throttled call, or calls near their time limit.
-    // docs/runbook.md says what each means and what to do first.
-    // tsconfig's exactOptionalPropertyTypes keeps a HttpApi or Table from
-    // passing as the IHttpApi or ITable the monitoring takes (an optional
-    // property they leave undefined), so it gets a reference by id or name.
-    const alarms = new Alarms(this, 'Alarms', alerts.email);
-    alarms.monitoring
-      .monitorApiGatewayV2HttpApi({
-        api: HttpApi.fromHttpApiAttributes(this, 'MonitoredApi', { httpApiId: api.apiId }),
-        alarmFriendlyName: 'Api',
-        add5xxCountAlarm: { Critical: { maxErrorCount: 0 } },
-      })
-      .monitorLambdaFunction({
-        lambdaFunction: handler,
-        alarmFriendlyName: 'Handler',
+  /**
+   * The stack's alarms, each firing on the first bad five minutes: a server
+   * error, a failed or throttled call, or calls near their time limit.
+   * docs/runbook.md says what each means and what to do first. tsconfig's
+   * exactOptionalPropertyTypes keeps a HttpApi or Table from passing as the
+   * IHttpApi or ITable the monitoring takes, so it gets a reference by id or
+   * name.
+   */
+  private addAlarms(
+    email: string,
+    api: HttpApi,
+    functions: readonly (readonly [string, LambdaFunction, Duration])[],
+  ): Alarms['monitoring'] {
+    const alarms = new Alarms(this, 'Alarms', email);
+    alarms.monitoring.monitorApiGatewayV2HttpApi({
+      api: HttpApi.fromHttpApiAttributes(this, 'MonitoredApi', { httpApiId: api.apiId }),
+      alarmFriendlyName: 'Api',
+      add5xxCountAlarm: { Critical: { maxErrorCount: 0 } },
+    });
+    for (const [name, fn, timeout] of functions) {
+      alarms.monitoring.monitorLambdaFunction({
+        lambdaFunction: fn,
+        alarmFriendlyName: name,
         addFaultCountAlarm: { Critical: { maxErrorCount: 0 } },
         addThrottlesCountAlarm: { Critical: { maxErrorCount: 0 } },
         addLatencyP99Alarm: {
-          Warning: { maxLatency: Duration.millis(TIMEOUT.toMilliseconds() * 0.8) },
+          Warning: { maxLatency: Duration.millis(timeout.toMilliseconds() * 0.8) },
         },
       });
-    for (const [name, monitored] of [['Items', table], ...tables] as const) {
-      alarms.monitoring.monitorDynamoTable({
-        table: Table.fromTableName(this, `Monitored${name}`, monitored.tableName),
-        alarmFriendlyName: name,
-        billingMode: BillingMode.PAY_PER_REQUEST,
-        addSystemErrorCountAlarm: { Critical: { maxErrorCount: 0 } },
-        addReadThrottledEventsCountAlarm: { Critical: { maxThrottledEventsThreshold: 0 } },
-        addWriteThrottledEventsCountAlarm: { Critical: { maxThrottledEventsThreshold: 0 } },
-      });
     }
-
-    // A cluster near its CPU or its connections is one the function will soon
-    // find slow or closed; both alarms page like the function's own (this
-    // Framework deploys with no rollback, so none of its alarms rolls one back).
-    for (const [name, cluster] of clusters) {
-      alarms.monitoring.monitorAuroraCluster({
-        // The cluster itself, not its identifier: the monitoring reads its
-        // ARN to tell a Serverless cluster.
-        cluster,
-        alarmFriendlyName: name,
-        addCpuUsageAlarm: { Critical: { maxUsagePercent: 90 } },
-        addMaxConnectionCountAlarm: { Critical: { maxConnectionCount: maxConnections(cluster) } },
-      });
-    }
-
-    if (rules.backups && backups.retentionDays > 0) {
-      new Backups(this, 'Backups', {
-        retentionDays: backups.retentionDays,
-        copyToRegion: backups.copyToRegion,
-        tables: [table, ...tables.map(([, store]) => store)],
-        clusters: clusters.map(([, cluster]) => cluster),
-      });
-    }
-
-    new CfnOutput(this, 'EntryPoint', {
-      value: this.url,
-      description: 'The URL of the HTTP API.',
-    });
+    return alarms.monitoring;
   }
 }

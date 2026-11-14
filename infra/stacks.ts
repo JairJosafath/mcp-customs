@@ -19,7 +19,7 @@ export function defineStacks(app: App, tier: Tier): Stack[] {
   const name = packageJson.name;
   const { backups } = OPERATIONS;
   const api = new ApiStack(app, stackNameFor(name, tier), {
-    description: `${packageJson.description} An HTTP API, a Lambda function and a DynamoDB table.`,
+    description: `${packageJson.description} The Checker, a Lambda durable function; the web function behind an HTTP API; a DynamoDB table and a reports bucket.`,
     tier,
     operations: OPERATIONS,
   });
