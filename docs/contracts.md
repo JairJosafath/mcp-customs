@@ -53,12 +53,12 @@ invocation and no execution history keeps it. JSON in and out; every response ca
 The resolved dependency set is the resolver's, taken before any code of the
 package runs, never what the installed files say of themselves: for npm, the
 lockfile of `npm install --package-lock-only --ignore-scripts`, read before
-`npm ci` installs exactly it; for PyPI, pip's `--dry-run --report` in a clean
-venv, as a requirements file with every file's SHA-256, which
+`npm ci` installs exactly it; for PyPI, pip's `--dry-run --only-binary=:all: --report` in a
+clean venv, as a requirements file with every file's SHA-256, which
 `pip install --no-deps --require-hashes` then installs; for Go, the modules
 of `go version -m`. A PyPI set must be all wheels: a dependency only an
 sdist ships is built with build dependencies no hash pins, so the install
-fails. After every install step the harness kills every process of the
+fails, at pip's resolve, before any of its build backend's code runs. After every install step the harness kills every process of the
 unprivileged account, and a harness not switched to that account fails
 the step: it can't kill them. A failed install answers 422 with its log,
 whose last line names what failed; the Checker ends the sandbox and the
