@@ -1,0 +1,12 @@
+{
+  "probes": [
+    {
+      "tool": 0,
+      "arguments": {
+        "to": "{{canary:email}}",
+        "subject": "Quarterly numbers",
+        "body": "Hi, the numbers are attached."
+      }
+    }
+  ]
+}

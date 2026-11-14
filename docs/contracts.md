@@ -11,12 +11,14 @@ pull request.
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `src/cmd/checker`                   | The Checker: the durable function's `main`                                                                         |
 | `src/cmd/web`                       | The web and API function's `main`                                                                                  |
+| `src/cmd/poller`                    | The poller's `main`: run on a schedule, it re-checks approved packages' new versions                               |
 | `src/cmd/harness`                   | The sandbox harness's `main`, run in the MicroVM image                                                             |
 | `src/internal/findings`             | Code-only findings: hidden characters, injection patterns, canary matching. No model, no network                   |
 | `src/internal/canary`               | Fresh canaries per run, in real formats with valid checksums                                                       |
 | `src/internal/verdict`              | The verdict rules: code findings the model can't clear; the model only stricter; error gives review                |
 | `src/internal/harness`              | The harness: MCP client, package install, egress proxy, observations                                               |
 | `src/internal/checker`              | The fixed checks, the action registry and interpreter, the judge and its investigation loop                        |
+| `src/internal/poller`               | The poll: each approved package's registry asked for its latest version, a re-check started for a new one          |
 | `src/internal/store`                | DynamoDB and S3 access shared by the Checker and the web function                                                  |
 | `src/internal/web`                  | Handlers and `html/template` pages                                                                                 |
 | `src/demo/weather`, `src/demo/mail` | The demo MCP servers, each its own `main`                                                                          |
@@ -134,16 +136,17 @@ What Lambda MicroVMs (`sandbox/Dockerfile`, `infra/sandbox.ts`,
 
 One DynamoDB table (`DYNAMODB_TABLE_NAME`), keys `pk` and `sk`:
 
-| Item      | `pk`            | `sk`         | Holds                                                                |
-| --------- | --------------- | ------------ | -------------------------------------------------------------------- |
-| A check   | `CHECK#<id>`    | `META`       | the submission, status, verdict, durable execution ARN, callback ID  |
-| A step    | `CHECK#<id>`    | `STEP#<seq>` | what ran, its findings, a one-line summary (the web page's timeline) |
-| A verdict | `HASH#<sha256>` | `VERDICT`    | the approved check's ID, its tool-list hash, the install spec        |
+| Item      | `pk`            | `sk`            | Holds                                                                                                                 |
+| --------- | --------------- | --------------- | --------------------------------------------------------------------------------------------------------------------- |
+| A check   | `CHECK#<id>`    | `META`          | the submission, status, verdict, durable execution ARN, callback ID                                                   |
+| A step    | `CHECK#<id>`    | `STEP#<seq>`    | what ran, its findings, a one-line summary (the web page's timeline)                                                  |
+| A verdict | `HASH#<sha256>` | `VERDICT`       | the approved check's ID, its tool-list hash, the install spec                                                         |
+| A package | `APPROVED`      | `<kind>#<name>` | its approved version, that check's ID and tool-list hash, and `polled`, the newest version a re-check was started for |
 
 A check's `status` is `running`, `waiting` (for a person's Approve or
 Block, under its `callbackId`), `done` or `failed`. A `STEP#` item's `name`
 is the registered action that ran (`resolve`, `lookup`, `install`, `list`,
-`scan`, `probe`, `observe`, `ask_human`, `wait`, and the investigation's
+`scan`, `compare` (a re-check's tool list against the approved one), `probe`, `observe`, `ask_human`, `wait`, and the investigation's
 `allow`, `call`, `read_source`, `inspect_download`, `clock`), or `start`,
 `write_probes`, `judge`, `investigate` (one a turn: the move the judge
 picked), `verdict` or `failed`. A check that fails ends its sandbox, writes a
@@ -155,7 +158,12 @@ person approves it; its `installSpec` is the JSON
 `{"kind","ref","dependencySha256","toolListSha256"}`.
 
 A check's `META` also keeps `sandboxId`, the MicroVM its `resolve`
-launched, written before anything else, so a failure can end it.
+launched, written before anything else, so a failure can end it, and, for
+a re-check, `recheckOf` and `recheckOfRef`: the check that approved the
+earlier version, and that version's ref.
+
+A pass of a package (not a remote server) also puts its `APPROVED` item,
+with `polled` set to its version.
 
 No step keeps more than 200 KB. What the install was seen doing, the
 server's `initialize` result and its start, a tool list, a probe's answer
@@ -178,6 +186,26 @@ name a tool by its place in the listing (`tool 3`, `the result of tool
 
 Reports go to the bucket as `reports/<check-id>.json`. Raw observations as
 `observations/<check-id>.json`.
+
+## Re-checks of new versions
+
+Package versions can't change, so a rug pull is a new version. An
+EventBridge Scheduler schedule runs the poller every few minutes
+(`RECHECK_INTERVAL` in `infra/recheck.ts`). It reads every `APPROVED` item
+and asks the kind's registry for the latest version: npm's
+`<registry>/<name>/latest`, the Go module proxy's `<proxy>/<module>/@latest`,
+PyPI's `<index>/pypi/<name>/json`, set by `NPM_REGISTRY_URL`, `GO_PROXY_URL`
+and `PYPI_URL` (https; the public ones when unset). A remote server has no
+versions and is not polled. A latest version that is neither the approved
+one nor `polled` starts the Checker with
+
+`{"checkId":"recheck-<40 hex>","submission":{"kind","ref":"<name>@<latest>"},"recheck":{"checkId","ref","toolListSha256"}}`,
+
+the ID derived from the kind, name and version, so it starts once, and
+then sets `polled`. A re-check never passes as seen before: it is
+installed, listed, compared with the approved tool list, probed and judged
+like a new server, whatever its tool list. Its pass puts the new version's
+`APPROVED` item; anything else leaves the earlier approval as it was.
 
 ## A person's answer
 

@@ -124,6 +124,9 @@ type checkView struct {
 	CheckID    string           `json:"checkId"`
 	Status     string           `json:"status"`
 	Submission store.Submission `json:"submission"`
+	// RecheckOf, for the re-check of a newer version of an approved
+	// package, is the check that approved the earlier one.
+	RecheckOf *recheckView `json:"recheckOf,omitempty"`
 	// Verdict is pass, review or block once the check is done.
 	Verdict   string        `json:"verdict,omitempty"`
 	DecidedBy string        `json:"decidedBy,omitempty"`
@@ -138,6 +141,13 @@ type checkView struct {
 	Service string `json:"-"`
 	// Found says the check exists; a check just submitted has no META yet.
 	Found bool `json:"-"`
+}
+
+// recheckView links a re-check to the approved check of the earlier
+// version: its ID and that version's ref.
+type recheckView struct {
+	CheckID string `json:"checkId"`
+	Ref     string `json:"ref"`
 }
 
 // InstallSpecJSON is the install spec as the page shows it, to copy.
@@ -181,6 +191,10 @@ func buildView(c store.Check, steps []store.Step, report []byte) (checkView, err
 	}
 	if statuses[c.Status] {
 		v.Status = string(c.Status)
+	}
+	// The ID goes into a link: only one that can name a check is shown.
+	if store.ValidCheckID(c.RecheckOf) {
+		v.RecheckOf = &recheckView{CheckID: c.RecheckOf, Ref: visible(c.RecheckOfRef)}
 	}
 	v.Waiting = c.Status == store.StatusWaiting && c.CallbackID != ""
 	for _, s := range steps {

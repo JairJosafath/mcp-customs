@@ -21,6 +21,12 @@
       characters show as escapes such as <code>\u200B</code>.
     </p>
     <p>Server: <code>{{.Submission.Kind}}</code> <code>{{.Submission.Ref}}</code></p>
+    {{with .RecheckOf}}
+    <p class="recheck">
+      A new version, re-checked. The approved version, <code>{{.Ref}}</code>, is check
+      <a href="/checks/{{.CheckID}}"><code>{{.CheckID}}</code></a>
+    </p>
+    {{end}}
     <p>Status: <strong>{{.Status}}</strong></p>
     {{with .Verdict}}
     <p>

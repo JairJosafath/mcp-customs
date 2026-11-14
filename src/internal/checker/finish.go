@@ -13,7 +13,8 @@ import (
 
 // finish ends the sandbox and records the verdict's STEP# item, saying
 // who decided; then, in one step, it writes the report to the bucket, the
-// approval of a pass this check decided to HASH#, and the verdict to the
+// approval of a pass this check decided to HASH# and, for a
+// package, to APPROVED, and the verdict to the
 // check's META, last, so a check reads done only once its report and its
 // verdict step are there. A verdict step that can't be written fails the
 // check before any approval is.
@@ -25,7 +26,7 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 	spec := InstallSpec{Kind: r.in.Submission.Kind, Ref: r.in.Submission.Ref, DependencyHash: r.resolved.Hash, ToolListHash: r.listing.ToolHash}
 	report := Report{
 		CheckID: r.in.CheckID, Submission: r.in.Submission, Verdict: decided.Verdict, Findings: decided.Findings,
-		DecidedBy: by, InstallSpec: spec, Probes: r.probes, Bound: boundNote,
+		DecidedBy: by, InstallSpec: spec, Probes: r.probes, Bound: boundNote, Recheck: r.in.Recheck,
 	}
 	if r.approved != nil && by == "seen before" {
 		report.SeenBefore = r.approved.CheckID
@@ -62,6 +63,11 @@ func (r *run) writeVerdict(sc durable.StepContext, report Report) error {
 			Hash: r.resolved.Hash, CheckID: r.in.CheckID, ToolListHash: r.listing.ToolHash, InstallSpec: string(spec),
 		}); err != nil {
 			return err
+		}
+		if a, conditional, ok := approval(report); ok {
+			if err := r.deps.Store.PutApproved(sc, a, conditional); err != nil {
+				return err
+			}
 		}
 	}
 	return r.deps.Store.UpdateCheck(sc, r.in.CheckID, store.CheckUpdate{Status: store.StatusDone, Verdict: string(report.Verdict)})
