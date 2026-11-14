@@ -1,0 +1,41 @@
+// Package findings holds the findings code alone makes: hidden characters
+// and injection patterns in server text, and canaries leaving the sandbox.
+// It uses no model and no network.
+package findings
+
+// Source says who made a finding.
+type Source string
+
+// The two sources of a finding. A code finding can't be cleared by a model.
+const (
+	Code  Source = "code"
+	Model Source = "model"
+)
+
+// A Finding is one thing a check found: who found it, the rule it broke and
+// the evidence, quoted.
+type Finding struct {
+	Source   Source `json:"source"`
+	Rule     string `json:"rule"`
+	Evidence string `json:"evidence"`
+}
+
+// The rules code findings name.
+const (
+	// Hidden characters in server text.
+	RuleANSIEscape        = "hidden-ansi-escape"
+	RuleTagCharacters     = "hidden-tag-characters"
+	RuleZeroWidth         = "hidden-zero-width"
+	RuleBidiControl       = "hidden-bidi-control"
+	RuleVariationSelector = "hidden-variation-selector"
+	RuleInstruction       = "injection-instruction"
+	RuleSensitivePath     = "injection-sensitive-path"
+	RuleSecretResend      = "injection-secret-resend"
+	RuleCanaryLeft        = "canary-left"
+	RuleAgentConfig       = "agent-config-write"
+	RuleShellStartup      = "shell-startup-write"
+	RuleSampling          = "unexplained-sampling"
+	RuleElicitation       = "unexplained-elicitation"
+	RuleJudgeError        = "judge-error"
+	RuleJudgeOutOfTurn    = "judge-out-of-turns"
+)
