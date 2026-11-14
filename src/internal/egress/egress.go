@@ -9,6 +9,7 @@
 package egress
 
 import (
+	"context"
 	"net/http"
 	"slices"
 	"strings"
@@ -142,11 +143,24 @@ type Egress struct {
 	// directCanaries counts the direct traffic recorded past maxDirect.
 	directCanaries int
 	dropped        int
+	// sealed is done once Seal has run: nothing leaves after it.
+	sealed context.Context
+	seal   context.CancelFunc
+	// inflight counts the requests allowed and not yet done: Seal waits
+	// for them.
+	inflight sync.WaitGroup
+	// afterAdmit, when set, runs after a request is allowed and before it
+	// is searched and recorded: tests slow the proxy there.
+	afterAdmit func()
+	// beforePass, when set, runs after a request is recorded and before it
+	// is sent on: tests slow the proxy there.
+	beforePass func()
 }
 
 // New makes the proxy. Nothing is observed until Observe names an observer.
 func New(cfg Config) *Egress {
 	e := &Egress{cfg: cfg, allowed: map[string]bool{}, install: map[string]bool{}, fakes: map[string]string{}, observe: func(string, any) {}}
+	e.sealed, e.seal = context.WithCancel(context.Background())
 	e.Allow(cfg.Allow...)
 	for _, h := range cfg.InstallAllow {
 		if h = normalHost(h); h != "" {
@@ -184,10 +198,14 @@ func (e *Egress) SetCanaries(c canary.Set) {
 }
 
 // Allow adds hosts to the allowlist and answers the allowlist now in force,
-// sorted. A host is a DNS name, matched exactly, in any case.
+// sorted. A host is a DNS name, matched exactly, in any case. Once sealed,
+// it adds none and answers an empty list.
 func (e *Egress) Allow(hosts ...string) []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.isSealed() {
+		return []string{}
+	}
 	for _, h := range hosts {
 		if h = normalHost(h); h != "" {
 			e.allowed[h] = true
@@ -204,7 +222,15 @@ func (e *Egress) Allow(hosts ...string) []string {
 func (e *Egress) isAllowed(host string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.allowedLocked(host)
+}
+
+// allowedLocked is isAllowed, with e.mu held.
+func (e *Egress) allowedLocked(host string) bool {
 	h := normalHost(host)
+	if e.isSealed() {
+		return false
+	}
 	return e.allowed[h] || (e.installing && e.install[h])
 }
 
