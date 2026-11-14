@@ -146,8 +146,9 @@ data; development throws it away.
 What isn't built yet:
 
 - Remote servers. The form takes an `https://` URL, but the sandbox
-  refuses to install one yet, so such a check fails without running. Checking a remote server from several identities comes after
-  that.
+  refuses to install one yet, so such a check fails without running
+  and without a verdict. Checking a remote server from several
+  identities comes after that.
 - A runtime gateway that pins the approved tool-list hash on every
   session.
 - Argument fuzzing for command injection, SSRF and path traversal in tool

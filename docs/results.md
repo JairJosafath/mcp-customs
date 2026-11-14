@@ -3,8 +3,9 @@
 The write-up of MCP Customs for the AWS Builder Center weekend challenge
 "No Pipeline, No Problem". A skeleton until the stack is deployed: every
 place that needs deploy output says `TODO(deploy)`. Numbers come from the
-repository's files, as of commit `f8990c9` (2026-11-14, 21:13 UTC), and
-`hack/runs-stats` prints them again at any commit, in a full clone (it
+repository's files, as of commit `025bc42` (2026-11-14, 21:13 UTC: main
+at `f8990c9` with two rows of runs.md corrected), and
+`hack/runs-stats -rev 025bc42` prints them again, in a full clone (it
 refuses a shallow one).
 
 ## The problem
@@ -114,8 +115,8 @@ review"](plan.md#security-review)):
   dependency set and the tool list; an install spec to copy. A pass's
   approval is written in one transaction with the check marked done, so
   no approval outlives a check that failed.
-- **A busy model isn't a review.** The judge tries a call up to 4 times,
-  2 seconds apart and doubling, after a throttle, a 5xx, a model timeout
+- **A busy model isn't a review.** The judge tries a call up to 4 times
+  in all, 2, 4 and 8 seconds apart, after a throttle, a 5xx, a model timeout
   or a connection reset; the SDK's own retries are off, so a call is
   never tried more than that.
 - **A person can wait.** A check short of pass waits up to 7 days for
@@ -159,11 +160,11 @@ session.
 
 | What                                                         | Count                                                                                                                                  |
 | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Pull requests merged (`git log` at `f8990c9`)                | 36                                                                                                                                     |
-| Sessions ([runs.md](runs.md) at `f8990c9`)                   | 95: 37 implementer, 58 reviewer                                                                                                        |
-| Review rounds of the 36 merged issues (runs.md at `f8990c9`) | 1 round: 16; 1 round and fixes after it: 1 (#43); 2 rounds: 9; 3 rounds: 10                                                            |
-| Cost reported (runs.md at `f8990c9`)                         | $155.85 from 50 of the 95 sessions ($83.65 implementers, $72.20 reviewers); 45 sessions reported none, so it's less than the full cost |
-| First session to the last row (runs.md at `f8990c9`)         | 06:27 to 21:13 UTC, 2026-11-14                                                                                                         |
+| Pull requests merged (`git log` at `025bc42`)                | 36                                                                                                                                     |
+| Sessions ([runs.md](runs.md) at `025bc42`)                   | 95: 37 implementer, 58 reviewer                                                                                                        |
+| Review rounds of the 36 merged issues (runs.md at `025bc42`) | 1 round: 16; 1 round and fixes after it: 1 (#43); 2 rounds: 9; 3 rounds: 10                                                            |
+| Cost reported (runs.md at `025bc42`)                         | $155.85 from 50 of the 95 sessions ($83.65 implementers, $72.20 reviewers); 45 sessions reported none, so it's less than the full cost |
+| First session to the last row (runs.md at `025bc42`)         | 06:27 to 21:13 UTC, 2026-11-14                                                                                                         |
 
 `hack/runs-stats` counts these. A session is a distinct ID in runs.md. A
 merged pull request is a squash commit on main whose subject ends in its
@@ -195,13 +196,17 @@ Eight pull requests merged with final commits no reviewer read:
   new test rows, did not revert the fixes itself (the implementer
   reported that check), and saw the check green on `7d11024`. It doesn't
   cover the conflicts the merge `77e8e8f` resolved by hand.
-- #62: its one verdict
-  ([comment](https://github.com/JairJosafath/mcp-customs/pull/62#issuecomment-6882166497))
-  asked for changes in round 1: a merge with main, and a test of the
-  CONNECT path. `3d078e4` merged main, leaving the tree as it was, and
-  `91c2d29` added the test; no verdict read either. The squash commit's
-  message (`c05c114`) says it was approved; the pull request holds no
-  approval.
+- #62: its one verdict, in round 1
+  ([comment](https://github.com/JairJosafath/mcp-customs/pull/62#issuecomment-6882166497)),
+  found both criteria met and tested, and blocked only on a merge
+  conflict with main; its one other finding, an untested CONNECT path,
+  was non-blocking. `3d078e4` merged main, leaving the tree as it was,
+  and `91c2d29` added that test; no verdict read either, and no reviewer
+  approved. The squash commit's message (`c05c114`) says it was approved;
+  the orchestrator's
+  [correction](https://github.com/JairJosafath/mcp-customs/pull/62#issuecomment-6884443216)
+  says it wasn't, and that it checked the diff against main held only
+  the change's five files.
 
 Three were verified on the round limit by the orchestrator, at the head
 they merged at, in place of a fresh reviewer: #63
