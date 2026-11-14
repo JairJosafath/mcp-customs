@@ -680,6 +680,11 @@ func TestAnInstallMayOnlyGetUnderAnInstallGetPrefix(t *testing.T) {
 	if e.isAllowed(api) || e.requestAllowed(http.MethodGet, api, &url.URL{Path: mod}) {
 		t.Error("the demo proxy is reachable after the install")
 	}
+	e.Installing(true)
+	e.Seal()
+	if e.isAllowed(api) || e.requestAllowed(http.MethodGet, api, &url.URL{Path: mod}) {
+		t.Error("the demo proxy is reachable after the seal")
+	}
 }
 
 func TestUpstreamURLsAreBuiltFromTheCheckedHostOnly(t *testing.T) {

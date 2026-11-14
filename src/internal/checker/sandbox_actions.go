@@ -243,9 +243,14 @@ type observed struct {
 }
 
 // observe reads every observation of the run, keeps them in the bucket as
-// observations/<check-id>.json, and makes their code findings.
+// observations/<check-id>.json, and makes their code findings. The last
+// read, after the seal, is a step of its own, observe-final.
 func observe(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
-	got, err := durable.Step(ctx, string(ActObserve), func(sc durable.StepContext) (observed, error) {
+	name := string(ActObserve)
+	if r.sealing {
+		name += "-final"
+	}
+	got, err := durable.Step(ctx, name, func(sc durable.StepContext) (observed, error) {
 		var all struct {
 			Observations []findings.Observation `json:"observations"`
 		}
@@ -261,7 +266,7 @@ func observe(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 		}
 		got := observed{Count: len(all.Observations), Seen: seenIn(all.Observations), Findings: findings.FromObservations(all.Observations, r.canaries)}
 		if n := sizeOf(got); n > maxStepResult {
-			return observed{Oversized: n}, r.keepOversized(sc, "observe", got)
+			return observed{Oversized: n}, r.keepOversized(sc, name, got)
 		}
 		return got, nil
 	})
@@ -269,7 +274,7 @@ func observe(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 		return outcome{}, err
 	}
 	if got.Oversized > 0 {
-		return outcome{}, r.tooLarge("observe", got.Oversized)
+		return outcome{}, r.tooLarge(name, got.Oversized)
 	}
 	r.seen = got.Seen
 	return outcome{

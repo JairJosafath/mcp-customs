@@ -18,6 +18,14 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- Nothing leaves the sandbox after the Checker's last read of its
+  observations: once the investigation ends, the Checker seals egress
+  (`POST /seal`: the allowlist emptied for good, every new tunnel
+  refused, requests still being sent on cut), reads the observations a
+  last time, and only then ends the sandbox; the verdict is decided from
+  that read. A canary sent at the end, even to a host the judge allowed,
+  is found. A seal or last read that fails gives `not-sealed`, at least
+  review. `/allow` after the seal answers 409.
 - No canary leaves the sandbox unseen through UDP port 53, an HTTP
   trailer or raw TCP: every datagram to port 53 is recorded and searched
   whole, query or not (`unanswered` says why one got no answer); a chunked

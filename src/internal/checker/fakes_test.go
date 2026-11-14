@@ -202,6 +202,14 @@ type server struct {
 	observations []findings.Observation
 	// fail answers a path with this status and message instead.
 	fail map[string]int
+	// failLast answers a path with 502 from its second call on: the last
+	// read of the observations, after the seal.
+	failLast string
+	// lateLeak is what the server sends once the judge has made its last
+	// move: seen only by a read after it.
+	lateLeak []findings.Observation
+	// calls counts the calls of each path.
+	calls map[string]int
 	// errors are the JSON-RPC errors tools answer instead of a result.
 	errors map[string]string
 	// leakHost is where the server sends the SSH-key canary a call hands it,
@@ -264,7 +272,15 @@ func cleanServer() *server {
 func (s *server) respond(vm sandbox.VM, req sandbox.Request) (sandbox.Response, error) {
 	s.mu.Lock()
 	s.tokens = append(s.tokens, vm.Token)
+	if s.calls == nil {
+		s.calls = map[string]int{}
+	}
+	s.calls[req.Path]++
+	last := req.Path == s.failLast && s.calls[req.Path] > 1
 	s.mu.Unlock()
+	if last {
+		return answer(http.StatusBadGateway, map[string]any{"message": "the server failed " + req.Path, "observations": []any{}}), nil
+	}
 	if status, ok := s.fail[req.Path]; ok {
 		return answer(status, map[string]any{"message": "the server failed " + req.Path, "observations": []any{}}), nil
 	}
@@ -317,6 +333,12 @@ func (s *server) respond(vm sandbox.VM, req sandbox.Request) (sandbox.Response, 
 		body, _ := req.Body.(map[string]any)
 		p, _ := body["path"].(string)
 		return answer(http.StatusOK, map[string]any{"path": p, "content": s.sources[p], "observations": []any{}}), nil
+	case "/seal":
+		// What the server sent between the judge's last move and the seal.
+		s.mu.Lock()
+		s.observations = append(s.observations, s.lateLeak...)
+		s.mu.Unlock()
+		return answer(http.StatusOK, map[string]any{"hosts": []string{}, "observations": []any{}}), nil
 	case "/observations":
 		s.mu.Lock()
 		all := append(append([]findings.Observation{}, s.installObs...), s.observations...)

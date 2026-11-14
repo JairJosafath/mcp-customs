@@ -127,6 +127,10 @@ const fakeBody = "ok\n"
 func (e *Egress) Proxy() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
+			if e.isSealed() {
+				e.refuseSealed(w, r)
+				return
+			}
 			e.tunnel(w, r)
 			return
 		}
@@ -241,7 +245,14 @@ func (e *Egress) forward(w http.ResponseWriter, r *http.Request, scheme, hostpor
 		unscanned = "the body could not be read whole; what was read was searched"
 	}
 	target, err := upstreamURL(scheme, host, port, r.URL)
-	allowed := e.requestAllowed(r.Method, host, r.URL) && err == nil && readErr == nil
+	done, allowed := func() {}, false
+	if err == nil && readErr == nil {
+		done, allowed = e.admit(r.Method, host, r.URL)
+	}
+	defer done()
+	if allowed && e.afterAdmit != nil {
+		e.afterAdmit()
+	}
 	e.record(KindHTTP, HTTPDetail{
 		Method:    r.Method,
 		Host:      host,
@@ -253,6 +264,9 @@ func (e *Egress) forward(w http.ResponseWriter, r *http.Request, scheme, hostpor
 	if readErr != nil {
 		http.Error(w, "cannot read the request", http.StatusBadRequest)
 		return
+	}
+	if e.beforePass != nil {
+		e.beforePass()
 	}
 	if !allowed {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -299,7 +313,13 @@ func upstreamURL(scheme, host string, port int, u *url.URL) (string, error) {
 
 // pass sends r on to target and copies the answer back.
 func (e *Egress) pass(w http.ResponseWriter, r *http.Request, target string, body io.Reader) {
-	out, err := http.NewRequestWithContext(r.Context(), r.Method, target, body) //nolint:gosec // only hosts on the run's allowlist are reached; forward checks it first
+	ctx, stop := e.untilSealed(r.Context())
+	defer stop()
+	if ctx.Err() != nil {
+		http.Error(w, "egress is sealed", http.StatusBadGateway)
+		return
+	}
+	out, err := http.NewRequestWithContext(ctx, r.Method, target, body) //nolint:gosec // only hosts on the run's allowlist are reached; forward checks it first
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
