@@ -188,8 +188,13 @@ and why. Each is an `observations-truncated` code finding, at least
 review. Past a cap, an observation that would raise a block finding (a
 canary leaving, a write to an agent's config or a shell's startup file)
 is still recorded, up to 200 of a kind and 2 MiB in all, so a flood can't
-turn a block into a review. Every answer's observations together stay
-under 11 MiB. When the run ends, every process of the unprivileged
+turn a block into a review. One over 32 KiB encoded, such as a request
+with a padded path, is kept compact rather than dropped:
+`{"host","path","canaries","cut":true}`, its host and path cut to 1 KiB
+and the canaries found in the whole of it. A run makes at most 32
+`truncated` observations, each naming the kind and why in the harness's
+words, at most 64 and 256 bytes, never the server's text. So every
+answer's observations together stay under 10.1 MiB, every byte escaped. When the run ends, every process of the unprivileged
 account is killed, those that left the server's process group or session
 included.
 

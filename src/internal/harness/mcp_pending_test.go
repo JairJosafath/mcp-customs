@@ -60,3 +60,23 @@ func TestARequestWithAnOverlongIDIsObservedNotKeptToAnswer(t *testing.T) {
 		t.Errorf("%d requests pending, want none for an id no client keeps", got)
 	}
 }
+
+// A truncated observation says why in the harness's words: none of the
+// server's text, whose size the server chooses, is echoed in it.
+func TestAFullPendingCapEchoesNoServerText(t *testing.T) {
+	_, stdin := io.Pipe()
+	stdout, server := io.Pipe()
+	rec := newRecorder(func() time.Time { return testNow })
+	c := newConn(stdin, stdout, rec)
+	go func() {
+		for i := range maxPending * 2 {
+			_, _ = fmt.Fprintf(server, `{"jsonrpc":"2.0","id":%d,"method":"server-text","params":{}}`+"\n", i)
+		}
+		_ = server.Close()
+	}()
+	<-c.closed
+	got := truncations(rec.all())
+	if len(got) != 1 || strings.Contains(got[0].Why, "server-text") {
+		t.Errorf("truncated observations %+v, want one naming no method of the server", got)
+	}
+}

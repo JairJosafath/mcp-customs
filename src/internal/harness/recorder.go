@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,7 +40,37 @@ const (
 	// maxRequestParams bounds what a sampling or elicitation observation
 	// keeps of the request's params; past it, the start is kept as a string.
 	maxRequestParams = 64 << 10
+	// maxTellingObservation bounds one telling observation as kept: a
+	// larger one, such as a request with a padded path, is kept compact
+	// (compactLocked), never dropped. A file observation, whose path is at
+	// most PATH_MAX (4096 bytes), fits whole even with every byte escaped.
+	maxTellingObservation = 32 << 10
+	// maxTruncations bounds the truncated observations, one per kind; the
+	// kinds are the harness's and the egress's, about ten.
+	maxTruncations = 32
+	// maxWhy and maxKind bound the strings of a truncated observation, so
+	// it is at most maxTruncatedSize encoded, every byte escaped.
+	maxWhy           = 256
+	maxKind          = 64
+	maxTruncatedSize = 6*(maxWhy+2*maxKind) + 128
+	// maxObservationsAnswer bounds every observation a run keeps, encoded
+	// as an answer's "observations": what GET /observations answers at
+	// most, under the 16 MiB the Checker reads.
+	maxObservationsAnswer = maxObservedBytes + maxTellingBytes + maxTruncations*maxTruncatedSize + 64
 )
+
+// CompactDetail is what a telling observation over maxTellingObservation
+// keeps: its host or path, cut, and the canaries found in the whole of it.
+// Its block finding comes from those, as the whole observation's would.
+type CompactDetail struct {
+	Host     string           `json:"host,omitempty"`
+	Path     string           `json:"path,omitempty"`
+	Canaries []findings.Match `json:"canaries,omitempty"`
+	Cut      bool             `json:"cut"`
+}
+
+// maxCompactText bounds a compact observation's host and path.
+const maxCompactText = 1024
 
 // blockRules are the findings an observation past a cap is still kept for.
 var blockRules = []string{findings.RuleCanaryLeft, findings.RuleAgentConfig, findings.RuleShellStartup}
@@ -63,6 +94,7 @@ type recorder struct {
 	stopped     map[ObservationKind]bool
 	telling     map[ObservationKind]int
 	tellingSize int
+	truncations int
 }
 
 func newRecorder(now func() time.Time) *recorder {
@@ -102,11 +134,51 @@ func (r *recorder) add(kind ObservationKind, detail any) {
 		}
 		r.stopLocked(kind, why)
 	}
-	if r.telling[kind] < maxTellingPerKind && r.tellingSize+size <= maxTellingBytes && r.tellsLocked(kind, detail) {
-		r.telling[kind]++
-		r.tellingSize += size
-		r.list = append(r.list, o)
+	r.keepTellingLocked(o, size)
+}
+
+// keepTellingLocked keeps o past its kind's cap if it would raise a block
+// finding, compact when it is large. Only a reserve already holding
+// telling observations, each a block finding itself, refuses one.
+func (r *recorder) keepTellingLocked(o Observation, size int) {
+	if r.telling[o.Kind] >= maxTellingPerKind {
+		return
 	}
+	raw, err := json.Marshal(o.Detail)
+	if err != nil || !r.tellsLocked(o.Kind, raw) {
+		return
+	}
+	if size > maxTellingObservation {
+		o, size = r.compactLocked(o, raw)
+	}
+	if r.tellingSize+size > maxTellingBytes {
+		return
+	}
+	r.telling[o.Kind]++
+	r.tellingSize += size
+	r.list = append(r.list, o)
+}
+
+// compactLocked is o, whose detail is raw, as a CompactDetail.
+func (r *recorder) compactLocked(o Observation, raw json.RawMessage) (Observation, int) {
+	var d struct {
+		Host     string           `json:"host"`
+		Path     string           `json:"path"`
+		Canaries []findings.Match `json:"canaries"`
+	}
+	_ = json.Unmarshal(raw, &d)
+	var matches []findings.Match
+	for _, m := range append(d.Canaries, findings.MatchCanaries(raw, r.canaries)...) {
+		if !slices.Contains(matches, m) {
+			matches = append(matches, m)
+		}
+	}
+	o.Detail = CompactDetail{Host: cutHead(d.Host, maxCompactText), Path: cutTail(d.Path, maxCompactText), Canaries: matches, Cut: true}
+	encoded, err := json.Marshal(o)
+	if err != nil {
+		return o, maxTellingBytes + 1
+	}
+	return o, len(encoded) + 1
 }
 
 // overLocked says which cap an observation of kind, size bytes encoded,
@@ -125,11 +197,7 @@ func (r *recorder) overLocked(kind ObservationKind, size int) string {
 
 // tellsLocked says whether an observation would raise a block finding: a
 // canary leaving, or a write to an agent's config or a shell's startup.
-func (r *recorder) tellsLocked(kind ObservationKind, detail any) bool {
-	raw, err := json.Marshal(detail)
-	if err != nil {
-		return false
-	}
+func (r *recorder) tellsLocked(kind ObservationKind, raw json.RawMessage) bool {
 	found := findings.FromObservations([]findings.Observation{{Kind: string(kind), Detail: raw}}, r.canaries)
 	return slices.ContainsFunc(found, func(f findings.Finding) bool { return slices.Contains(blockRules, f.Rule) })
 }
@@ -143,9 +211,33 @@ func (r *recorder) truncate(kind ObservationKind, why string) {
 	}
 }
 
+// stopLocked stops recording kind, with one truncated observation, its
+// strings bounded, while fewer than maxTruncations were made.
 func (r *recorder) stopLocked(kind ObservationKind, why string) {
 	r.stopped[kind] = true
-	r.list = append(r.list, Observation{At: r.now().UTC(), Kind: ObservedTruncated, Detail: TruncatedDetail{Kind: kind, Why: why}})
+	if r.truncations >= maxTruncations {
+		return
+	}
+	r.truncations++
+	detail := TruncatedDetail{Kind: ObservationKind(cutHead(string(kind), maxKind)), Why: cutHead(why, maxWhy)}
+	r.list = append(r.list, Observation{At: r.now().UTC(), Kind: ObservedTruncated, Detail: detail})
+}
+
+// cutHead is s cut to at most n bytes, from its start; cutTail from its
+// end.
+// Neither splits a character.
+func cutHead(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.ToValidUTF8(s[:n], "")
+}
+
+func cutTail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.ToValidUTF8(s[len(s)-n:], "")
 }
 
 func kindCap(kind ObservationKind) int {

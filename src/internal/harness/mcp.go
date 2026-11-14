@@ -152,7 +152,7 @@ func (c *conn) request(msg rpcMessage) {
 	select {
 	case c.slots <- struct{}{}:
 	default:
-		c.obs.truncate(ObservedRequest, fmt.Sprintf("more than %d requests of the server unanswered at once; %s and any after went unanswered", maxPending, msg.Method))
+		c.obs.truncate(ObservedRequest, fmt.Sprintf("more than %d requests of the server unanswered at once; that one and any after went unanswered", maxPending))
 		return
 	}
 	if kind != "" {
