@@ -7,10 +7,12 @@ write-up. Read [docs/plan.md](docs/plan.md) before anything else,
 [AGENTS.md](AGENTS.md) before changing code: it is theos's aws-standard,
 the rules `make check` and the reviewer hold every change to.
 
-- **We use theos; we never change it from here.** Anything theos should do
-  differently is an issue on JairJosafath/theos (labels `source/dev`,
-  `status/proposed`, plus `kind/bug` or `kind/feature`), with what happened
-  and when it's done, and a row in the plan's friction log naming it.
+- **The focus is the solution.** MCP Customs stands on its own; the only
+  link to theos is that it was built with theos. The product's docs, the
+  write-up, the demo and the video talk about MCP Customs, with at most one
+  line saying it was built with theos. Until the submission, file no theos
+  issues and add no friction-log rows, and don't ask reviewers what in theos
+  got in their way. We still never change theos from here.
 - **The cloud route.** For the weekend, cloud sessions play theos's Crew
   roles and one orchestrator session plays its operator
   ([docs/kickoff.md](docs/kickoff.md)). theos's own parts are used as they
