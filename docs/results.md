@@ -4,7 +4,7 @@ The write-up of MCP Customs for the AWS Builder Center weekend challenge
 "No Pipeline, No Problem", and what building it said about theos. A
 skeleton until the stack is deployed: every place that needs deploy
 output says `TODO(deploy)`. Numbers come from the repository's files, as
-of commit `13e3bfa` (2026-11-14); update them from
+of commit `6aae615` (2026-11-14); update them from
 [runs.md](runs.md) and the [friction log](plan.md#friction-log) before
 submitting.
 
@@ -84,12 +84,17 @@ The video is `demo/record.ts` driving the deployed page, narrated with
    a person blocks it.
 2. **The mail server v1.0.0: pass,** with its install spec, no person
    needed.
-3. **The mail server v1.0.1: block.** The same tool list; the planted
-   address copied out.
+3. **The mail server v1.0.1: block.** The poller's re-check of the
+   approved v1.0.0 (#34): the same tool list, probed all the same; the
+   planted address copied out.
+
+Each scene has its own budget, its slots in the script, summing to 2:50.
+If real checks run longer, `--scene` records each scene to its own file
+to cut together.
 
 TODO(deploy): the video's link and length, and each check's duration.
 TODO(deploy): the refs the demo servers are published under, passed as
-`--weather`, `--mail` and `--mail-next`.
+`--weather` and `--mail`, and the re-check's page, `--recheck-url`.
 
 ## The numbers
 
@@ -97,15 +102,15 @@ From [runs.md](runs.md), one row per cloud session. Cost is each session's
 own report; where a session reported a running total, that total counts
 once.
 
-| What                                   | As of `13e3bfa`                               |
-| -------------------------------------- | --------------------------------------------- |
-| Cloud sessions                         | 43: 17 implementer, 26 reviewer               |
-| Sessions that reported a cost          | 25 of 43                                      |
-| Cost reported                          | $91.46: $63.74 implementers, $27.72 reviewers |
-| Issues worked                          | 16                                            |
-| Pull requests merged                   | 14                                            |
-| Rounds of the 14 merged issues         | 1 round: 7; 2 rounds: 3; 3 rounds: 4          |
-| Wall clock, first session to `13e3bfa` | 06:27 to 12:57 UTC, 2026-11-14                |
+| What                                   | As of `6aae615`                                                     |
+| -------------------------------------- | ------------------------------------------------------------------- |
+| Cloud sessions                         | 48: 19 implementer, 29 reviewer                                     |
+| Sessions that reported a cost          | 27 of 48                                                            |
+| Cost reported                          | $96.18: $63.74 implementers, $32.44 reviewers                       |
+| Issues worked                          | 18                                                                  |
+| Pull requests merged                   | 15, counted from `git log` (squash commits ending in the PR number) |
+| Rounds of the 15 merged issues         | 1 round: 7; 2 rounds: 3; 3 rounds: 5                                |
+| Wall clock, first session to `6aae615` | 06:27 to 13:57 UTC, 2026-11-14                                      |
 
 TODO(deploy): final rows, the cost of the sessions that didn't report
 one, and the deploy's own time and AWS cost.
@@ -115,21 +120,27 @@ one, and the deploy's own time and AWS cost.
 What the plan's "Done when" asks for.
 
 - **Alone:** every product change came from an implementer session working
-  an issue, and every merge followed a reviewer session's verdict.
+  an issue, and every pull request had a reviewer session's verdict before
+  it merged; not every verdict was an approval (below).
 - **With a prompt:** the orchestrator filed follow-up issues where a review
   found a hole the pull request didn't open (#23, #25, #33, #36), and
   posted replies for implementers.
-- **With a hand:** merges after three rounds, decided by the orchestrator
-  ([friction row 20](plan.md#friction-log)); TODO(deploy): the deploy
-  and any hand-written fix after Sunday noon.
+- **With a hand:** three pull requests, #21, #22 and #24, merged after
+  their third round with the reviewer still requesting changes; the
+  orchestrator decided it and filed the findings as follow-ups (#23, #25,
+  #36; [friction row 20](plan.md#friction-log)). #34 merged after round 3
+  without a fourth review; its last finding was a merge conflict, and the
+  orchestrator checked the resolution itself (row 21, follow-up #42).
+  TODO(deploy): the deploy and any hand-written fix after Sunday noon.
 
 ## theos's feedback
 
-The [friction log](plan.md#friction-log) has 20 rows; none blocked the
-build. In groups:
+The [friction log](plan.md#friction-log) has 21 rows. None has blocked
+the build yet; row 2, durable functions and MicroVMs in the CDK app, is
+still to be seen until the deploy. In groups:
 
 - **Deploy and hosting:** no AWS deploy (row 1), no template for durable
-  functions or MicroVMs (2), repositories in Gitea (3).
+  functions or MicroVMs (2, still to be seen), repositories in Gitea (3).
 - **The Standard's checks:** no limits on function size (4,
   [theos#262](https://github.com/JairJosafath/theos/issues/262)); a
   durable function trips three rules (11,
@@ -158,6 +169,13 @@ build. In groups:
   subagents per role (5,
   [theos#259](https://github.com/JairJosafath/theos/issues/259),
   [theos#260](https://github.com/JairJosafath/theos/issues/260)).
+- **The Standard's checks, again:** `make check` runs no build-tagged
+  tests and CI runs as non-root, so the egress tests skip there; main
+  moving between rounds cost #34 a round (21,
+  [theos#303](https://github.com/JairJosafath/theos/issues/303)).
+- **The cloud route, not theos:** implementer and reviewer sessions share
+  the owner's GitHub account, so a review is a comment, never an approval
+  or a request for changes (17).
 
 ## Unverified until deploy
 
