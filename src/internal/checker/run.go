@@ -124,8 +124,8 @@ type run struct {
 	sealing bool
 	// supersedeDone says a re-check's supersede ran.
 	supersedeDone bool
-	// unsettled says a re-check that did not pass is done but could not
-	// supersede the approved check: its failure is still retried.
+	// unsettled says a re-check that did not pass may be done but has not
+	// superseded the approved check: its failure is still retried.
 	unsettled bool
 	// ownAPI says allow refused the stack's own API host: the judge
 	// investigates nothing after it.
@@ -350,7 +350,7 @@ var terminal = []error{ErrUnknownAction, ErrBadArguments, ErrBadWait, ErrTooLarg
 // invocation: it ends the sandbox and sets the check's status to failed,
 // each in a step. A check already done keeps its verdict, its approval and
 // its page: nothing more is written, and no retry is asked, unless it is a
-// re-check that did not pass and left the approved check standing
+// re-check that did not pass and hasn't superseded the approved check
 // (unsettled). Any other check
 // gets a failed step saying which action failed, and a re-check is then
 // retried once, or its second failure recorded (afterFailedRecheck). It

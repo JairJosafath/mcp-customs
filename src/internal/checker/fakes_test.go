@@ -25,7 +25,8 @@ import (
 // that is set; doneErr makes marking a check done fail, and with it every
 // write that goes in its transaction; liftErr makes lifting a superseded
 // mark fail; supersedeErr makes marking an approved check superseded
-// fail; lostPassReply makes a pass commit but answer that error, as a
+// fail; lostDoneReply makes marking a check done commit but answer that
+// error; lostPassReply makes a pass commit but answer that error, as a
 // reply lost on the network does; loseFirstReply makes the first
 // create succeed but answer an error, as a reply lost on the network does.
 type memoryRecorder struct {
@@ -46,6 +47,7 @@ type memoryRecorder struct {
 	doneErr        error
 	liftErr        error
 	supersedeErr   error
+	lostDoneReply  error
 	lostPassReply  error
 	loseFirstReply bool
 	puts           int
@@ -134,6 +136,9 @@ func (m *memoryRecorder) UpdateCheck(_ context.Context, id string, u store.Check
 	}
 	if u.RecheckFailed != "" {
 		c.RecheckFailed = u.RecheckFailed
+	}
+	if u.Status == store.StatusDone {
+		return m.lostDoneReply
 	}
 	return nil
 }

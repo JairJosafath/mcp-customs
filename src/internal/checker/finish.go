@@ -35,6 +35,10 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 		report.SeenBefore = r.approved.CheckID
 	}
 	summary := fmt.Sprintf("Verdict: %s, decided by %s, with %d finding(s).", decided.Verdict, by, len(decided.Findings))
+	// Until it has superseded the approved check, a re-check that did not
+	// pass is unsettled: should it fail from here, even with its verdict
+	// written, it is still retried.
+	r.unsettled = r.in.Recheck != nil && decided.Verdict != verdict.Pass && !r.supersedeDone
 	if err := r.record(ctx, "verdict", outcome{Summary: summary, Findings: decided.Findings}); err != nil {
 		return "", err
 	}
@@ -46,7 +50,6 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 	}
 	if err := r.settleSuperseded(ctx, decided.Verdict); err != nil {
 		if decided.Verdict != verdict.Pass {
-			r.unsettled = true
 			return "", err
 		}
 		// The pass is done and approved: a lift or its event that fails
@@ -54,6 +57,7 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 		ctx.Logger().ErrorContext(ctx, LiftFailedLog, LiftFailedKey, 1,
 			"checkId", r.in.CheckID, "error", err.Error())
 	}
+	r.unsettled = false
 	return decided.Verdict, nil
 }
 
