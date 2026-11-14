@@ -117,7 +117,8 @@ type Toolchain struct{}
 
 // Install installs p into sb.Workdir.
 func (Toolchain) Install(ctx context.Context, p Package, sb Sandbox) (Installed, error) {
-	var log bytes.Buffer
+	// Bounded as it is written: an install can print without end.
+	var log installLog
 	var out Installed
 	var err error
 	switch p.Ecosystem {

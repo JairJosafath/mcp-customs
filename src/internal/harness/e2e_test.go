@@ -24,6 +24,10 @@ func TestMain(m *testing.M) {
 		serveTestMCP(os.Stdin, os.Stdout)
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == worstServerArg {
+		serveWorstMCP(os.Stdin, os.Stdout, os.Stderr)
+		return
+	}
 	m.Run()
 }
 

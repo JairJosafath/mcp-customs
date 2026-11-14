@@ -3,7 +3,9 @@ package harness
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -53,5 +55,58 @@ func TestAsAccountKeepsTheAccountsIdentityOnItsThread(t *testing.T) {
 	}
 	if bad > 0 {
 		t.Errorf("%d of root's operations ran as the account", bad)
+	}
+}
+
+// effectiveCaps is the effective capability set of the thread that runs it,
+// as /proc/thread-self/status shows it.
+func effectiveCaps(t *testing.T) string {
+	t.Helper()
+	status, err := os.ReadFile("/proc/thread-self/status")
+	must(t, err)
+	for line := range strings.SplitSeq(string(status), "\n") {
+		if caps, ok := strings.CutPrefix(line, "CapEff:"); ok {
+			return strings.TrimSpace(caps)
+		}
+	}
+	t.Fatal("no CapEff in /proc/thread-self/status")
+	return ""
+}
+
+// A thread asAccount emptied of its capabilities is never handed back:
+// the goroutines that run after, on whatever threads Go gives them, keep
+// root's capabilities.
+func TestAsAccountHandsBackNoThreadWithoutCapabilities(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root, whose capabilities asAccount drops")
+	}
+	want := effectiveCaps(t)
+	if strings.Trim(want, "0") == "" {
+		t.Skip("the test runs with no capabilities to drop")
+	}
+	const workers, rounds = 8, 200
+	var wg sync.WaitGroup
+	bad := make(chan string, workers*rounds)
+	for range workers {
+		wg.Go(func() {
+			for range rounds {
+				stranger.asAccount(func() {})
+			}
+		})
+		wg.Go(func() {
+			for range rounds {
+				runtime.LockOSThread()
+				if got := effectiveCaps(t); got != want {
+					bad <- got
+				}
+				runtime.UnlockOSThread()
+				runtime.Gosched()
+			}
+		})
+	}
+	wg.Wait()
+	close(bad)
+	if n := len(bad); n > 0 {
+		t.Errorf("%d goroutines ran on a thread with capabilities %s, want %s", n, <-bad, want)
 	}
 }

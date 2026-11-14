@@ -106,7 +106,7 @@ func probe(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 			if _, err := callHarness(sc, r.deps.Sandbox, r.vm, http.MethodPost, "/call", body, &answer); err != nil {
 				return probed{}, err
 			}
-			p := probed{Tool: t.Tool.Name, Arguments: args, Excerpt: excerpt(jsonStrings(answer.Result)+jsonStrings(answer.Error), maxExcerpt)}
+			p := probed{Tool: t.Tool.Name, Arguments: args, Excerpt: excerpt(findings.JSONStrings(answer.Result)+findings.JSONStrings(answer.Error), maxExcerpt)}
 			p.Findings = scanJSON(fmt.Sprintf("the result of tool %d", t.Index), answer.Result)
 			if len(answer.Error) > 0 {
 				p.Failed = string(answer.Error)

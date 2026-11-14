@@ -35,6 +35,16 @@ func TestFromObservationsFindsWhatCodeCanTell(t *testing.T) {
 			[]Observation{observed(ObservedDNS, map[string]any{"host": hex.EncodeToString([]byte(key)) + ".evil.example"})},
 			[]Finding{{Code, RuleCanaryLeft, "github-token, hex, to " + hex.EncodeToString([]byte(key)) + ".evil.example (dns)"}},
 		},
+		"an answer the harness cut, with what its scans found in the whole": {
+			[]Observation{observed(ObservedOversized, map[string]any{
+				"what": "the result of tools/call", "bytes": 70000, "sha256": "ab12",
+				"findings": []Finding{{Model, RuleInstruction, "ignore previous instructions"}},
+			})},
+			[]Finding{
+				{Code, RuleOversized, "the harness cut the result of tools/call: 70000 bytes, SHA-256 ab12"},
+				{Code, RuleInstruction, "ignore previous instructions"},
+			},
+		},
 		"a clean request": {
 			[]Observation{observed(ObservedHTTP, map[string]any{"method": "GET", "host": "api.github.com", "path": "/user"})},
 			nil,

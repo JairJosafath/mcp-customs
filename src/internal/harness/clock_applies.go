@@ -132,10 +132,10 @@ func (a Account) elfApplies(exe, name string) (applies, why string) {
 var errUnreadable = errors.New("not a regular file the account can read")
 
 // openReadable opens, as the root harness, only what the account could
-// read itself: a regular file it owns or anyone may read, along a path it
-// may search and through no /proc magic link. The look and the open run
-// as the account (asAccount), each through openNoMagic. It
-// looks before it opens, so no device or FIFO is ever opened, and the file
+// read itself: a regular file its permission bits let it read (mayRead),
+// along a path it may search, through no /proc magic link and nowhere on
+// a procfs. The look and the open run as the account (asAccount), each
+// through openNoMagic. It looks before it opens, so no device or FIFO is ever opened, and the file
 // opened must be the one it looked at.
 func (a Account) openReadable(name string) (*os.File, error) {
 	var f *os.File
@@ -147,13 +147,17 @@ func (a Account) openReadable(name string) (*os.File, error) {
 }
 
 func (a Account) openLooked(name string) *os.File {
+	if underProc(name) {
+		return nil
+	}
 	look, err := openNoMagic(name, oPath) // an O_PATH open only looks: it opens no device
 	if err != nil {
 		return nil
 	}
 	seen, err := look.Stat()
+	onProc := inProc(look)
 	_ = look.Close()
-	if err != nil || !a.mayRead(seen) {
+	if err != nil || onProc || !a.mayRead(seen) {
 		return nil
 	}
 	f, err := openNoMagic(name, os.O_RDONLY|syscall.O_NONBLOCK)
@@ -167,7 +171,43 @@ func (a Account) openLooked(name string) *os.File {
 	return f
 }
 
+// mayRead says whether the account may read info as the kernel decides
+// it: by the owner's bits if it owns the file, else the group's if the
+// file is of the account's own group, else the others'. The account's
+// thread keeps no supplementary groups (becomeFS), so its own is the only
+// group that counts.
 func (a Account) mayRead(info os.FileInfo) bool {
 	st, ok := info.Sys().(*syscall.Stat_t)
-	return ok && info.Mode().IsRegular() && (st.Uid == a.UID || info.Mode().Perm()&0o004 != 0)
+	if !ok || !info.Mode().IsRegular() {
+		return false
+	}
+	perm := info.Mode().Perm()
+	switch {
+	case st.Uid == a.UID:
+		return perm&0o400 != 0
+	case st.Gid == a.GID:
+		return perm&0o040 != 0
+	}
+	return perm&0o004 != 0
+}
+
+// procSuperMagic is procfs's f_type in statfs(2).
+const procSuperMagic = 0x9fa0
+
+// underProc says whether name is in /proc by its path. A server command
+// never lives there, and the harness's own files there open to the
+// account's thread, which shares the harness's thread group.
+func underProc(name string) bool {
+	p := filepath.Clean(name)
+	return p == "/proc" || strings.HasPrefix(p, "/proc/")
+}
+
+// inProc says whether f, however it was reached, is on a procfs, such as
+// through a link to /proc, or one mounted elsewhere. One it can't tell is.
+func inProc(f *os.File) bool {
+	var fs syscall.Statfs_t
+	if err := syscall.Fstatfs(int(f.Fd()), &fs); err != nil {
+		return true
+	}
+	return fs.Type == procSuperMagic
 }
