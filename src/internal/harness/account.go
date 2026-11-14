@@ -116,3 +116,16 @@ func killGroup(cmd *exec.Cmd) error {
 	}
 	return nil
 }
+
+// killAll kills every process of the account: a shell switched to it sends
+// SIGKILL to -1, which reaches every process the account may signal, those
+// that left their process group or session included, and not the shell
+// itself. Without Switch the account is the harness's own user, whose
+// processes are the harness's: then nothing is killed.
+func (a Account) killAll(ctx context.Context) error {
+	if !a.Switch {
+		return nil
+	}
+	// kill fails only when nothing was left to kill.
+	return a.run(ctx, "/", a.env("/usr/bin:/bin"), []string{"/bin/sh", "-c", "kill -KILL -1 2>/dev/null; exit 0"}, io.Discard)
+}
