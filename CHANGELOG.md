@@ -60,10 +60,12 @@ Every user-visible change, newest first. The format follows
   shows a failure; one that ended short of a pass and couldn't mark its
   approved check superseded still does. A pass whose superseded mark
   can't be lifted raises the `LiftFailedAfterPass-Warning` alarm. A
-  combining mark on a letter no longer splits an injection pattern. Each
-  try of a judge call has a 60-second deadline, so four slow tries and
-  their backoff end inside the Checker's five minutes, and a failed wait
-  keeps the API error before it. The IPv4-translated (SIIT) range and
+  combining mark on a letter no longer splits an injection pattern. A
+  judge call, with its tries and waits, ends within 270 seconds, inside
+  the Checker's five minutes: each try gets at most 150 seconds, a try
+  that runs out is tried again, no try starts with under 30 seconds left,
+  none once the step's own deadline has passed, and a failed wait keeps
+  the API error before it. The IPv4-translated (SIIT) range and
   IANA's other IPv6 ranges that aren't globally reachable count as not
   public. pip resolves and installs from PyPI's index only, so a
   dependency with a direct reference fails the resolve before it is
