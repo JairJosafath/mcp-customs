@@ -28,10 +28,14 @@ const (
 	RuleZeroWidth         = "hidden-zero-width"
 	RuleBidiControl       = "hidden-bidi-control"
 	RuleVariationSelector = "hidden-variation-selector"
-	RuleInstruction       = "injection-instruction"
-	RuleSensitivePath     = "injection-sensitive-path"
-	RuleSecretResend      = "injection-secret-resend"
-	RuleCanaryLeft        = "canary-left"
+	// Control characters other than the ANSI escapes, \n, \t and the \r of
+	// a \r\n, such as a \r that moves back over the line, a backspace or
+	// NUL.
+	RuleControlCharacter = "hidden-control-character"
+	RuleInstruction      = "injection-instruction"
+	RuleSensitivePath    = "injection-sensitive-path"
+	RuleSecretResend     = "injection-secret-resend"
+	RuleCanaryLeft       = "canary-left"
 	// Traffic the egress proxy couldn't read: TLS a client wouldn't let it
 	// intercept, to a host not allowed, and a request or direct connection
 	// it couldn't search whole.

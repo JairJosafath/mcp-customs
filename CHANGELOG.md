@@ -37,6 +37,20 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- Hidden text is read more closely (#33). Characters Unicode assigned
+  after Go's tables (15.0), such as 🫩 U+1FAE9 and the newest CJK, are no
+  longer `hidden-unassigned`. U+FE0E and U+FE0F are
+  `hidden-variation-selector` unless they follow a character Unicode gives
+  that variation sequence, so a run of them, or one after a letter, is a
+  finding. Control characters other than `\n`, `\t` and the `\r` of a
+  `\r\n` (a lone CR, backspace, NUL, NEL and the rest) are the new
+  `hidden-control-character`. The injection patterns read every Unicode
+  space, line break and blank lookalike (U+2800, the Hangul fillers) as a
+  space, so `ignore` U+2800 `previous` U+2800 `instructions` is found.
+- A pass's approval is written in one transaction with its check marked
+  done (#33): when that write fails, the check fails with no `HASH#` or
+  `APPROVED` item left behind, so a later check of the same dependency set
+  is not passed as seen before.
 - The stack's own API is kept out by fixed rules (#56). The Checker's
   refusal compares against API Gateway's published ranges for the region,
   so it no longer changes from run to run, and refuses the API's FIPS and
