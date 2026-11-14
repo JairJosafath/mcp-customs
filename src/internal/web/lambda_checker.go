@@ -79,11 +79,24 @@ func (c *LambdaChecker) Answer(ctx context.Context, callbackID, decision string)
 		CallbackId: aws.String(callbackID),
 		Result:     result,
 	})
-	if closed := new(types.CallbackTimeoutException); errors.As(err, &closed) {
+	if callbackClosed(err) {
 		return ErrCallbackClosed
 	}
 	if err != nil {
 		return fmt.Errorf("send the decision to the Checker's callback: %w", err)
 	}
 	return nil
+}
+
+// callbackClosed reports whether err is Lambda saying the callback can no
+// longer be answered: it timed out or was already answered
+// (CallbackTimeoutException), or its execution is gone
+// (ResourceNotFoundException) or no longer takes it
+// (InvalidParameterValueException). The result sent is always the same
+// small JSON, so an invalid parameter can only be the callback ID.
+func callbackClosed(err error) bool {
+	timedOut := new(types.CallbackTimeoutException)
+	notFound := new(types.ResourceNotFoundException)
+	invalid := new(types.InvalidParameterValueException)
+	return errors.As(err, &timedOut) || errors.As(err, &notFound) || errors.As(err, &invalid)
 }

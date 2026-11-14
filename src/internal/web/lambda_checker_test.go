@@ -74,6 +74,16 @@ func TestTheCheckersErrorsAreOnesAPersonCanActOn(t *testing.T) {
 			func(c *LambdaChecker) error { return c.Answer(t.Context(), "cb-1", "approve") },
 			ErrCallbackClosed,
 		},
+		"a callback already answered, its execution gone": {
+			&types.ResourceNotFoundException{},
+			func(c *LambdaChecker) error { return c.Answer(t.Context(), "cb-1", "approve") },
+			ErrCallbackClosed,
+		},
+		"a callback ID no longer taken": {
+			&types.InvalidParameterValueException{},
+			func(c *LambdaChecker) error { return c.Answer(t.Context(), "cb-1", "approve") },
+			ErrCallbackClosed,
+		},
 		"an outage starting": {
 			outage, func(c *LambdaChecker) error { return c.Start(t.Context(), "c1", store.Submission{}) }, outage,
 		},

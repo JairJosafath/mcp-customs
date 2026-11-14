@@ -186,9 +186,27 @@ func TestADecisionIsRefusedUnlessTheReviewerMaySendIt(t *testing.T) {
 		"neither approve nor blk": {(*fixture).waiting, decision("pass", testReviewerKey), nil, http.StatusBadRequest},
 		"a running check":         {(*fixture).running, decision("approve", testReviewerKey), nil, http.StatusConflict},
 		"a done check":            {func(f *fixture) { f.finished("review") }, decision("approve", testReviewerKey), nil, http.StatusConflict},
-		"no such check":           {func(*fixture) {}, decision("approve", testReviewerKey), nil, http.StatusNotFound},
-		"a callback closed":       {(*fixture).waiting, decision("block", testReviewerKey), ErrCallbackClosed, http.StatusConflict},
-		"Lambda failing":          {(*fixture).waiting, decision("block", testReviewerKey), errors.New("throttled"), http.StatusInternalServerError},
+		"a decided check whose callback ID is kept": {
+			func(f *fixture) {
+				f.finished("pass")
+				c := f.checks.checks["c1"]
+				c.CallbackID = "cb-1"
+				f.checks.checks["c1"] = c
+			},
+			decision("approve", testReviewerKey), nil, http.StatusConflict,
+		},
+		"a failed check whose callback ID is kept": {
+			func(f *fixture) {
+				f.waiting()
+				c := f.checks.checks["c1"]
+				c.Status = store.StatusFailed
+				f.checks.checks["c1"] = c
+			},
+			decision("block", testReviewerKey), nil, http.StatusConflict,
+		},
+		"no such check":     {func(*fixture) {}, decision("approve", testReviewerKey), nil, http.StatusNotFound},
+		"a callback closed": {(*fixture).waiting, decision("block", testReviewerKey), ErrCallbackClosed, http.StatusConflict},
+		"Lambda failing":    {(*fixture).waiting, decision("block", testReviewerKey), errors.New("throttled"), http.StatusInternalServerError},
 	} {
 		f := newFixture(t)
 		tc.setup(f)
