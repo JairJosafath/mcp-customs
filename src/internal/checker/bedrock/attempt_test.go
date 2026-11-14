@@ -3,7 +3,6 @@ package bedrock
 import (
 	"context"
 	"errors"
-	"math"
 	"testing"
 	"time"
 
@@ -17,78 +16,115 @@ import (
 // infra/api_stack.ts), which one step, and so one call, must fit in.
 const checkerTimeout = 5 * time.Minute
 
-// hangingBedrock never answers: each Converse keeps how long its context
-// had left when it started (forever without a deadline), then fails with
-// slow, as a model that timed out at the end of it does, or, without slow,
-// waits until its context ends.
-type hangingBedrock struct {
-	slow error
-	left []time.Duration
+// fakeClock is a clock no real time passes on: a model moves it.
+type fakeClock struct {
+	now    time.Time
+	grants []time.Duration
 }
+
+func (c *fakeClock) Now() time.Time { return c.now }
+
+func (c *fakeClock) WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	c.grants = append(c.grants, d)
+	t := &tryContext{Context: ctx, done: make(chan struct{})}
+	return t, func() {}
+}
+
+// tryContext is a try's context on a fakeClock, ended by the model that
+// used all of it (expire).
+type tryContext struct {
+	context.Context
+	done    chan struct{}
+	expired bool
+}
+
+func (t *tryContext) Done() <-chan struct{} { return t.done }
+
+func (t *tryContext) Err() error {
+	if t.expired {
+		return context.DeadlineExceeded
+	}
+	return t.Context.Err()
+}
+
+func (t *tryContext) expire() {
+	t.expired = true
+	close(t.done)
+}
+
+// slowModel takes takes of each try, or all of it if that is less, on
+// clock: a try it outlasts ends at its deadline, and one it doesn't
+// answers a model timeout.
+type slowModel struct {
+	clock *fakeClock
+	takes time.Duration
+}
+
+func (m *slowModel) Converse(ctx context.Context, _ *bedrockruntime.ConverseInput, _ ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseOutput, error) {
+	granted := m.clock.grants[len(m.clock.grants)-1]
+	if m.takes >= granted {
+		try, ok := ctx.(*tryContext)
+		if !ok {
+			return nil, errors.New("called without the clock's deadline")
+		}
+		m.clock.now = m.clock.now.Add(granted)
+		try.expire()
+		return nil, ctx.Err()
+	}
+	m.clock.now = m.clock.now.Add(m.takes)
+	return nil, &smithy.GenericAPIError{Code: "ModelTimeoutException", Message: "timed out"}
+}
+
+func TestEveryTryAndWaitOfACallFitInItsBudget(t *testing.T) {
+	for name, takes := range map[string]time.Duration{
+		"a model timeout after a minute":    time.Minute,
+		"a model timeout after two minutes": 2 * time.Minute,
+		"a model that never answers":        time.Hour,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := &fakeClock{now: time.Unix(0, 0)}
+			j := New(&slowModel{clock: c, takes: takes}, model)
+			j.clock = c
+			j.wait = func(_ context.Context, d time.Duration) error {
+				c.now = c.now.Add(d)
+				return nil
+			}
+			if _, err := j.Next(t.Context(), checker.Investigation{}); err == nil {
+				t.Fatal("no error, want the call given up on")
+			}
+			if took := c.now.Sub(time.Unix(0, 0)); took > callBudget || callBudget >= checkerTimeout {
+				t.Errorf("the call took %v (tries %v), want at most %v, under the Checker's %v", took, c.grants, callBudget, checkerTimeout)
+			}
+			if len(c.grants) < 2 || len(c.grants) > attempts {
+				t.Errorf("tries %v, want 2 to %d", c.grants, attempts)
+			}
+			for _, g := range c.grants {
+				if g > maxAttempt || g < minAttempt {
+					t.Errorf("a try was given %v (tries %v), want %v to %v", g, c.grants, minAttempt, maxAttempt)
+				}
+			}
+		})
+	}
+}
+
+// hangingBedrock never answers: each Converse waits until its context
+// ends.
+type hangingBedrock struct{ tries int }
 
 func (h *hangingBedrock) Converse(ctx context.Context, _ *bedrockruntime.ConverseInput, _ ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseOutput, error) {
-	left := time.Duration(math.MaxInt64)
-	if deadline, ok := ctx.Deadline(); ok {
-		left = time.Until(deadline)
-	}
-	h.left = append(h.left, left)
-	if h.slow != nil {
-		return nil, h.slow
-	}
+	h.tries++
 	<-ctx.Done()
 	return nil, ctx.Err()
-}
-
-func TestEachTryHasItsOwnDeadline(t *testing.T) {
-	h := &hangingBedrock{}
-	j := New(h, model)
-	j.wait = func(context.Context, time.Duration) error { return nil }
-	// A deadline already past, so the test waits for none: what each try
-	// was given is checked against attemptTimeout below.
-	j.perAttempt = time.Nanosecond
-	// The step's own deadline, far past every try's, ends the test should
-	// a try have none.
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-	if _, err := j.Next(ctx, checker.Investigation{}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("error %v, want each try's deadline", err)
-	}
-	if len(h.left) != attempts {
-		t.Errorf("%d tries, want %d: a try past its deadline is tried again", len(h.left), attempts)
-	}
-	for _, left := range h.left {
-		if left > j.perAttempt {
-			t.Errorf("a try had %v left, want at most %v", left, j.perAttempt)
-		}
-	}
-}
-
-func TestSlowModelTimeoutsEndWithinOneStep(t *testing.T) {
-	h := &hangingBedrock{slow: &smithy.GenericAPIError{Code: "ModelTimeoutException", Message: "timed out"}}
-	j := New(h, model)
-	var bound time.Duration
-	j.wait = func(_ context.Context, d time.Duration) error {
-		bound += d
-		return nil
-	}
-	if _, err := j.Next(t.Context(), checker.Investigation{}); err == nil || len(h.left) != attempts {
-		t.Fatalf("error %v after %d tries, want an error after %d", err, len(h.left), attempts)
-	}
-	for _, left := range h.left {
-		bound += min(left, checkerTimeout)
-	}
-	if bound >= checkerTimeout {
-		t.Errorf("%d tries, each as slow as its deadline allows (%v), and their waits can take %v, want under the Checker's %v", attempts, h.left, bound, checkerTimeout)
-	}
 }
 
 func TestACallWhoseOwnContextEndsIsNotTriedAgain(t *testing.T) {
 	h := &hangingBedrock{}
 	j := New(h, model)
-	ctx, cancel := context.WithTimeout(t.Context(), time.Nanosecond)
+	j.wait = func(context.Context, time.Duration) error { return nil }
+	ctx, cancel := context.WithDeadline(t.Context(), time.Unix(0, 0))
 	defer cancel()
-	if _, err := j.Next(ctx, checker.Investigation{}); err == nil || len(h.left) != 1 {
-		t.Errorf("error %v after %d tries, want an error after 1", err, len(h.left))
+	if _, err := j.Next(ctx, checker.Investigation{}); err == nil || h.tries != 1 {
+		t.Errorf("error %v after %d tries, want an error after 1", err, h.tries)
 	}
 }
 
