@@ -173,28 +173,30 @@ the deploy writes the prefix: the `DemoProxy` deployment copies the files
 synth built, and prunes the ones it no longer publishes. A missing file
 answers 404, which sends the go command on to the public proxy.
 
-What a deploy publishes is its `demoVersion` context value: that version
-of the demos and every earlier one (`mail` v1.0.0 and v1.0.1, `weather`
-v1.0.0, each a module whose default build is that version). Without the
-value it is `v1.0.0`. `make demo-build VERSION=v1.0.1` writes the same
-files into `cdk.out/demo-proxy` to look at, without AWS.
+What a deploy publishes is what `infra/demo-versions.json`, a committed
+file, names for each demo, with every earlier version: `mail` v1.0.0 and
+v1.0.1, `weather` v1.0.0, each a module whose default build is that
+version. Synth reads the file; no context value or variable changes it.
+`make demo-build` writes the same files into `cdk.out/demo-proxy` to look
+at, without AWS.
 
 The live rug pull:
 
-1. Deploy as usual (`cdk deploy -c tier=<tier>`): it publishes v1.0.0.
+1. Deploy as usual (`cdk deploy -c tier=<tier>`). The committed file names
+   `"mail": "v1.0.0"`, so the proxy serves v1.0.0.
 2. Check it is served:
    `curl '<EntryPoint>/goproxy/github.com/!jair!josafath/mcp-customs/demo/mail/@v/list'`
    answers `v1.0.0`.
 3. Submit `github.com/JairJosafath/mcp-customs/demo/mail@v1.0.0` as a Go
    module, and let it pass (or Approve it).
-4. Publish the rug pull: deploy again with `-c demoVersion=v1.0.1`. Within
-   five minutes (`RECHECK_INTERVAL`) the poller sees v1.0.1 and starts its
-   re-check, linked to the v1.0.0 check, which ends in block.
+4. Publish the rug pull: a one-line commit to `infra/demo-versions.json`,
+   `"mail": "v1.0.1"`, merged and deployed. Within five minutes
+   (`RECHECK_INTERVAL`) the poller sees v1.0.1 and starts its re-check,
+   linked to the v1.0.0 check, which ends in block.
 
-A deploy without the value takes v1.0.1 back off the proxy, so every
-deploy after the rug pull names it until the demo is over. A re-check of
-v1.0.1 starts once per stack, since its ID comes from the version, so to
-show the rug pull again, use a fresh development stack.
+Setting the file back to `v1.0.0` and deploying takes v1.0.1 off the
+proxy. A re-check of v1.0.1 starts once per stack, since its ID comes from
+the version, so to show the rug pull again, use a fresh development stack.
 
 ## What the account provides
 

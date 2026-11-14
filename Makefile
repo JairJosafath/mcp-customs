@@ -93,9 +93,9 @@ clean: ## Remove what synth and dist wrote.
 	rm -rf cdk.out dist
 
 
-# The demo Go module proxy's files, to look at. The deploy builds and
-# publishes its own, from the demoVersion context value (docs/runbook.md,
-# "The demo proxy"); nothing here calls AWS. It runs the CDK app's
-# demo-build script, and does nothing in an app without one.
-demo-build: ## Write the demo Go module proxy's files for VERSION (v1.0.1 by default) into cdk.out/demo-proxy.
-	VERSION=$(VERSION) npm run --if-present demo-build
+# The demo Go module proxy's files, to look at: what the next deploy
+# publishes, from infra/demo-versions.json (docs/runbook.md, "The demo
+# proxy"). Nothing here calls AWS. It runs the CDK app's demo-build
+# script, and does nothing in an app without one.
+demo-build: ## Write the demo Go module proxy's files the next deploy publishes into cdk.out/demo-proxy.
+	npm run --if-present demo-build
