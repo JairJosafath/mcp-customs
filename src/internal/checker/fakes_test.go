@@ -56,6 +56,12 @@ type memoryRecorder struct {
 	newestPolled   string
 	liftedBy       map[string]string
 	liftErrOnce    error
+	// doneFails, when set, makes doneErr fail only that many done writes;
+	// failErr makes FailCheck fail; failStepUntilDone makes failStep fail
+	// only while its check is not done.
+	doneFails         int
+	failErr           error
+	failStepUntilDone bool
 }
 
 // memoryEvents keeps every event the Checker sends, superseded and lifted.
@@ -119,8 +125,14 @@ func (m *memoryRecorder) UpdateCheck(_ context.Context, id string, u store.Check
 	if i < 0 {
 		return store.ErrNoCheck
 	}
-	if u.Status == store.StatusDone && m.doneErr != nil {
-		return m.doneErr
+	if err := m.doneErr; u.Status == store.StatusDone && err != nil {
+		if m.doneFails > 0 {
+			m.doneFails--
+			if m.doneFails == 0 {
+				m.doneErr = nil
+			}
+		}
+		return err
 	}
 	m.updates = append(m.updates, u)
 	c := &m.checks[i]
@@ -208,7 +220,7 @@ func (m *memoryRecorder) AppendStep(_ context.Context, checkID string, step stor
 	if m.stepErr != nil {
 		return m.stepErr
 	}
-	if step.Name == m.failStep && (m.failAfter == "" || slices.ContainsFunc(m.steps, func(s store.Step) bool { return s.Name == m.failAfter })) {
+	if step.Name == m.failStep && !(m.failStepUntilDone && m.isDone(checkID)) && (m.failAfter == "" || slices.ContainsFunc(m.steps, func(s store.Step) bool { return s.Name == m.failAfter })) {
 		return errors.New("the table is unavailable")
 	}
 	// As DynamoDB does, refuse an item larger than it keeps.
@@ -227,10 +239,19 @@ func (m *memoryRecorder) GetVerdict(_ context.Context, hash string) (store.Verdi
 	return v, ok, nil
 }
 
+// isDone says check id is done; the caller holds mu.
+func (m *memoryRecorder) isDone(id string) bool {
+	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == id })
+	return i >= 0 && m.checks[i].Status == store.StatusDone
+}
+
 // FailCheck marks check id failed unless it is done, as the store does.
 func (m *memoryRecorder) FailCheck(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failErr != nil {
+		return m.failErr
+	}
 	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == id })
 	if i < 0 {
 		return store.ErrNoCheck

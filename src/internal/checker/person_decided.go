@@ -15,7 +15,9 @@ import (
 const PersonsVerdictLostLog = "A person's verdict on a re-check could not be written."
 
 // errNoReport says a person decided, but the check failed before its
-// report was made, so there is no verdict to apply again.
+// report was made, so there is no verdict to apply again: the check fails,
+// and a re-check is recorded as left undecided (personsVerdictLost). It is
+// terminal, never read as the SDK suspending (isSuspend).
 var errNoReport = errors.New("the check failed before its verdict was made")
 
 // reapplyVerdict writes a person's verdict again, in a step with the SDK's
@@ -32,6 +34,19 @@ func (r *run) reapplyVerdict(ctx durable.Context) error {
 		return true, r.writeVerdict(sc, report)
 	}); err != nil {
 		return fmt.Errorf("write a person's verdict on check %s again: %w", r.in.CheckID, err)
+	}
+	return nil
+}
+
+// rerecordVerdict, once a person's verdict is written again, writes its
+// page step if finish could not, so the page says who decided. It is best
+// effort: only the SDK suspending is answered, for the caller to pass on.
+func (r *run) rerecordVerdict(ctx durable.Context) error {
+	if r.verdictRecorded || r.verdictStep == nil {
+		return nil
+	}
+	if err := r.record(ctx, "verdict", *r.verdictStep); isSuspend(err) {
+		return err
 	}
 	return nil
 }

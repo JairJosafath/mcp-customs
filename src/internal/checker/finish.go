@@ -43,9 +43,11 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 	// fails after the pass committed (fail).
 	r.passed = r.in.Recheck != nil && decided.Verdict == verdict.Pass
 	r.report = &report
-	if err := r.record(ctx, "verdict", outcome{Summary: summary, Findings: decided.Findings}); err != nil {
+	r.verdictStep = &outcome{Summary: summary, Findings: decided.Findings}
+	if err := r.record(ctx, "verdict", *r.verdictStep); err != nil {
 		return "", err
 	}
+	r.verdictRecorded = true
 	if _, err := durable.Step(ctx, "verdict", func(sc durable.StepContext) (bool, error) {
 		report.DecidedAt = time.Now().UTC()
 		return true, r.writeVerdict(sc, report)
