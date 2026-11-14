@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import { ApiStack, DURABLE_EXECUTION_ACTIONS } from './api_stack';
 import { copyVaultName } from './backups';
+import { PASS_CONNECTOR_ACTION, SANDBOX_ACTIONS } from './sandbox';
 import type { Operations, Tier } from './standard';
 
 const OPERATIONS: Operations = {
@@ -228,13 +229,14 @@ describe('ApiStack', () => {
     });
   });
 
-  it('lets the Checker only put and get items, checkpoint its own executions and write its logs', () => {
+  it('lets the Checker only put and get items, checkpoint its own executions, run its sandboxes and write its logs', () => {
     const role = idOf(development, 'AWS::IAM::Role', 'CheckerRole');
     expect(actionsOf(development, role)).toEqual(
       [
         '"dynamodb:GetItem"',
         '"dynamodb:PutItem"',
         ...DURABLE_EXECUTION_ACTIONS.map((action) => `"${action}"`),
+        ...[...SANDBOX_ACTIONS, PASS_CONNECTOR_ACTION].map((action) => `"${action}"`),
         '"logs:CreateLogStream"',
         '"logs:PutLogEvents"',
       ].sort(),
