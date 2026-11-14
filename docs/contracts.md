@@ -58,7 +58,11 @@ clean venv, as a requirements file with every file's SHA-256, which
 `pip install --no-deps --require-hashes` then installs; for Go, the modules
 of `go version -m`. A PyPI set must be all wheels: a dependency only an
 sdist ships is built with build dependencies no hash pins, so the install
-fails, at pip's resolve, before any of its build backend's code runs. After every install step the harness kills every process of the
+fails, at pip's resolve, before any of its build backend's code runs. Both
+pip calls name PyPI's index (`--index-url=https://pypi.org/simple/`), and
+pip refuses a package it got from PyPI that depends on a direct reference
+(`name @ url`), which `--only-binary` doesn't cover: such a dependency
+fails the resolve before it is fetched or built. After every install step the harness kills every process of the
 unprivileged account, and a harness not switched to that account fails
 the step: it can't kill them. A failed install answers 422 with its log,
 whose last line names what failed; the Checker ends the sandbox and the
