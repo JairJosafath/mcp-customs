@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -145,19 +146,17 @@ func (c *conn) deliver(msg rpcMessage) {
 // request takes a request the server sent: sampling and elicitation are
 // observed as they arrive, then every request is answered on a goroutine
 // of its own, at most maxPending at once. Past that, a request is not
-// answered, and its kind is no longer recorded.
+// answered, with one truncated observation of kind request.
 func (c *conn) request(msg rpcMessage) {
 	kind := requestKind(msg.Method)
 	select {
 	case c.slots <- struct{}{}:
 	default:
-		if kind != "" {
-			c.obs.truncate(kind, fmt.Sprintf("more than %d requests of the server unanswered at once", maxPending))
-		}
+		c.obs.truncate(ObservedRequest, fmt.Sprintf("more than %d requests of the server unanswered at once; %s and any after went unanswered", maxPending, msg.Method))
 		return
 	}
 	if kind != "" {
-		c.obs.add(kind, RequestDetail{Method: msg.Method, Params: msg.Params})
+		c.obs.add(kind, requestDetail(msg))
 	}
 	if len(msg.ID) > maxRequestID {
 		<-c.slots
@@ -168,6 +167,19 @@ func (c *conn) request(msg rpcMessage) {
 		defer func() { <-c.slots }()
 		c.answer(msg.Method, reply)
 	}()
+}
+
+// requestDetail is what an observation keeps of a request: its params
+// whole, or their start as a string when they are over maxRequestParams.
+func requestDetail(msg rpcMessage) RequestDetail {
+	if len(msg.Params) <= maxRequestParams {
+		return RequestDetail{Method: msg.Method, Params: msg.Params}
+	}
+	start, err := json.Marshal(strings.ToValidUTF8(string(msg.Params[:maxRequestParams]), "\uFFFD"))
+	if err != nil {
+		start = json.RawMessage(`""`)
+	}
+	return RequestDetail{Method: msg.Method, Params: start, Cut: true}
 }
 
 // requestKind is the observation kind of a request the server sends, or

@@ -59,18 +59,33 @@ func TestReachingACapStopsRecordingThatKindWithOneTruncatedObservation(t *testin
 	}
 }
 
-func TestDetailsOverTheByteCapStopRecordingThatKind(t *testing.T) {
-	r := newRecorder(func() time.Time { return testNow })
-	big := RequestDetail{Method: "sampling/createMessage", Params: json.RawMessage(`"` + strings.Repeat("x", maxMessage-64) + `"`)}
-	for range 3 {
-		r.add(ObservedSampling, big)
+func TestABytesCapStopsRecordingThatKind(t *testing.T) {
+	tests := []struct {
+		name  string
+		kinds []ObservationKind
+		why   string
+	}{
+		{"one kind over its own cap", []ObservationKind{ObservedHTTP}, "http observations over 2 MiB"},
+		{"every kind together over the run's cap", []ObservationKind{ObservedDNS, ObservedConnect, ObservedHTTP, ObservedFile, ObservedHook}, "the run's observations over 8 MiB"},
 	}
-	all := r.all()
-	if got := count(all, ObservedSampling); got != 2 {
-		t.Errorf("%d whole-message sampling requests kept, want 2 under %d MiB", got, maxBytesPerKind>>20)
-	}
-	if got := truncations(all); len(got) != 1 || !strings.Contains(got[0].Why, "MiB") {
-		t.Errorf("truncated observations %+v, want one naming the byte cap", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newRecorder(func() time.Time { return testNow })
+			big := map[string]string{"path": strings.Repeat("x", 64<<10)}
+			for range 200 {
+				for _, k := range tt.kinds {
+					r.add(k, big)
+				}
+			}
+			all := r.all()
+			got := truncations(all)
+			if len(got) == 0 || got[0].Why != tt.why {
+				t.Errorf("truncated observations %+v, want the first saying %q", got, tt.why)
+			}
+			if raw, _ := json.Marshal(all); len(raw) > maxObservedBytes+maxTellingBytes {
+				t.Errorf("the observations encode to %d bytes, over the budget", len(raw))
+			}
+		})
 	}
 }
 
@@ -78,7 +93,7 @@ func TestTruncateRecordsOncePerKindAndStopsIt(t *testing.T) {
 	r := newRecorder(func() time.Time { return testNow })
 	r.truncate(ObservedFile, "the file watch stopped")
 	r.truncate(ObservedFile, "the file watch stopped")
-	r.add(ObservedFile, FileDetail{Path: "/home/dev/.bashrc", Change: "created"})
+	r.add(ObservedFile, FileDetail{Path: "/home/dev/notes.txt", Change: "created"})
 	all := r.all()
 	if len(all) != 1 || len(truncations(all)) != 1 {
 		t.Errorf("observations %+v, want one truncated and nothing after", all)

@@ -12,6 +12,13 @@ import (
 // gets at most maxPending answered at once, each on a goroutine; past
 // that, its requests are dropped and their kind stops being recorded.
 func TestPendingRequestsOfTheServerAreCapped(t *testing.T) {
+	for _, method := range []string{"sampling/createMessage", "roots/list"} {
+		t.Run(method, func(t *testing.T) { testPendingCap(t, method) })
+	}
+}
+
+func testPendingCap(t *testing.T, method string) {
+	t.Helper()
 	_, stdin := io.Pipe() // nobody reads it: every answer waits
 	stdout, server := io.Pipe()
 	rec := newRecorder(func() time.Time { return testNow })
@@ -19,7 +26,7 @@ func TestPendingRequestsOfTheServerAreCapped(t *testing.T) {
 	const sent = maxPending * 3
 	go func() {
 		for i := range sent {
-			_, _ = fmt.Fprintf(server, `{"jsonrpc":"2.0","id":%d,"method":"sampling/createMessage","params":{}}`+"\n", i)
+			_, _ = fmt.Fprintf(server, `{"jsonrpc":"2.0","id":%d,"method":%q,"params":{}}`+"\n", i, method)
 		}
 		_ = server.Close()
 	}()
@@ -27,11 +34,11 @@ func TestPendingRequestsOfTheServerAreCapped(t *testing.T) {
 	all := rec.all()
 	// The writer takes one answer off a goroutine before it blocks, so one
 	// more slot may have come free.
-	if got := count(all, ObservedSampling); got < maxPending || got > maxPending+1 {
+	if got := count(all, ObservedSampling); method == "sampling/createMessage" && (got < maxPending || got > maxPending+1) {
 		t.Errorf("%d of %d requests observed, want the %d answered at once", got, sent, maxPending)
 	}
-	if got := truncations(all); len(got) != 1 || got[0].Kind != ObservedSampling {
-		t.Errorf("truncated observations %+v, want one of sampling", got)
+	if got := truncations(all); len(got) != 1 || got[0].Kind != ObservedRequest {
+		t.Errorf("truncated observations %+v, want one of request", got)
 	}
 }
 

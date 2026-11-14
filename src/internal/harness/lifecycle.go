@@ -157,6 +157,7 @@ func (h *Harness) runHook(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, answer{"message": "Could not plant the developer's home."})
 		return
 	}
+	h.obs.setCanaries(canaryList(payload.Canaries))
 	if h.cfg.Egress != nil {
 		h.cfg.Egress.SetCanaries(canaryList(payload.Canaries))
 	}

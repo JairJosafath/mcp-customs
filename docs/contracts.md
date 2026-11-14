@@ -172,16 +172,25 @@ seconds is recorded as read so far, `unscanned`), `file` (path written), `sampli
 caller, the status it got). Bodies are not returned, only what was found
 in them.
 
-What a run records is capped, so a server can't exhaust the harness:
-10,000 observations of a kind, 100 of `sampling` and of `elicitation`,
-and 32 MiB of a kind's details; 64 of the server's requests answered at
-once (more are dropped unanswered), and 200,000 files in a look of the
-file watch. Each is far above what a real server does. Reaching one
-stops recording that kind (`file` for the watch), with one `truncated`
-observation: `{"kind","why"}`, the kind no longer recorded and why. Each
-is an `observations-truncated` code finding, at least review. When the
-run ends, every process of the unprivileged account is killed, those
-that left the server's process group or session included.
+What a run records is capped, so a server can't exhaust the harness or
+make an answer larger than the 16 MiB the Checker reads: 5,000
+observations of a kind, 100 of `sampling` and of `elicitation`, 2 MiB of
+a kind and 8 MiB of all kinds together, each observation counted as
+encoded; 64 of the server's requests answered at once (more are dropped
+unanswered), and 200,000 files in a look of the file watch. Each is far
+above what a real server does. A `sampling` or `elicitation` observation
+keeps the request's params whole up to 64 KiB, and past that their start
+as a string, with `cut: true`. Reaching a cap stops recording that kind
+(`file` for the watch, `request` for the requests dropped), with one
+`truncated` observation: `{"kind","why"}`, the kind no longer recorded
+and why. Each is an `observations-truncated` code finding, at least
+review. Past a cap, an observation that would raise a block finding (a
+canary leaving, a write to an agent's config or a shell's startup file)
+is still recorded, up to 200 of a kind and 2 MiB in all, so a flood can't
+turn a block into a review. Every answer's observations together stay
+under 11 MiB. When the run ends, every process of the unprivileged
+account is killed, those that left the server's process group or session
+included.
 
 ## The MicroVM
 
