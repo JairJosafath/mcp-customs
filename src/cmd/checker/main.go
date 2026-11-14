@@ -33,6 +33,13 @@ import (
 // the Checker's five minutes an invocation.
 const harnessTimeout = 4 * time.Minute
 
+// oneRetryPolicy leaves the Bedrock client's retries to the judge's own
+// (bedrock.attempts, with its backoff): the SDK tries each call once, so
+// a busy model isn't tried the SDK's three times under each of those.
+func oneRetryPolicy(o *bedrockruntime.Options) {
+	o.RetryMaxAttempts = 1
+}
+
 func main() {
 	// Lambda sends what the function writes to CloudWatch Logs, one entry a line.
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -76,7 +83,7 @@ func main() {
 		Store:    store.New(dynamodb.NewFromConfig(cfg), env["DYNAMODB_TABLE_NAME"]),
 		Reports:  store.NewBucket(s3.NewFromConfig(cfg), env["REPORTS_BUCKET_NAME"]),
 		Sandbox:  vms,
-		Judge:    bedrock.New(bedrockruntime.NewFromConfig(cfg), env["JUDGE_MODEL_ID"]),
+		Judge:    bedrock.New(bedrockruntime.NewFromConfig(cfg, oneRetryPolicy), env["JUDGE_MODEL_ID"]),
 		Canaries: canary.New,
 		Token:    func(checkID string) string { return sandbox.DeriveRunToken(key, checkID) },
 		// The stack's own API, which no allowlist may reach.
