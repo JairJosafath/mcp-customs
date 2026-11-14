@@ -39,14 +39,16 @@ the deadline. Cost and tokens come from each session's own report.
 | #5    | implementer | session_01SZoxcofYFHCQqBNFB7XDxX | 2026-11-14 10:25 | 2      | PR #24: egress proxy, TLS interception, DNS, NFLOG; replies posted by the orchestrator          |              |
 | #5    | reviewer    | session_01SZoxcoev38y5uCvTFYpbbX | 2026-11-14 10:43 | 1      | seven gaps incl. gzip and 8 MiB body skips                                                      |              |
 | #8    | implementer | session_01SZoxcnGpUQTXoFy8J9iNZa | 2026-11-14 10:52 | 2      | PR #29: Bedrock judge, probes, investigation loop                                               | $10.84 total |
-| #9    | implementer | session_01SZoxcox2SePvKDp8fT2Bvk | 2026-11-14 10:52 | 3      | PR #28: web page and API; round 3 is a merge with main plus two small host and U+2800 fixes     |              |
+| #9    | implementer | session_01SZoxcox2SePvKDp8fT2Bvk | 2026-11-14 10:52 | 3      | PR #28: web page and API; round 3 merged main and fixed publicHost and U+2800                   | $8.62 total  |
 | #25   | implementer | session_01SZoxckuvLomwNjpBL3aM7S | 2026-11-14 10:52 | 1      | PR #26: step and store bounds                                                                   |              |
 | #8    | reviewer    | session_01SZoxcoMoQ6cVHriyYP3LZ6 | 2026-11-14 11:14 | 1      | changes requested: host-name allowlist, block verdict could be lost, no Bedrock retry           |              |
 | #9    | reviewer    | session_01SZoxcoH2uUPLG3UdAWiDa2 | 2026-11-14 11:14 | 1      | changes requested: invisible and bidi Unicode shown raw                                         |              |
 | #25   | reviewer    | session_01SZoxcmy9MiWgKqswxhDqDd | 2026-11-14 11:14 | 1      | approved; item size and write order moved to #30; PR #26 merged                                 |              |
-| #5    | reviewer    | session_01SZoxcop4TvQH9B7B4nWh3s | 2026-11-14 11:28 | 2      | running                                                                                         |              |
+| #5    | reviewer    | session_01SZoxcop4TvQH9B7B4nWh3s | 2026-11-14 11:28 | 2      | changes requested: canaries past the 1000-record cap unseen; NFLOG drops silent under load      | $2.60        |
 | #30   | implementer | session_01SZoxckMnKnUHAqbe94j31W | 2026-11-14 11:32 | 1      | PR #31: invisible characters, STEP# bounded by stored size, verdict before done                 |              |
 | #9    | reviewer    | session_01SZoxckD3xvmJdK5tXswxzS | 2026-11-14 11:37 | 2      | approved; publicHost zone and %-encoding bypass, U+2800 (non-blocking)                          | $2.05        |
 | #8    | reviewer    | session_01SZoxcmsfCnksFbtfG6uPS9 | 2026-11-14 11:39 | 2      | approved; wildcard-DNS names, unreached backup checks, stacked retries moved to #32             | $1.68        |
 | #8    | merge       |                                  | 2026-11-14 11:50 |        | PR #29 merged                                                                                   |              |
 | #30   | reviewer    | session_01SZoxcnGPwE9WEPmDdzbm4C | 2026-11-14 11:51 | 1      | running                                                                                         |              |
+| #9    | merge       |                                  | 2026-11-14 12:03 |        | PR #28 merged                                                                                   |              |
+| #5    | implementer | session_01SZoxcofYFHCQqBNFB7XDxX | 2026-11-14 12:04 | 3      | round 3: B1 cap, B2 NFLOG drops                                                                 |              |
