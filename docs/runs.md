@@ -74,3 +74,6 @@ the deadline. Cost and tokens come from each session's own report.
 | #40   | implementer | session_01SZoxcnvB2sX9FnxuzXChoA | 2026-11-14 13:56 | 1      | running                                                                                             |                     |
 | #36   | implementer | session_01SZoxckWZfZSmTfyKLkUVFU | 2026-11-14 13:57 | 3      | running: whole ClientHello, read deadlines, flaky test                                              |                     |
 | #38   | implementer | session_01SZoxcowQjAYcEXWU7pMpcX | 2026-11-14 13:57 | 2      | running: scene budgets, narration timing, results accuracy                                          |                     |
+| #36   | merge       |                                  | 2026-11-14 14:11 |        | PR #37 merged after round 3, no fourth review; Checker's last read → #43                            |                     |
+| #38   | reviewer    | session_01SZoxcmhtpbyhN2BLoKNhec | 2026-11-14 14:08 | 2      | running                                                                                             |                     |
+| #43   | implementer | session_01SZoxcmwNw4vTK1AFjed1VP | 2026-11-14 14:11 | 1      | running: seal egress before the last read                                                           |                     |
