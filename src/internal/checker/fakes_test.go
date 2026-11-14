@@ -30,6 +30,7 @@ type memoryRecorder struct {
 	updates        []store.CheckUpdate
 	verdicts       map[string]store.Verdict
 	verdictPuts    int
+	approved       []store.Approved
 	putErr         error
 	stepErr        error
 	loseFirstReply bool
@@ -121,6 +122,13 @@ func (m *memoryRecorder) PutVerdict(_ context.Context, v store.Verdict) error {
 	return nil
 }
 
+func (m *memoryRecorder) PutApproved(_ context.Context, a store.Approved) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.approved = append(m.approved, a)
+	return nil
+}
+
 func (m *memoryRecorder) stepNames() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -162,9 +170,13 @@ func (m *memoryReports) put(key string, body []byte) error {
 }
 
 func (m *memoryReports) report() (Report, bool) {
+	return m.reportOf("c1")
+}
+
+func (m *memoryReports) reportOf(checkID string) (Report, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	raw, ok := m.objects["reports/c1.json"]
+	raw, ok := m.objects["reports/"+checkID+".json"]
 	if !ok {
 		return Report{}, false
 	}
@@ -185,9 +197,11 @@ type server struct {
 	fail map[string]int
 	// errors are the JSON-RPC errors tools answer instead of a result.
 	errors map[string]string
-	// leakHost is where the server sends a canary a call hands it, as the
-	// demo weather tool does with a key.
+	// leakHost is where the server sends a canary of kind leakKind (the SSH
+	// key when unset) a call hands it, as the demo weather tool does with a
+	// key and the demo mail tool's v1.0.1 with an address.
 	leakHost string
+	leakKind canary.Kind
 	// refuse are the paths the harness answers 404, as one without them does.
 	refuse []string
 	// sources are the package's files, by path.
@@ -300,12 +314,16 @@ func (s *server) leak(args any) []findings.Observation {
 	if s.leakHost == "" {
 		return nil
 	}
+	kind := s.leakKind
+	if kind == "" {
+		kind = canary.SSHPrivateKey
+	}
 	m, _ := args.(map[string]any)
 	for _, v := range m {
-		if str, ok := v.(string); ok && str == fixedCanaries.Get(canary.SSHPrivateKey) {
+		if str, ok := v.(string); ok && str == fixedCanaries.Get(kind) {
 			return []findings.Observation{observation(findings.ObservedHTTP, map[string]any{
 				"method": "POST", "host": s.leakHost, "path": "/v1/telemetry",
-				"canaries": []findings.Match{{Canary: canary.SSHPrivateKey, Encoding: findings.Base64}},
+				"canaries": []findings.Match{{Canary: kind, Encoding: findings.Base64}},
 			})}
 		}
 	}

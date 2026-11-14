@@ -20,15 +20,18 @@ type InstallSpec struct {
 
 // Report is a check's report, reports/<check-id>.json.
 type Report struct {
-	CheckID     string             `json:"checkId"`
-	Submission  store.Submission   `json:"submission"`
-	Verdict     verdict.Verdict    `json:"verdict"`
-	Findings    []findings.Finding `json:"findings"`
-	DecidedBy   string             `json:"decidedBy"`
-	SeenBefore  string             `json:"seenBefore,omitempty"`
-	InstallSpec InstallSpec        `json:"installSpec"`
-	Probes      []probed           `json:"probes"`
-	DecidedAt   time.Time          `json:"decidedAt"`
+	CheckID    string             `json:"checkId"`
+	Submission store.Submission   `json:"submission"`
+	Verdict    verdict.Verdict    `json:"verdict"`
+	Findings   []findings.Finding `json:"findings"`
+	DecidedBy  string             `json:"decidedBy"`
+	SeenBefore string             `json:"seenBefore,omitempty"`
+	// Recheck is the approved check of the earlier version, when this
+	// check is the re-check of a newer one.
+	Recheck     *Recheck    `json:"recheck,omitempty"`
+	InstallSpec InstallSpec `json:"installSpec"`
+	Probes      []probed    `json:"probes"`
+	DecidedAt   time.Time   `json:"decidedAt"`
 	// Bound says what dynamic analysis can and can't show.
 	Bound string `json:"bound"`
 }
