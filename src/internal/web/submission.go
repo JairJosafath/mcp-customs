@@ -24,8 +24,9 @@ var (
 	errBadKind   = errors.New(`the kind must be "go", "npm", "pypi" or "remote"`)
 	errBadRef    = fmt.Errorf("the ref must be 1 to %d characters", maxRefLength)
 	errBadURL    = errors.New("a remote server's ref must be an https:// URL with a host, and no user, password or fragment")
-	errNotPublic = errors.New("a remote server's host must be a public name or address: " +
-		"not localhost, a single label, a numeric name, or a loopback, private, link-local, shared or metadata address")
+	errNotPublic = errors.New("a remote server's host must be a public name or address, written plainly: " +
+		"not localhost, a single label, a numeric name, a loopback, private, link-local, shared or metadata address, " +
+		"a zone or percent-encoding")
 )
 
 // pinned say, for each package kind, what it is called and what a pinned
@@ -73,14 +74,29 @@ func checkRemoteURL(ref string) error {
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" || u.Opaque != "" {
 		return errBadURL
 	}
-	if !publicHost(u.Hostname()) {
+	// A zone ([fe80::1%25eth0]) or a percent-encoded host
+	// (127.0.0.%EF%BC%91, a full-width 1 some resolvers read as 1) can't
+	// be checked as written: neither belongs in a public server's URL.
+	if strings.Contains(rawAuthority(ref), "%") || !publicHost(u.Hostname()) {
 		return errNotPublic
 	}
 	return nil
 }
 
+// rawAuthority is the authority of ref, an absolute URL, as written: what
+// follows the scheme's "//" up to the path, query or fragment.
+func rawAuthority(ref string) string {
+	_, rest, _ := strings.Cut(ref, "//")
+	if end := strings.IndexAny(rest, "/?#"); end >= 0 {
+		return rest[:end]
+	}
+	return rest
+}
+
 // metadataHosts are names that answer with a cloud's instance metadata.
-var metadataHosts = []string{"metadata", "metadata.google.internal", "instance-data", "instance-data.ec2.internal"}
+var metadataHosts = []string{
+	"metadata", "metadata.google.internal", "metadata.goog", "instance-data", "instance-data.ec2.internal",
+}
 
 // notPublic are the address ranges a remote server can't be at: what a
 // request from the sandbox would turn into a request inside a network
@@ -98,7 +114,9 @@ var notPublic = []netip.Prefix{
 	netip.MustParsePrefix("224.0.0.0/3"),    // multicast and reserved, and broadcast
 	netip.MustParsePrefix("::/128"),         // unspecified
 	netip.MustParsePrefix("::1/128"),        // loopback
+	netip.MustParsePrefix("::/96"),          // IPv4-compatible, such as ::127.0.0.1
 	netip.MustParsePrefix("64:ff9b::/96"),   // IPv4 translated, which can reach the ranges above
+	netip.MustParsePrefix("64:ff9b:1::/48"), // IPv4 translated for local use
 	netip.MustParsePrefix("fc00::/7"),       // unique local, and the instance metadata at fd00:ec2::254
 	netip.MustParsePrefix("fe80::/10"),      // link-local
 	netip.MustParsePrefix("ff00::/8"),       // multicast

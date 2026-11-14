@@ -14,13 +14,14 @@ import (
 
 func TestPostAPIChecksStartsTheCheckerAndAnswersTheCheckID(t *testing.T) {
 	for name, s := range map[string]store.Submission{
-		"a Go module":        {Kind: "go", Ref: "github.com/acme/weather-mcp@v1.2.3"},
-		"an npm package":     {Kind: "npm", Ref: "@acme/weather-mcp@1.0.0"},
-		"a PyPI package":     {Kind: "pypi", Ref: "weather-mcp@1.0.0"},
-		"a remote server":    {Kind: "remote", Ref: "https://mcp.example.com/sse?team=a"},
-		"a public address":   {Kind: "remote", Ref: "https://93.184.215.14:8443/mcp"},
-		"a public IPv6":      {Kind: "remote", Ref: "https://[2606:2800:21f:cb07:6820:80da:af6b:8b2c]/mcp"},
-		"a name with digits": {Kind: "remote", Ref: "https://mcp1.example.com/"},
+		"a Go module":           {Kind: "go", Ref: "github.com/acme/weather-mcp@v1.2.3"},
+		"an npm package":        {Kind: "npm", Ref: "@acme/weather-mcp@1.0.0"},
+		"a PyPI package":        {Kind: "pypi", Ref: "weather-mcp@1.0.0"},
+		"a remote server":       {Kind: "remote", Ref: "https://mcp.example.com/sse?team=a"},
+		"a public address":      {Kind: "remote", Ref: "https://93.184.215.14:8443/mcp"},
+		"a public IPv6":         {Kind: "remote", Ref: "https://[2606:2800:21f:cb07:6820:80da:af6b:8b2c]/mcp"},
+		"a name with digits":    {Kind: "remote", Ref: "https://mcp1.example.com/"},
+		"a percent in the path": {Kind: "remote", Ref: "https://mcp.example.com/a%20b?q=%41"},
 	} {
 		f := newFixture(t)
 		in, _ := json.Marshal(s)
@@ -81,6 +82,14 @@ func TestPostAPIChecksAnswers400WithAMessageForBadInput(t *testing.T) {
 		"an internal name":               {`{"kind":"remote","ref":"https://ip-10-0-0-1.ec2.internal/"}`, sentence(errNotPublic)},
 		"a trailing dot after localhost": {`{"kind":"remote","ref":"https://localhost./"}`, sentence(errNotPublic)},
 		"an upper-case localhost":        {`{"kind":"remote","ref":"https://LOCALHOST/"}`, sentence(errNotPublic)},
+		"an IPv6 loopback with a zone":   {`{"kind":"remote","ref":"https://[::1%25lo]/"}`, sentence(errNotPublic)},
+		"the IPv6 metadata with a zone":  {`{"kind":"remote","ref":"https://[fd00:ec2::254%25x]/"}`, sentence(errNotPublic)},
+		"a public IPv6 with a zone":      {`{"kind":"remote","ref":"https://[2606:2800:21f:cb07::1%25eth0]/"}`, sentence(errNotPublic)},
+		"a percent-encoded full-width 1": {`{"kind":"remote","ref":"https://127.0.0.%EF%BC%91/"}`, sentence(errNotPublic)},
+		"a percent-encoded public name":  {`{"kind":"remote","ref":"https://mcp.ex%61mple.com/"}`, sentence(errBadURL)},
+		"IPv4-compatible IPv6":           {`{"kind":"remote","ref":"https://[::127.0.0.1]/"}`, sentence(errNotPublic)},
+		"IPv4 translated for local use":  {`{"kind":"remote","ref":"https://[64:ff9b:1::a9fe:a9fe]/"}`, sentence(errNotPublic)},
+		"the metadata.goog name":         {`{"kind":"remote","ref":"https://metadata.goog/computeMetadata/v1/"}`, sentence(errNotPublic)},
 		"not JSON":                       {`kind=npm`, `The body must be one JSON object: {"kind":"npm","ref":"weather-mcp@1.0.0"}.`},
 		"an unknown field":               {`{"kind":"npm","ref":"x@1.0.0","force":true}`, `The body must be one JSON object: {"kind":"npm","ref":"weather-mcp@1.0.0"}.`},
 		"two objects":                    {`{"kind":"npm","ref":"x@1.0.0"}{}`, `The body must be one JSON object: {"kind":"npm","ref":"weather-mcp@1.0.0"}.`},
