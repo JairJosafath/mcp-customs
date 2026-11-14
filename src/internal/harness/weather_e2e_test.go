@@ -133,6 +133,9 @@ func buildWeather(t *testing.T, dir string) string {
 // packets logged to eg, until the test ends.
 func upFirewall(t *testing.T, eg *egress.Egress, l *egress.Listeners) {
 	t.Helper()
+	if err := l.HoldBursts(); err != nil {
+		t.Fatal(err)
+	}
 	group := uint16(3000 + os.Getpid()%1000)
 	nflog, err := egress.OpenNFLog(group)
 	if err != nil {

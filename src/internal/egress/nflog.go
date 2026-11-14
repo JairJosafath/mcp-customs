@@ -143,7 +143,9 @@ func (n *NFLog) Close() error {
 }
 
 // ServeNFLog records each packet n reads as a refused direct connect
-// observation, with the canaries in its payload, until n is closed.
+// observation, with the canaries in its payload, until n is closed. If it
+// stops before, it records that it stopped: what is refused after goes
+// unread.
 func (e *Egress) ServeNFLog(n *NFLog) error {
 	buf := make([]byte, 1<<17)
 	for {
@@ -152,14 +154,20 @@ func (e *Egress) ServeNFLog(n *NFLog) error {
 		case errors.Is(err, syscall.EINTR):
 			continue
 		case errors.Is(err, syscall.ENOBUFS):
-			// The queue overflowed: the kernel dropped packets unread.
-			e.recordDropped()
+			// The queue overflowed: the kernel dropped packets unread, how
+			// many it doesn't say.
+			e.recordDropped(ConnectDetail{}, 1)
 			continue
 		case err != nil && n.closed.Load():
 			return nil
 		case err != nil:
-			return fmt.Errorf("read NFLOG group %d: %w", n.group, err)
+			err = fmt.Errorf("read NFLOG group %d: %w", n.group, err)
+			e.recordStopped(ConnectDetail{}, err.Error())
+			return err
 		case got == 0:
+			if !n.closed.Load() {
+				e.recordStopped(ConnectDetail{}, fmt.Sprintf("NFLOG group %d closed", n.group))
+			}
 			return nil
 		}
 		for _, m := range messages(buf[:got]) {

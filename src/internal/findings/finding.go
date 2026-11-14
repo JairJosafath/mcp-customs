@@ -33,11 +33,13 @@ const (
 	RuleSecretResend      = "injection-secret-resend"
 	RuleCanaryLeft        = "canary-left"
 	// Traffic the egress proxy couldn't read: TLS a client wouldn't let it
-	// intercept, to a host not allowed, and a body it couldn't search whole.
+	// intercept, to a host not allowed, and a request or direct connection
+	// it couldn't search whole.
 	RuleTLSNotIntercepted = "tls-not-intercepted"
 	RuleBodyUnscanned     = "body-not-scanned"
 	// Direct traffic refused but not all recorded: more than a run records,
-	// or packets the kernel dropped before the harness could read them.
+	// packets the kernel dropped before the harness could read them, or
+	// any after the harness stopped reading them.
 	RuleDirectUnrecorded = "direct-traffic-unrecorded"
 	RuleAgentConfig      = "agent-config-write"
 	RuleShellStartup     = "shell-startup-write"

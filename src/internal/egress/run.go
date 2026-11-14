@@ -43,6 +43,39 @@ func Listen(ctx context.Context) (*Listeners, error) {
 	return &Listeners{Proxy: proxy, DNS: dns, Catch: catch}, nil
 }
 
+// dnsReceiveBuffer is the DNS socket's buffer: a burst of a thousand
+// full-size datagrams fits, as it does in NFLOG's.
+const dnsReceiveBuffer = 64 << 20
+
+// HoldBursts gives the DNS socket a buffer of dnsReceiveBuffer, past the
+// system's rmem_max, so a burst to port 53 is read rather than dropped.
+// It needs CAP_NET_ADMIN, as the firewall does.
+func (l *Listeners) HoldBursts() error {
+	sc, ok := l.DNS.(syscall.Conn)
+	if !ok {
+		return errors.New("the DNS socket is not a socket")
+	}
+	raw, err := sc.SyscallConn()
+	if err != nil {
+		return fmt.Errorf("reach the DNS socket: %w", err)
+	}
+	if err := setsockopt(raw, syscall.SO_RCVBUFFORCE, dnsReceiveBuffer); err != nil {
+		return fmt.Errorf("size the DNS socket's buffer: %w", err)
+	}
+	return nil
+}
+
+// setsockopt sets a SOL_SOCKET option on c.
+func setsockopt(c syscall.RawConn, opt, value int) error {
+	var serr error
+	if err := c.Control(func(fd uintptr) {
+		serr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, opt, value)
+	}); err != nil {
+		return err
+	}
+	return serr
+}
+
 // Ports are the listeners' ports, for the firewall.
 func (l *Listeners) Ports() (proxy, dns, catch int) {
 	return port(l.Proxy.Addr()), port(l.DNS.LocalAddr()), port(l.Catch.Addr())
@@ -60,9 +93,9 @@ func port(a net.Addr) int {
 // Serve serves the proxy, DNS and the catcher on l until stop is called,
 // which closes them and waits for them to end.
 func (e *Egress) Serve(l *Listeners, dst OriginalDestination) (stop func()) {
-	srv := &http.Server{Handler: e.Proxy(), ReadHeaderTimeout: handshakeTimeout, IdleTimeout: idleTimeout}
+	srv := &http.Server{Handler: e.Proxy(), ReadHeaderTimeout: handshakeTimeout, ReadTimeout: e.readTimeout(), IdleTimeout: idleTimeout, ConnContext: withRawConn}
 	var wg sync.WaitGroup
-	wg.Go(func() { _ = srv.Serve(l.Proxy) })
+	wg.Go(func() { _ = srv.Serve(rawListener{Listener: l.Proxy, e: e}) })
 	wg.Go(func() { _ = e.ServeDNS(l.DNS) })
 	wg.Go(func() { _ = e.ServeCatch(l.Catch, dst) })
 	return func() {
