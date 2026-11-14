@@ -82,7 +82,9 @@ again answers the same; `/allow` after it answers 409, and a harness
 with no egress proxy answers `/seal` 409. Once the investigation ends,
 the Checker calls `/seal`, then `GET /observations` a last time, then
 ends the MicroVM, and decides the verdict from that last read. A seal or
-last read that fails is a `not-sealed` code finding, at least review.
+last read that fails is a `not-sealed` code finding, at least review;
+one that works but whose STEP# item can't be written is a
+`step-not-recorded` code finding, also at least review.
 
 An observation is `{"at","kind","detail"}`, where `kind` is one of `dns`
 (every UDP datagram to port 53, at any address: name, type, answers,

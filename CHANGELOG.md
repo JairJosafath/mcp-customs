@@ -23,6 +23,10 @@ Every user-visible change, newest first. The format follows
   or a name that resolves to it, as an `allow-own-api` code finding that
   ends the investigation at review; the harness's `POST /allow` refuses
   the same host with 403.
+- A seal or last read that works but whose step can't be written ends
+  at review with `step-not-recorded`, not `not-sealed` (which said egress
+  stayed open) and not a failed check (#48). A seal or last read that
+  fails still gives `not-sealed`.
 - The harness finds `iptables` and `ip6tables`: the MicroVM image's PATH
   now has `/usr/sbin`, where Amazon Linux 2023 keeps them, so the firewall
   comes up (#20). The image's base is pinned by digest, dnf to the base's
