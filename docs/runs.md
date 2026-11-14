@@ -81,3 +81,5 @@ the deadline. Cost and tokens come from each session's own report.
 | #43   | reviewer    | session_01SZoxcjrUhG8Wy8Uihr7FZc | 2026-11-14 14:29 | 1      | running                                                                                               |                     |
 | #38   | merge       |                                  | 2026-11-14 14:37 |        | PR #41 merged; follow-up #46                                                                          |                     |
 | #20   | implementer | session_01SZoxcoVmNRtPQ6aHfcC38n | 2026-11-14 14:37 | 1      | running                                                                                               |                     |
+| #43   | implementer | session_01SZoxcmwNw4vTK1AFjed1VP | 2026-11-14 14:46 | 1+     | running: seal waits for in-flight requests                                                            |                     |
+| #40   | implementer | session_01SZoxcnvB2sX9FnxuzXChoA | 2026-11-14 14:46 | 2      | running: 404 not 500, CDK publishes versions, harness wiring test                                     |                     |
