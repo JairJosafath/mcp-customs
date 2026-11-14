@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -667,6 +668,8 @@ func TestAnInstallMayOnlyGetUnderAnInstallGetPrefix(t *testing.T) {
 		"a GET of a report":            {http.MethodGet, url.URL{Path: "/api/checks/c1"}, false},
 		"a GET climbing out":           {http.MethodGet, url.URL{Path: "/goproxy/../api/checks/c1"}, false},
 		"a GET climbing out, escaped":  {http.MethodGet, url.URL{Path: "/goproxy/../api", RawPath: "/goproxy/%2e%2e/api"}, false},
+		"a GET with an escaped slash":  {http.MethodGet, url.URL{Path: "/goproxy/x", RawPath: "/goproxy%2Fx"}, false},
+		"a GET of a path Go keeps raw": {http.MethodGet, url.URL{Path: mod, RawPath: mod}, true},
 		"the prefix's own name, alone": {http.MethodGet, url.URL{Path: "/goproxyx/a"}, false},
 	} {
 		if got := e.requestAllowed(tc.method, api, &tc.u); got != tc.want {
@@ -766,6 +769,56 @@ func TestDirectTrafficRecordsStopAtTheirBound(t *testing.T) {
 	}
 	if last, _ := obs[maxDirect-1].(ConnectDetail); !last.More {
 		t.Error("the last recorded must say more were refused unrecorded")
+	}
+}
+
+func TestTheProxyLetsAnInstallOnlyGetTheDemoProxyOfTheStacksAPI(t *testing.T) {
+	api := "abc.execute-api.us-east-1.amazonaws.com"
+	mod := "/goproxy/github.com/!jair!josafath/mcp-customs/demo/mail/@v/list"
+	requests := []struct {
+		method, path  string
+		duringInstall bool
+	}{
+		{http.MethodGet, mod, true},
+		{http.MethodPost, "/api/checks", false},
+		{http.MethodGet, "/api/checks/c1", false},
+	}
+	up := &fakeUpstream{}
+	rec := newRecorded()
+	e := New(Config{Upstream: up, InstallAllow: RegistryHosts, InstallGet: []string{"https://" + api + "/goproxy/"}})
+	e.Observe(rec.observe)
+	// send sends each request through the proxy's request path and answers
+	// which went on to the host, as recorded and as the upstream saw them.
+	send := func() []bool {
+		before, sent := len(rec.of(KindHTTP)), len(up.got)
+		for _, r := range requests {
+			e.forward(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), r.method, r.path, strings.NewReader("{}")), "https", api)
+		}
+		obs := rec.of(KindHTTP)[before:]
+		if len(obs) != len(requests) {
+			t.Fatalf("recorded %+v, want one observation a request", obs)
+		}
+		allowed := make([]bool, len(obs))
+		for i, o := range obs {
+			d, _ := o.(HTTPDetail)
+			allowed[i] = d.Allowed
+		}
+		if got := len(up.got) - sent; got != strings.Count(fmt.Sprint(allowed), "true") {
+			t.Errorf("the host got %d requests, %v recorded allowed", got, allowed)
+		}
+		return allowed
+	}
+	e.Installing(true)
+	for i, allowed := range send() {
+		if allowed != requests[i].duringInstall {
+			t.Errorf("during the install, %s %s: allowed %v, want %v", requests[i].method, requests[i].path, allowed, requests[i].duringInstall)
+		}
+	}
+	e.Seal()
+	for i, allowed := range send() {
+		if allowed {
+			t.Errorf("after the seal, %s %s went on to the host", requests[i].method, requests[i].path)
+		}
 	}
 }
 

@@ -266,8 +266,8 @@ func (e *Egress) requestAllowed(method, host string, u *url.URL) bool {
 // requestAllowedLocked says, with e.mu held, whether a request may go on
 // to host: none once sealed; any request to an allowed host or, while an
 // install runs, a registry; and while an install runs, a GET or HEAD under
-// one of host's InstallGet prefixes, its path clean and unescaped so it
-// can't climb out of the prefix.
+// one of host's InstallGet prefixes, its path clean, as decoded and as
+// sent, so it can't climb out of the prefix.
 func (e *Egress) requestAllowedLocked(method, host string, u *url.URL) bool {
 	if e.isSealed() {
 		return false
@@ -276,11 +276,14 @@ func (e *Egress) requestAllowedLocked(method, host string, u *url.URL) bool {
 	if e.allowed[h] || (e.installing && e.install[h]) {
 		return true
 	}
-	if !e.installing || (method != http.MethodGet && method != http.MethodHead) || u.RawPath != "" || path.Clean(u.Path) != u.Path {
+	if !e.installing || (method != http.MethodGet && method != http.MethodHead) || path.Clean(u.Path) != u.Path {
 		return false
 	}
+	// The path as sent, too: a module path's capitals are escaped as "!",
+	// which Go keeps as RawPath; an escaped "/" or "." must not reach past
+	// the prefix either.
 	for _, prefix := range e.installGet[h] {
-		if strings.HasPrefix(u.Path, prefix) {
+		if strings.HasPrefix(u.Path, prefix) && strings.HasPrefix(u.EscapedPath(), prefix) {
 			return true
 		}
 	}
