@@ -1,9 +1,15 @@
 package checker
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+	"strings"
 	"testing"
 
+	"github.com/aws/aws-durable-execution-sdk-go/durable"
 	"github.com/aws/aws-durable-execution-sdk-go/durable/durabletest"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/store"
@@ -29,10 +35,12 @@ func approvalsOnlyOfDoneChecks(t *testing.T, w *world) {
 }
 
 // approvedRecheck runs a re-check a person approves after code did not
-// pass it, so its pass lifts the approved check's superseded mark.
-func approvedRecheck(t *testing.T, w *world) *durabletest.TestResult {
+// pass it, so its pass lifts the approved check's superseded mark. It
+// logs to the answered buffer.
+func approvedRecheck(t *testing.T, w *world) (*durabletest.TestResult, *bytes.Buffer) {
 	t.Helper()
-	runner := durabletest.NewLocalRunner(Handler(w.deps()))
+	logs := &bytes.Buffer{}
+	runner := durabletest.NewLocalRunner(Handler(w.deps()), durable.WithLogHandler(slog.NewJSONHandler(logs, nil)))
 	in := newVersion(false)
 	if _, err := runner.RunUntilComplete(in); err != nil {
 		t.Fatal(err)
@@ -44,7 +52,7 @@ func approvedRecheck(t *testing.T, w *world) *durabletest.TestResult {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return result
+	return result, logs
 }
 
 func TestAPassThatCantLiftOrAnnounceStaysDoneWithItsApproval(t *testing.T) {
@@ -55,7 +63,7 @@ func TestAPassThatCantLiftOrAnnounceStaysDoneWithItsApproval(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			w := reviewedRecheck()
 			outage(w)
-			result := approvedRecheck(t, w)
+			result, logs := approvedRecheck(t, w)
 			if result.Status != durabletest.Succeeded {
 				t.Errorf("status %s, error %+v; want the pass kept", result.Status, result.Error)
 			}
@@ -64,6 +72,10 @@ func TestAPassThatCantLiftOrAnnounceStaysDoneWithItsApproval(t *testing.T) {
 				t.Errorf("check %+v, HASH# %+v; want done with its pass and approval", check, w.rec.verdicts)
 			}
 			approvalsOnlyOfDoneChecks(t, w)
+			// The stack's metric filter counts this entry: its alarm goes off.
+			if !strings.Contains(logs.String(), `"`+LiftFailedKey+`":1`) || !strings.Contains(logs.String(), LiftFailedLog) {
+				t.Errorf("logs %s, want a %q entry with %s 1", logs, LiftFailedLog, LiftFailedKey)
+			}
 		})
 	}
 }
@@ -82,4 +94,35 @@ func TestAPassCommittedButAnsweredAsFailedStaysDone(t *testing.T) {
 		t.Errorf("check %+v; want it left done, as its pass committed", check)
 	}
 	approvalsOnlyOfDoneChecks(t, w)
+}
+
+func TestARecheckWhosePassCommittedButAnsweredAsFailedAsksNoRetry(t *testing.T) {
+	w := newWorld(cleanServer())
+	w.rec.checks = []store.Check{{ID: "c0", Submission: npm, Status: store.StatusDone, Verdict: "pass"}}
+	w.rec.lostPassReply = errors.New("connection reset")
+	runFailing(t, w, newVersion(false))
+	if len(w.rec.retries) != 0 {
+		t.Errorf("retries asked %v, want none: the re-check is done", w.rec.retries)
+	}
+	if step := lastStep(w); step.Name != "verdict" || !strings.Contains(step.Summary, "Verdict: pass") {
+		t.Errorf("last step %+v, want the page to end on the pass", step)
+	}
+	if c0, _, _ := w.rec.GetCheck(t.Context(), "c0"); c0.SupersededBy != "" || c0.RecheckFailed != "" {
+		t.Errorf("approved check %+v, want it untouched", c0)
+	}
+}
+
+func TestAFailureOfADoneCheckIsNotItselfAFailureToRecord(t *testing.T) {
+	w := newWorld(cleanServer())
+	w.rec.lostPassReply = errors.New("connection reset")
+	result, err := durabletest.NewLocalRunner(Handler(w.deps())).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg := fmt.Sprint(result.Error); strings.Contains(msg, "as failed") {
+		t.Errorf("error %s, want the done check's refusal ignored", msg)
+	}
+	if slices.Contains(w.rec.stepNames(), "failed") {
+		t.Errorf("steps %v, want no failed step on a done check", w.rec.stepNames())
+	}
 }

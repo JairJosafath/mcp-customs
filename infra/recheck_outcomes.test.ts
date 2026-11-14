@@ -3,7 +3,13 @@ import { Match, Template } from 'aws-cdk-lib/assertions';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { ApiStack } from './api_stack';
-import { EVENT_BUS, FAILED_TWICE_KEY, FAILED_TWICE_METRIC } from './recheck_outcomes';
+import {
+  EVENT_BUS,
+  FAILED_TWICE_KEY,
+  FAILED_TWICE_METRIC,
+  LIFT_FAILED_KEY,
+  LIFT_FAILED_METRIC,
+} from './recheck_outcomes';
 import type { Operations } from './standard';
 
 const OPERATIONS: Operations = {
@@ -65,22 +71,32 @@ describe('RecheckOutcomes', () => {
     );
   });
 
-  it('counts each re-check that failed twice from the Checker’s logs, and alarms on the first', () => {
+  it.each([
+    [
+      'each re-check that failed twice',
+      FAILED_TWICE_KEY,
+      FAILED_TWICE_METRIC,
+      'RecheckFailedTwice-Critical',
+    ],
+    [
+      'each pass whose superseded mark was not lifted',
+      LIFT_FAILED_KEY,
+      LIFT_FAILED_METRIC,
+      'LiftFailedAfterPass-Warning',
+    ],
+  ])('counts %s from the Checker’s logs, and alarms on the first', (_, key, metric, alarm) => {
     const logs = idOf(template, 'AWS::Logs::LogGroup', 'CheckerLogs');
     template.hasResourceProperties('AWS::Logs::MetricFilter', {
       LogGroupName: { Ref: logs },
-      FilterPattern: `"${FAILED_TWICE_KEY}"`,
+      FilterPattern: `"${key}"`,
       MetricTransformations: [
-        {
-          MetricNamespace: FAILED_TWICE_METRIC.namespace,
-          MetricName: FAILED_TWICE_METRIC.name,
-          MetricValue: '1',
-        },
+        { MetricNamespace: metric.namespace, MetricName: metric.name, MetricValue: '1' },
       ],
     });
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
-      MetricName: FAILED_TWICE_METRIC.name,
-      Namespace: FAILED_TWICE_METRIC.namespace,
+      AlarmName: Match.stringLikeRegexp(`-${alarm}$`),
+      MetricName: metric.name,
+      Namespace: metric.namespace,
       Statistic: 'Sum',
       Threshold: 0,
       ComparisonOperator: 'GreaterThanThreshold',

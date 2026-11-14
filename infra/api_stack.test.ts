@@ -482,9 +482,10 @@ describe('ApiStack', () => {
     // 5xx; errors, throttles and duration of each function (the fourth
     // copies the demo proxy's files, and development's fifth empties the bucket); the table's read and write throttles and
     // system errors; the re-check's dead letters, and its schedule group's
-    // dropped and undelivered polls; a re-check that failed twice.
-    production.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 4 * 3 + 3 + 3 + 1);
-    development.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 5 * 3 + 3 + 3 + 1);
+    // dropped and undelivered polls; a re-check that failed twice, and a
+    // pass whose superseded mark was not lifted.
+    production.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 4 * 3 + 3 + 3 + 2);
+    development.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 5 * 3 + 3 + 3 + 2);
     for (const template of [production, development]) {
       template.resourceCountIs('AWS::CloudWatch::Dashboard', 1);
       // The p99 duration alarms fire at 8 of the web function's 10 seconds

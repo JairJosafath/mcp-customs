@@ -37,48 +37,14 @@ type Judge struct {
 	nonce func() (string, error)
 	// wait pauses before a call is tried again; a timer unless a test sets it.
 	wait func(ctx context.Context, d time.Duration) error
+	// clock reads the time and bounds a try; the real one unless a test
+	// sets it.
+	clock clock
 }
 
 // New is a judge asking model through client.
 func New(client Converser, model string) *Judge {
-	return &Judge{client: client, model: model, nonce: randomNonce, wait: wait}
-}
-
-// attempts bounds the tries of one call a busy model turned away, and
-// firstBackoff is the wait before the second, doubled before each next:
-// 2, 4 and 8 seconds, well inside the Checker's five minutes.
-const (
-	attempts     = 4
-	firstBackoff = 2 * time.Second
-)
-
-func wait(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("wait to ask again: %w", ctx.Err())
-	case <-t.C:
-		return nil
-	}
-}
-
-// converse sends in, trying again with backoff while the model is busy.
-func (j *Judge) converse(ctx context.Context, in *bedrockruntime.ConverseInput) (*bedrockruntime.ConverseOutput, error) {
-	backoff := firstBackoff
-	for attempt := 1; ; attempt++ {
-		out, err := j.client.Converse(ctx, in)
-		if err == nil {
-			return out, nil
-		}
-		if attempt == attempts || !isBusy(err) {
-			return nil, fmt.Errorf("ask %s, attempt %d: %w", j.model, attempt, err)
-		}
-		if err := j.wait(ctx, backoff); err != nil {
-			return nil, err
-		}
-		backoff *= 2
-	}
+	return &Judge{client: client, model: model, nonce: randomNonce, wait: wait, clock: realClock{}}
 }
 
 func randomNonce() (string, error) {

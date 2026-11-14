@@ -20,7 +20,7 @@ import (
 // that can't be written fails the check before any approval is. A
 // re-check that a person approved after code did not pass lifts its
 // superseded mark (lift); a lift that fails then is logged, as the pass is
-// done.
+// done, and the log entry raises an alarm (LiftFailedLog).
 func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (verdict.Verdict, error) {
 	r.current = "verdict"
 	if err := r.endSandbox(ctx); err != nil {
@@ -35,6 +35,10 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 		report.SeenBefore = r.approved.CheckID
 	}
 	summary := fmt.Sprintf("Verdict: %s, decided by %s, with %d finding(s).", decided.Verdict, by, len(decided.Findings))
+	// Until it has superseded the approved check, a re-check that did not
+	// pass is unsettled: should it fail from here, even with its verdict
+	// written, it is still retried.
+	r.unsettled = r.in.Recheck != nil && decided.Verdict != verdict.Pass && !r.supersedeDone
 	if err := r.record(ctx, "verdict", outcome{Summary: summary, Findings: decided.Findings}); err != nil {
 		return "", err
 	}
@@ -50,9 +54,10 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 		}
 		// The pass is done and approved: a lift or its event that fails
 		// after it is logged, and the verdict stands.
-		ctx.Logger().ErrorContext(ctx, "lift the superseded mark after a pass",
+		ctx.Logger().ErrorContext(ctx, LiftFailedLog, LiftFailedKey, 1,
 			"checkId", r.in.CheckID, "error", err.Error())
 	}
+	r.unsettled = false
 	return decided.Verdict, nil
 }
 

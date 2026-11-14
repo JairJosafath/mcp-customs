@@ -26,6 +26,15 @@ const (
 	FailedTwiceKey = "recheckFailedTwice"
 )
 
+// LiftFailedLog is the log entry's message, and LiftFailedKey its
+// attribute, that a re-check passed but its approved check's superseded
+// mark, or the event saying it came off, could not be lifted: the stack's
+// metric filter counts them, and its alarm goes off on the first.
+const (
+	LiftFailedLog = "Lift the superseded mark after a pass."
+	LiftFailedKey = "liftFailedAfterPass"
+)
+
 // afterFailedRecheck makes sure a re-check that failed doesn't end
 // silently. The first failure asks the poller, on the package's APPROVED
 // item, to start it once more, under a new check ID linked to the same

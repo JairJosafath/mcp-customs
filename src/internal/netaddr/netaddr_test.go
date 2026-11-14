@@ -26,6 +26,15 @@ func TestPublicRefusesAddressesInsideANetwork(t *testing.T) {
 		"2002:a9fe:a9fe::1":  false,
 		"2001:0:a9fe:a9fe::": false,
 		"fec0::1":            false,
+		"::ffff:0:a9fe:a9fe": false,
+		"::ffff:0:7f00:1":    false,
+		"100::1":             false,
+		"100:0:0:1::1":       false,
+		"2001:2::1":          false,
+		"2001:10::1":         false,
+		"2001:20::1":         false,
+		"5f00::1":            false,
+		"2001:4860::8888":    true,
 	} {
 		if got := Public(netip.MustParseAddr(addr)); got != want {
 			t.Errorf("Public(%s) = %v, want %v", addr, got, want)
