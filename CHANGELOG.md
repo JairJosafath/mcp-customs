@@ -16,7 +16,11 @@ Every user-visible change, newest first. The format follows
   decides the verdict by code; a verdict short of pass waits up to a week for
   a person's Approve or Block. Each step is a `STEP#` item with a one-line
   summary; the report and observations go to the bucket, an approval to
-  `HASH#`. A check waiting for a person has the status `waiting`.
+  `HASH#`. A check waiting for a person has the status `waiting`; a
+  check that fails ends its sandbox, says in a `failed` step which action
+  failed, and has the status `failed`. A listed tool that can't be probed is
+  a finding a person reviews. Each check's sandbox token is derived from a
+  key in Secrets Manager, so no execution's history keeps it.
 - The Checker, a Lambda durable function (`src/cmd/checker`); the web function
   (`src/cmd/web`), which serves `GET /` and `GET /api/health`, open to the
   public; the shared store of checks, steps and verdicts

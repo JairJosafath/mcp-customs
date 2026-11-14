@@ -4,16 +4,19 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/aws/aws-durable-execution-sdk-go/durable"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/canary"
 	"github.com/JairJosafath/mcp-customs/src/internal/checker"
@@ -32,6 +35,7 @@ func main() {
 	for _, name := range []string{
 		"DYNAMODB_TABLE_NAME", "REPORTS_BUCKET_NAME",
 		"SANDBOX_IMAGE_ARN", "SANDBOX_INGRESS_CONNECTOR_ARN", "SANDBOX_EGRESS_CONNECTOR_ARN",
+		"RUN_TOKEN_SECRET_ARN",
 	} {
 		env[name] = os.Getenv(name)
 		if env[name] == "" {
@@ -48,6 +52,16 @@ func main() {
 		log.Error("Loading the AWS configuration failed.", "error", err.Error())
 		os.Exit(1)
 	}
+	// The key run tokens are derived from, read once: a token is never kept
+	// in an execution's history, so every invocation derives it again.
+	secret, err := secretsmanager.NewFromConfig(cfg).GetSecretValue(context.Background(), &secretsmanager.GetSecretValueInput{
+		SecretId: aws.String(env["RUN_TOKEN_SECRET_ARN"]),
+	})
+	if err != nil || aws.ToString(secret.SecretString) == "" {
+		log.Error("Reading the run token key failed.", "secret", env["RUN_TOKEN_SECRET_ARN"], "error", fmt.Sprint(err))
+		os.Exit(1)
+	}
+	key := []byte(aws.ToString(secret.SecretString))
 	vms := sandbox.NewMicroVMs(lambdamicrovms.NewFromConfig(cfg), &http.Client{Timeout: harnessTimeout}, sandbox.Config{
 		ImageARN:            env["SANDBOX_IMAGE_ARN"],
 		IngressConnectorARN: env["SANDBOX_INGRESS_CONNECTOR_ARN"],
@@ -59,7 +73,7 @@ func main() {
 		Sandbox:  vms,
 		Judge:    checker.StubJudge{},
 		Canaries: canary.New,
-		Token:    sandbox.NewRunToken,
+		Token:    func(checkID string) string { return sandbox.DeriveRunToken(key, checkID) },
 	}
 	durable.Start(checker.Handler(deps), durable.WithLogHandler(log.Handler()))
 }

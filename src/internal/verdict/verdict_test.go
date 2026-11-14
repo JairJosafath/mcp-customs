@@ -81,3 +81,25 @@ func TestDecideAddsJudgeErrorFinding(t *testing.T) {
 		t.Errorf("Findings = %+v, want %+v", got, want)
 	}
 }
+
+func TestDecideLetsOnlyAPersonClearACodeFloor(t *testing.T) {
+	canaryLeft := []findings.Finding{code(findings.RuleCanaryLeft)}
+	for name, tc := range map[string]struct {
+		in   Input
+		want Verdict
+	}{
+		"a person approves a canary leaving":  {Input{Code: canaryLeft, ModelVerdict: Pass, Human: HumanApprove}, Pass},
+		"a person blocks a clean server":      {Input{ModelVerdict: Pass, Human: HumanBlock}, Block},
+		"a person approves after a judge err": {Input{JudgeErr: errors.New("x"), Human: HumanApprove}, Pass},
+		"no decision keeps the floor":         {Input{Code: canaryLeft, ModelVerdict: Pass, Human: "maybe"}, Block},
+		"the model's pass clears nothing":     {Input{Code: canaryLeft, ModelVerdict: Pass}, Block},
+	} {
+		got := Decide(tc.in)
+		if got.Verdict != tc.want {
+			t.Errorf("%s: %s, want %s", name, got.Verdict, tc.want)
+		}
+		if len(got.Findings) < len(tc.in.Code) {
+			t.Errorf("%s: dropped findings: %+v", name, got.Findings)
+		}
+	}
+}

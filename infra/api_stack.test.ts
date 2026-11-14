@@ -169,6 +169,7 @@ describe('ApiStack', () => {
     const checker = idOf(production, 'AWS::Lambda::Function', 'Checker');
     const table = idOf(production, 'AWS::DynamoDB::Table', 'Table');
     const bucket = idOf(production, 'AWS::S3::Bucket', 'Reports');
+    const key = idOf(production, 'AWS::SecretsManager::Secret', 'RunTokenKey');
     expect(production.findResources('AWS::Lambda::Function')[checker]).toMatchObject({
       Properties: {
         Handler: 'bootstrap',
@@ -178,8 +179,20 @@ describe('ApiStack', () => {
         Timeout: 300,
         DurableConfig: { ExecutionTimeout: 8 * 24 * 60 * 60, RetentionPeriodInDays: 30 },
         Environment: {
-          Variables: { DYNAMODB_TABLE_NAME: { Ref: table }, REPORTS_BUCKET_NAME: { Ref: bucket } },
+          Variables: {
+            DYNAMODB_TABLE_NAME: { Ref: table },
+            REPORTS_BUCKET_NAME: { Ref: bucket },
+            RUN_TOKEN_SECRET_ARN: { Ref: key },
+          },
         },
+      },
+    });
+    // It reads its run token key, and only that secret.
+    production.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          { Action: 'secretsmanager:GetSecretValue', Effect: 'Allow', Resource: { Ref: key } },
+        ]),
       },
     });
     // Its reports and observations, and nothing else in the bucket.
@@ -254,6 +267,7 @@ describe('ApiStack', () => {
         '"dynamodb:PutItem"',
         '"dynamodb:UpdateItem"',
         '"s3:PutObject"',
+        '"secretsmanager:GetSecretValue"',
         ...DURABLE_EXECUTION_ACTIONS.map((action) => `"${action}"`),
         ...[...SANDBOX_ACTIONS, PASS_CONNECTOR_ACTION].map((action) => `"${action}"`),
         '"logs:CreateLogStream"',

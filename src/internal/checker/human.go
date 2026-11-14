@@ -9,12 +9,13 @@ import (
 	"github.com/aws/aws-durable-execution-sdk-go/durable"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/store"
+	"github.com/JairJosafath/mcp-customs/src/internal/verdict"
 )
 
 // The decisions a person may send back to a waiting check.
 const (
-	DecisionApprove = "approve"
-	DecisionBlock   = "block"
+	DecisionApprove = verdict.HumanApprove
+	DecisionBlock   = verdict.HumanBlock
 )
 
 // humanTimeout is how long a check waits for a person: a week, within the
@@ -64,7 +65,7 @@ var ErrBadWait = fmt.Errorf("a wait must be 1 second to %s", maxWait)
 func wait(ctx durable.Context, _ *run, args json.RawMessage) (outcome, error) {
 	var a waitArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return outcome{}, fmt.Errorf("read the wait's arguments: %w", err)
+		return outcome{}, fmt.Errorf("%w: the wait's: %w", ErrBadArguments, err)
 	}
 	d := time.Duration(a.Seconds) * time.Second
 	if d < time.Second || d > maxWait {

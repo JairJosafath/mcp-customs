@@ -21,8 +21,9 @@ var noRetry = durable.WithRetry(durable.NoRetry())
 // maxLogTail bounds how much of the install log a check keeps.
 const maxLogTail = 2048
 
-// resolved is what resolve found: the sandbox it launched, the canaries
-// planted in it, and the hash of the whole resolved dependency set.
+// resolved is what resolve found: the sandbox it launched (without its
+// token), the canaries planted in it, and the hash of the whole resolved
+// dependency set.
 type resolved struct {
 	VM           sandbox.VM             `json:"vm"`
 	Canaries     canary.Set             `json:"canaries"`
@@ -42,10 +43,7 @@ type installAnswer struct {
 // harness hashes the whole resolved dependency set.
 func resolve(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 	res, err := durable.Step(ctx, string(ActResolve), func(sc durable.StepContext) (resolved, error) {
-		token, err := r.deps.Token()
-		if err != nil {
-			return resolved{}, err
-		}
+		token := r.deps.Token(r.in.CheckID)
 		set := r.deps.Canaries()
 		vm, err := r.deps.Sandbox.Launch(sc, sandbox.Launch{IdempotencyKey: r.in.CheckID, Token: token, Canaries: sandboxCanaries(set)})
 		if err != nil {
@@ -63,12 +61,16 @@ func resolve(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 			return res, err
 		}
 		res.Hash, res.LogTail = answer.SHA256, tail(answer.Log, maxLogTail)
+		// The checkpoint keeps no token: the execution's history outlives
+		// the sandbox. It is derived again below, on every replay.
+		res.VM.Token = ""
 		return res, nil
 	}, noRetry)
 	if err != nil {
 		return outcome{}, err
 	}
 	r.vm, r.canaries, r.resolved = res.VM, res.Canaries, res
+	r.vm.Token = r.deps.Token(r.in.CheckID)
 	return outcome{Summary: fmt.Sprintf("Resolved %s %s in the sandbox; its dependency set hashes to %s.", r.in.Submission.Kind, r.in.Submission.Ref, res.Hash)}, nil
 }
 

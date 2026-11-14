@@ -88,7 +88,7 @@ func TestEachActionOfACheckIsRecordedAsTheOperationTheRegistryNames(t *testing.T
 		}
 	}
 	// Each probe's call is a step inside the Map.
-	if probe := result.Operation("call get_weather"); probe == nil || probe.Type != "STEP" || probe.ParentID == "" {
+	if probe := result.Operation("call-0"); probe == nil || probe.Type != "STEP" || probe.ParentID == "" {
 		t.Errorf("the probe's call = %+v, want a step inside the Map", probe)
 	}
 }
@@ -216,8 +216,19 @@ func TestANewCleanSubmissionRunsEveryFixedCheckAndPasses(t *testing.T) {
 	if !reflect.DeepEqual(call, wantCall) {
 		t.Errorf("probe %v, want %v", call, wantCall)
 	}
-	if launch := w.vms.Launched(); launch != 1 || w.tokens != 1 {
-		t.Errorf("launched %d sandboxes with %d tokens, want 1 and 1", launch, w.tokens)
+	if launch := w.vms.Launched(); launch != 1 {
+		t.Errorf("launched %d sandboxes, want 1", launch)
+	}
+	// Every call carries the check's derived token, and no checkpoint holds it.
+	for _, tok := range w.srv.tokens {
+		if tok != "run-token-c1" {
+			t.Errorf("a harness call carried %q, want the check's token", tok)
+		}
+	}
+	for _, op := range result.Operations {
+		if op.StepDetails != nil && strings.Contains(op.StepDetails.Result, "run-token") {
+			t.Errorf("operation %s keeps the run token in its checkpoint", op.Name)
+		}
 	}
 	v, ok := w.rec.verdicts[depsHash]
 	var spec InstallSpec
@@ -319,7 +330,7 @@ func TestAReplayAfterThePersonAnswersRunsNoFinishedStepAgain(t *testing.T) {
 		if _, err := runner.RunUntilComplete(Input{CheckID: "c1", Submission: npm}); err != nil {
 			t.Fatal(err)
 		}
-		calls, steps, puts, tokens := len(w.vms.Calls()), len(w.rec.steps), w.rec.puts, w.tokens
+		calls, steps, puts := len(w.vms.Calls()), len(w.rec.steps), w.rec.puts
 		callback := runner.OpenCallbacks()[0].CallbackID
 		var err error
 		if tc.answer == nil {
@@ -345,10 +356,10 @@ func TestAReplayAfterThePersonAnswersRunsNoFinishedStepAgain(t *testing.T) {
 			t.Errorf("%s: %d invocations, want the answer to resume a new one", name, len(result.Invocations))
 		}
 		// The replay ran nothing it had run: no harness call, no launch, no
-		// new token or create, and only the two steps after the answer.
-		if len(w.vms.Calls()) != calls || w.vms.Launched() != 1 || w.tokens != tokens || w.rec.puts != puts {
-			t.Errorf("%s: the replay called the harness %d times, launched %d, made %d tokens and %d creates; want %d, 1, %d, %d",
-				name, len(w.vms.Calls())-calls, w.vms.Launched(), w.tokens, w.rec.puts, 0, tokens, puts)
+		// create, and only the two steps after the answer.
+		if len(w.vms.Calls()) != calls || w.vms.Launched() != 1 || w.rec.puts != puts {
+			t.Errorf("%s: the replay called the harness %d times, launched %d and made %d creates; want 0, 1, %d",
+				name, len(w.vms.Calls())-calls, w.vms.Launched(), w.rec.puts, puts)
 		}
 		if got := w.rec.stepNames()[steps:]; !reflect.DeepEqual(got, []string{"ask_human", "verdict"}) {
 			t.Errorf("%s: the replay wrote steps %v, want ask_human and verdict", name, got)
@@ -362,27 +373,91 @@ func TestAReplayAfterThePersonAnswersRunsNoFinishedStepAgain(t *testing.T) {
 	}
 }
 
-func TestAFailedCheckEndsItsSandbox(t *testing.T) {
-	for name, fail := range map[string]string{"the install": "/install", "a probe": "/call", "the list": "/list"} {
+func TestAFailedCheckEndsItsSandboxAndIsRecordedAsFailed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		path, action string
+		// once: a call that changes the sandbox is never retried; a read is.
+		once bool
+	}{
+		"the install fails":   {"/install", "resolve", true},
+		"a probe crashes":     {"/call", "probe", true},
+		"the list fails":      {"/list", "list", true},
+		"the observing fails": {"/observations", "observe", false},
+	} {
 		srv := cleanServer()
-		srv.fail = map[string]int{fail: 502}
+		srv.fail = map[string]int{tc.path: 502}
 		w := newWorld(srv)
 		result, err := durabletest.NewLocalRunner(Handler(w.deps())).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.Status != durabletest.Failed || !strings.Contains(result.Error.Message, "the server failed "+fail) {
+		if result.Status != durabletest.Failed || !strings.Contains(result.Error.Message, "the server failed "+tc.path) {
 			t.Errorf("%s: status %s, error %+v; want failed with the harness's message", name, result.Status, result.Error)
 		}
 		if got := w.vms.StateOf(sandbox.VM{ID: "mvm-fake-1"}); got != sandbox.StateTerminated {
 			t.Errorf("%s: the sandbox is %s, want terminated", name, got)
 		}
-		if count(w.paths(), fail) != 1 {
-			t.Errorf("%s: called %s %d times, want once: a call that changes the sandbox isn't retried", name, fail, count(w.paths(), fail))
+		if tc.once && count(w.paths(), tc.path) != 1 {
+			t.Errorf("%s: called %s %d times, want once: a call that changes the sandbox isn't retried", name, tc.path, count(w.paths(), tc.path))
+		}
+		if check := w.rec.checks[0]; check.Status != store.StatusFailed {
+			t.Errorf("%s: check %+v, want failed", name, check)
+		}
+		last := w.rec.steps[len(w.rec.steps)-1]
+		if want := "The check failed during " + tc.action + "."; last.Name != "failed" || last.Summary != want {
+			t.Errorf("%s: last step %+v, want failed, saying %q and nothing of the harness's text", name, last, want)
 		}
 		if _, ok := w.reports.report(); ok {
 			t.Errorf("%s: wrote a report", name)
 		}
+	}
+}
+
+func TestABadWaitEndsTheSandboxAndFailsTheCheck(t *testing.T) {
+	w := newWorld(cleanServer())
+	w.rec.checks = []store.Check{{ID: "c1", Status: store.StatusRunning}}
+	vm, err := w.vms.Launch(t.Context(), sandbox.Launch{IdempotencyKey: "c1", Token: "t", Canaries: sandboxCanaries(fixedCanaries)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := func(ctx durable.Context, args string) (string, error) {
+		r := &run{deps: w.deps(), in: Input{CheckID: "c1"}, vm: vm}
+		return "", r.fail(ctx, r.do(ctx, ActWait, json.RawMessage(args)))
+	}
+	for name, args := range map[string]string{"not JSON": `soon`, "too long": `{"seconds":86400}`} {
+		result, err := durabletest.NewLocalRunner(handler).RunUntilComplete(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Status != durabletest.Failed || w.vms.StateOf(vm) != sandbox.StateTerminated || w.rec.checks[0].Status != store.StatusFailed {
+			t.Errorf("%s: status %s, sandbox %s, check %+v; want failed, terminated, failed", name, result.Status, w.vms.StateOf(vm), w.rec.checks[0])
+		}
+	}
+}
+
+func TestAToolThatCantBeProbedIsAFindingAPersonReviews(t *testing.T) {
+	srv := cleanServer()
+	srv.tools = append(srv.tools, `{"description":"A tool with no name."}`, `"not a tool"`)
+	w := newWorld(srv)
+	result, err := durabletest.NewLocalRunner(Handler(w.deps())).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != durabletest.Pending {
+		t.Errorf("status %s, want waiting for a person", result.Status)
+	}
+	i := slices.IndexFunc(w.rec.steps, func(s store.Step) bool { return s.Name == "probe" })
+	if i < 0 {
+		t.Fatalf("no probe step: %v", w.rec.stepNames())
+	}
+	var unprobed []string
+	for _, f := range w.rec.steps[i].Findings {
+		if f.Rule == findings.RuleUnprobedTool {
+			unprobed = append(unprobed, f.Evidence)
+		}
+	}
+	if len(unprobed) != 2 || !strings.Contains(w.rec.steps[i].Summary, "2 could not be") || count(w.paths(), "/call") != 1 {
+		t.Errorf("probe step %+v, calls %v; want the named tool probed and the other two recorded", w.rec.steps[i], w.paths())
 	}
 }
 

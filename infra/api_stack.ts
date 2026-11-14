@@ -32,6 +32,7 @@ import {
 import type { DurableConfig, IFunction } from 'aws-cdk-lib/aws-lambda';
 import { LogGroup } from 'aws-cdk-lib/aws-logs';
 import { BlockPublicAccess, Bucket, BucketEncryption, CfnBucket } from 'aws-cdk-lib/aws-s3';
+import { Secret } from 'aws-cdk-lib/aws-secretsmanager';
 import type { Construct } from 'constructs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -51,6 +52,9 @@ export const DYNAMODB_TABLE_NAME = 'DYNAMODB_TABLE_NAME';
 
 /** The environment variable that hands the Checker the reports bucket's name. */
 export const REPORTS_BUCKET_NAME = 'REPORTS_BUCKET_NAME';
+
+/** The environment variable that hands the Checker the ARN of the key its run tokens are derived from. */
+export const RUN_TOKEN_SECRET_ARN = 'RUN_TOKEN_SECRET_ARN';
 
 /** The prefixes the Checker writes under, as docs/contracts.md names them. */
 export const REPORT_PREFIXES = ['reports/', 'observations/'] as const;
@@ -281,6 +285,7 @@ export class ApiStack extends Stack {
     // earlier verdict, writes a verdict, and updates the check's status.
     table.grant(checker, 'dynamodb:PutItem', 'dynamodb:GetItem', 'dynamodb:UpdateItem');
     this.grantReportWrites(checker, reports);
+    this.grantRunTokenKey(checker, rules);
     this.grantDurableExecution(checker);
     // One MicroVM per check, from the harness image.
     new Sandbox(this, 'Sandbox', { logRetention: rules.logRetention }).grantLaunch(checker);
@@ -373,6 +378,34 @@ export class ApiStack extends Stack {
       functionArn: handler.getAtt('Arn').toString(),
       sameEnvironment: true,
     });
+  }
+
+  /**
+   * Makes the key the Checker derives each check's sandbox run token from,
+   * so no token is kept in an execution's history, and lets `fn` read it,
+   * and only read it. The key holds no data: losing it ends only the
+   * sandboxes alive at the time, which live two hours at most.
+   */
+  private grantRunTokenKey(fn: LambdaFunction, rules: TierRules): void {
+    const key = new Secret(this, 'RunTokenKey', {
+      description: 'The key the Checker derives each check’s sandbox run token from.',
+      generateSecretString: { passwordLength: 64, excludePunctuation: true },
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+    if (rules.keepData) {
+      Validations.of(key).acknowledge({
+        id: 'AwsSolutions-SMG4',
+        reason:
+          'Rotating the key would change the token of every sandbox alive at the time, breaking its check; a token lives only as long as its sandbox, two hours at most, and the key never leaves the Checker.',
+      });
+    }
+    fn.addEnvironment(RUN_TOKEN_SECRET_ARN, key.secretArn);
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        actions: ['secretsmanager:GetSecretValue'],
+        resources: [key.secretArn],
+      }),
+    );
   }
 
   /**

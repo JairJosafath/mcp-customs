@@ -38,4 +38,6 @@ const (
 	RuleElicitation       = "unexplained-elicitation"
 	RuleJudgeError        = "judge-error"
 	RuleJudgeOutOfTurn    = "judge-out-of-turns"
+	// A listed tool the Checker could not probe: its JSON or its name.
+	RuleUnprobedTool = "unprobed-tool"
 )

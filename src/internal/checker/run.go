@@ -43,8 +43,9 @@ type Deps struct {
 	Judge   Judge
 	// Canaries makes a run's fresh canaries: canary.New.
 	Canaries func() canary.Set
-	// Token makes a run's bearer token: sandbox.NewRunToken.
-	Token func() (string, error)
+	// Token answers a check's run token, the same every time it is asked:
+	// it is derived, never kept in a checkpoint (sandbox.DeriveRunToken).
+	Token func(checkID string) string
 }
 
 // Input is the event that starts a check.
@@ -89,6 +90,8 @@ type run struct {
 	probes   []probed
 	code     []findings.Finding
 	human    string
+	// current is the action or phase running, for a failure's summary.
+	current string
 }
 
 // Handler is the Checker's durable handler. Each write and each call is a
@@ -151,10 +154,11 @@ func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
 			return "", err
 		}
 	}
-	decided, err := r.judge(ctx)
+	in, err := r.judge(ctx)
 	if err != nil {
 		return "", err
 	}
+	decided := verdict.Decide(in)
 	if decided.Verdict == verdict.Pass {
 		return r.finish(ctx, decided, "code")
 	}
@@ -165,20 +169,19 @@ func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
 	if err := r.do(ctx, ActAskHuman, nil); err != nil {
 		return "", err
 	}
-	switch r.human {
-	case DecisionApprove:
-		decided.Verdict = verdict.Pass
-		return r.finish(ctx, decided, "a person approved")
-	case DecisionBlock:
-		decided.Verdict = verdict.Block
-		return r.finish(ctx, decided, "a person blocked")
+	in.Human = r.human
+	by := map[string]string{verdict.HumanApprove: "a person approved", verdict.HumanBlock: "a person blocked"}[r.human]
+	if by == "" {
+		by = "code"
 	}
-	return r.finish(ctx, decided, "code")
+	return r.finish(ctx, verdict.Decide(in), by)
 }
 
-// judge asks the judge, in a step, and decides the verdict from the code
-// findings and its judgement. A judge that fails gives review.
-func (r *run) judge(ctx durable.Context) (verdict.Result, error) {
+// judge asks the judge, in a step, and answers what the verdict is decided
+// from: the code findings and its judgement. A judge that fails gives
+// review.
+func (r *run) judge(ctx durable.Context) (verdict.Input, error) {
+	r.current = "judge"
 	evidence := Evidence{
 		Submission: r.in.Submission,
 		Tools:      r.listing.Tools,
@@ -191,13 +194,14 @@ func (r *run) judge(ctx durable.Context) (verdict.Result, error) {
 	})
 	var stepErr *durable.StepError
 	if err != nil && !errors.As(err, &stepErr) {
-		return verdict.Result{}, err
+		return verdict.Input{}, err
 	}
-	decided := verdict.Decide(verdict.Input{Code: evidence.Code, Model: j.Findings, ModelVerdict: j.Verdict, JudgeErr: err})
-	if err := r.record(ctx, "judge", outcome{Summary: fmt.Sprintf("The judge gave %d finding(s); code decides %s.", len(j.Findings), decided.Verdict)}); err != nil {
-		return verdict.Result{}, err
+	in := verdict.Input{Code: evidence.Code, Model: j.Findings, ModelVerdict: j.Verdict, JudgeErr: err}
+	summary := fmt.Sprintf("The judge gave %d finding(s); code decides %s.", len(j.Findings), verdict.Decide(in).Verdict)
+	if err := r.record(ctx, "judge", outcome{Summary: summary}); err != nil {
+		return verdict.Input{}, err
 	}
-	return decided, nil
+	return in, nil
 }
 
 // unique is fs with each finding once, in order.
@@ -225,17 +229,32 @@ func (r *run) endSandbox(ctx durable.Context) error {
 	return nil
 }
 
-// fail ends the sandbox of a check that failed, if the failure is the
-// check's own and not the SDK suspending the invocation, and answers err.
+// terminal are the Checker's own errors that end a check outright. Every
+// other error that ends one is a durable operation's, which matches
+// *durable.OperationError; the SDK's signal that the invocation is
+// suspending matches neither, and must pass through untouched.
+var terminal = []error{ErrUnknownAction, ErrBadArguments, ErrBadWait}
+
+// fail closes a check that failed, unless err is the SDK suspending the
+// invocation: it ends the sandbox, records a failed step saying which
+// action failed, and sets the check's status to failed, each in a step.
+// It answers err, with any failure of its own joined.
 func (r *run) fail(ctx durable.Context, err error) error {
 	var opErr *durable.OperationError
-	if !errors.As(err, &opErr) && !errors.Is(err, ErrUnknownAction) {
+	if !errors.As(err, &opErr) && !slices.ContainsFunc(terminal, func(t error) bool { return errors.Is(err, t) }) {
 		return err
 	}
-	if endErr := r.endSandbox(ctx); endErr != nil {
-		return errors.Join(err, endErr)
+	errs := []error{err, r.endSandbox(ctx)}
+	// The summary names the action, never the harness's or the SDK's text:
+	// the web page shows it.
+	summary := fmt.Sprintf("The check failed during %s.", r.current)
+	errs = append(errs, r.record(ctx, "failed", outcome{Summary: summary}))
+	if _, updateErr := durable.Step(ctx, "record-failure", func(sc durable.StepContext) (bool, error) {
+		return true, r.deps.Store.UpdateCheck(sc, r.in.CheckID, store.CheckUpdate{Status: store.StatusFailed})
+	}); updateErr != nil {
+		errs = append(errs, fmt.Errorf("record check %s as failed: %w", r.in.CheckID, updateErr))
 	}
-	return err
+	return errors.Join(errs...)
 }
 
 // recordCheck creates check's META. A step retried after its first attempt

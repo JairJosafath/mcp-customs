@@ -26,8 +26,10 @@ pull request.
 ## Harness API
 
 The Checker calls the harness over the MicroVM's HTTPS URL, with a
-per-run bearer token the Checker generates and passes at launch (see "The
-MicroVM" below for how). JSON in and out; every response carries
+per-run bearer token the Checker passes at launch (see "The MicroVM" below
+for how). The token is HMAC-SHA256 of the check's id under a key in Secrets
+Manager (`RUN_TOKEN_SECRET_ARN`), so the Checker derives it again on every
+invocation and no execution history keeps it. JSON in and out; every response carries
 `observations` since the last call.
 
 | Call                | Body                                                                                                     | Answers                                                |
@@ -113,8 +115,10 @@ One DynamoDB table (`DYNAMODB_TABLE_NAME`), keys `pk` and `sk`:
 A check's `status` is `running`, `waiting` (for a person's Approve or
 Block, under its `callbackId`), `done` or `failed`. A `STEP#` item's `name`
 is the registered action that ran (`resolve`, `lookup`, `install`, `list`,
-`scan`, `probe`, `observe`, `ask_human`, `wait`), or `start`, `judge` or
-`verdict`. A `HASH#` item is written only when a check passes by code or a
+`scan`, `probe`, `observe`, `ask_human`, `wait`), or `start`, `judge`,
+`verdict` or `failed`. A check that fails ends its sandbox, writes a
+`failed` step whose summary names the action that failed (never the
+harness's or the SDK's text), and turns `failed`. A `HASH#` item is written only when a check passes by code or a
 person approves it; its `installSpec` is the JSON
 `{"kind","ref","dependencySha256","toolListSha256"}`.
 

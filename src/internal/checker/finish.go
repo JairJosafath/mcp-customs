@@ -16,6 +16,7 @@ import (
 // verdict to the check's META, last, so a check reads done only once its
 // report is there. Its STEP# item says who decided.
 func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (verdict.Verdict, error) {
+	r.current = "verdict"
 	if err := r.endSandbox(ctx); err != nil {
 		return "", err
 	}

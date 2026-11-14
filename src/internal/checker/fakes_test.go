@@ -168,6 +168,9 @@ type server struct {
 	observations []findings.Observation
 	// fail answers a path with this status and message instead.
 	fail map[string]int
+	// tokens are the run tokens the calls carried, in order.
+	mu     sync.Mutex
+	tokens []string
 }
 
 const depsHash = "5f3e0b8e6a4b2c1d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d"
@@ -183,7 +186,10 @@ func cleanServer() *server {
 }
 
 // respond answers a Harness API call as the harness would for s.
-func (s *server) respond(_ sandbox.VM, req sandbox.Request) (sandbox.Response, error) {
+func (s *server) respond(vm sandbox.VM, req sandbox.Request) (sandbox.Response, error) {
+	s.mu.Lock()
+	s.tokens = append(s.tokens, vm.Token)
+	s.mu.Unlock()
 	if status, ok := s.fail[req.Path]; ok {
 		return answer(status, map[string]any{"message": "the server failed " + req.Path, "observations": []any{}}), nil
 	}
@@ -234,7 +240,6 @@ type world struct {
 	reports *memoryReports
 	vms     *sandbox.Fake
 	srv     *server
-	tokens  int
 }
 
 func newWorld(srv *server) *world {
@@ -250,10 +255,7 @@ func (w *world) deps() Deps {
 		Sandbox:  w.vms,
 		Judge:    StubJudge{},
 		Canaries: func() canary.Set { return fixedCanaries },
-		Token: func() (string, error) {
-			w.tokens++
-			return "run-token", nil
-		},
+		Token:    func(checkID string) string { return "run-token-" + checkID },
 	}
 }
 
