@@ -107,7 +107,9 @@ func (f *fakeDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func
 		return nil, f.err
 	}
 	f.tables = append(f.tables, aws.ToString(in.TableName))
-	if aws.ToString(in.KeyConditionExpression) != "pk = :pk AND begins_with(sk, :step)" {
+	switch aws.ToString(in.KeyConditionExpression) {
+	case "pk = :pk AND begins_with(sk, :step)", "pk = :pk":
+	default:
 		return nil, errors.New("unexpected key condition " + aws.ToString(in.KeyConditionExpression))
 	}
 	pk, _ := readStr(in.ExpressionAttributeValues, ":pk")
@@ -140,6 +142,10 @@ func TestStorePutsAndGetsACheck(t *testing.T) {
 		"a finished check": {
 			ID: "c2", Submission: Submission{Kind: "remote", Ref: "https://mcp.example.com/"},
 			Status: StatusDone, Verdict: "block", CallbackID: "cb-1", SandboxID: "mvm-1",
+		},
+		"a re-check of a newer version": {
+			ID: "recheck-1", Submission: Submission{Kind: "go", Ref: "example.com/mail@v1.0.1"}, Status: StatusRunning,
+			RecheckOf: "c0", RecheckOfRef: "example.com/mail@v1.0.0",
 		},
 	} {
 		fake := newFakeDynamo()
