@@ -5,22 +5,23 @@ it does, before an AI agent is allowed to use it: a pass, review or block,
 with a report that says why.
 
 An entry for the AWS Builder Center weekend challenge "No Pipeline, No
-Problem" (deadline Monday 2026-11-16, 13:00 PT), built by
-[theos](https://github.com/JairJosafath/theos) from a Brief.
+Problem" (deadline Monday 2026-11-16, 13:00 PT). Built with
+[theos](https://github.com/JairJosafath/theos).
 
-| Path                                                                             | What it is                                                                                      |
-| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| [brief.yaml](brief.yaml)                                                         | The product in plain words, as theos takes it                                                   |
-| [docs/plan.md](docs/plan.md)                                                     | The design, the security review, the steps, and the friction log of what theos got wrong        |
-| [docs/c4.html](docs/c4.html)                                                     | The C4 views ([published](https://claude.ai/artifact/NLmoPPJJBK9V3KgXNLpLDq))                   |
-| [docs/kickoff.md](docs/kickoff.md)                                               | How the build runs: an orchestrator session and the implementer and reviewer sessions it starts |
-| `src/`                                                                           | The Go code: the Checker, the web function, the sandbox harness, the demo servers               |
-| `infra/`                                                                         | The CDK app that deploys all of it                                                              |
-| [AGENTS.md](AGENTS.md), [docs/agents/](docs/agents/), [docs/style/](docs/style/) | theos's aws-standard: the rules every change is checked by                                      |
-
-The repository was scaffolded with theos's `aws-lambda-go` template and its
-`aws-standard` rules (`make check`), then grown from issues by Claude Code
-sessions.
+| Path                                                             | What it is                                                                                 |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| [docs/plan.md](docs/plan.md)                                     | The design and its security review                                                         |
+| [docs/c4.html](docs/c4.html)                                     | The C4 views ([published](https://claude.ai/artifact/NLmoPPJJBK9V3KgXNLpLDq))              |
+| [docs/contracts.md](docs/contracts.md)                           | How the parts fit: the harness API, the MicroVM, the store, re-checks, the judge, verdicts |
+| [docs/results.md](docs/results.md)                               | The write-up: what was built, the security design, the demo, the numbers                   |
+| `src/cmd/checker`, `src/internal/checker`                        | The Checker: the fixed checks, the action registry, the judge and its investigation loop   |
+| `src/cmd/harness`, `src/internal/harness`, `src/internal/egress` | The sandbox harness and its egress proxy, in the MicroVM image (`sandbox/Dockerfile`)      |
+| `src/internal/findings`, `canary`, `verdict`                     | Code-only findings, canaries and the verdict rules                                         |
+| `src/cmd/web`, `src/internal/web`                                | The web page and JSON API                                                                  |
+| `src/cmd/poller`, `src/internal/poller`                          | The re-check of an approved package's new versions                                         |
+| `src/demo`, [demo/](demo/)                                       | Two malicious demo MCP servers, and the demo's recorder and narration                      |
+| `infra/`                                                         | The CDK app that deploys all of it                                                         |
+| [docs/runbook.md](docs/runbook.md)                               | Restoring the data, rolling a deployment back, what each alarm means                       |
 
 ## The functions
 
@@ -73,8 +74,7 @@ bucket first, and keeps logs a month. Both tiers alarm and have a dashboard.
 
 What the app promises whatever the tier, the backups' retention and copy
 region, the recovery objectives and who the alarms tell, is in
-`infra/operations.ts`, which theos renders from the Container's
-`spec.operations`. The alert email is the stack's `AlertEmail` parameter.
+`infra/operations.ts`. The alert email is the stack's `AlertEmail` parameter.
 Each stack outputs `EntryPoint`, the API's URL, and `AlarmTopicArn`, the
 topic its alarms notify.
 

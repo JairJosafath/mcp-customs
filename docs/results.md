@@ -1,12 +1,20 @@
 # Results
 
 The write-up of MCP Customs for the AWS Builder Center weekend challenge
-"No Pipeline, No Problem", and what building it said about theos. A
-skeleton until the stack is deployed: every place that needs deploy
-output says `TODO(deploy)`. Numbers come from the repository's files, as
-of commit `6aae615` (2026-11-14); update them from
-[runs.md](runs.md) and the [friction log](plan.md#friction-log) before
-submitting.
+"No Pipeline, No Problem". A skeleton until the stack is deployed: every
+place that needs deploy output says `TODO(deploy)`. Numbers come from the
+repository's files, as of commit `fc2b5cd` (2026-11-14, 17:19 UTC), and
+`hack/runs-stats` prints them again at any commit, in a full clone (it
+refuses a shallow one).
+
+## The problem
+
+An AI agent that installs an MCP server runs someone else's code with the
+developer's keys, files and network. Scanners read what a server says
+about itself: its tool descriptions and schemas. A malicious server can
+say nothing wrong and still read `~/.ssh` and send it out once it runs, or
+pass review at one version and turn at the next. MCP Customs checks what a
+server does, before an agent may use it.
 
 ## What was built
 
@@ -96,89 +104,62 @@ TODO(deploy): the video's link and length, and each check's duration.
 TODO(deploy): the refs the demo servers are published under, passed as
 `--weather` and `--mail`, and the re-check's page, `--recheck-url`.
 
-## The numbers
+## How it was built
 
-From [runs.md](runs.md), one row per cloud session. Cost is each session's
-own report; where a session reported a running total, that total counts
-once.
+Built with [theos](https://github.com/JairJosafath/theos), by Claude Code
+cloud sessions in implementer and reviewer roles. Each pull request was
+written by an implementer session and read by a separate reviewer
+session.
 
-| What                                   | As of `6aae615`                                                     |
-| -------------------------------------- | ------------------------------------------------------------------- |
-| Cloud sessions                         | 48: 19 implementer, 29 reviewer                                     |
-| Sessions that reported a cost          | 27 of 48                                                            |
-| Cost reported                          | $96.18: $63.74 implementers, $32.44 reviewers                       |
-| Issues worked                          | 18                                                                  |
-| Pull requests merged                   | 15, counted from `git log` (squash commits ending in the PR number) |
-| Rounds of the 15 merged issues         | 1 round: 7; 2 rounds: 3; 3 rounds: 5                                |
-| Wall clock, first session to `6aae615` | 06:27 to 13:57 UTC, 2026-11-14                                      |
+| What                                                         | Count                                                                                                                                  |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Pull requests merged (`git log` at `fc2b5cd`)                | 24                                                                                                                                     |
+| Sessions ([runs.md](runs.md) at `fc2b5cd`)                   | 68: 27 implementer, 41 reviewer                                                                                                        |
+| Review rounds of the 24 merged issues (runs.md at `fc2b5cd`) | 1 round: 11; 1 round and fixes after it: 1 (#43); 2 rounds: 5; 3 rounds: 7                                                             |
+| Cost reported (runs.md at `fc2b5cd`)                         | $112.46 from 34 of the 68 sessions ($63.74 implementers, $48.72 reviewers); 34 sessions reported none, so it's less than the full cost |
+| First session to the last row (runs.md at `fc2b5cd`)         | 06:27 to 17:19 UTC, 2026-11-14                                                                                                         |
 
-TODO(deploy): final rows, the cost of the sessions that didn't report
-one, and the deploy's own time and AWS cost.
+`hack/runs-stats` counts these. A session is a distinct ID in runs.md. A
+merged pull request is a squash commit on main whose subject ends in its
+number. A session's cost is its last reported total when it has one, never
+that total plus its per-round figures.
 
-## What theos built alone, with a prompt, with a hand
+Seven pull requests merged with final commits no reviewer read:
 
-What the plan's "Done when" asks for.
+- #34, #37, #44 and #45: the orchestrator's comment says it ran their new
+  tests and saw each fail with its fix removed
+  ([#34](https://github.com/JairJosafath/mcp-customs/pull/34#issuecomment-6878316223),
+  [#37](https://github.com/JairJosafath/mcp-customs/pull/37#issuecomment-6878547918),
+  [#44](https://github.com/JairJosafath/mcp-customs/pull/44#issuecomment-6880032402),
+  [#45](https://github.com/JairJosafath/mcp-customs/pull/45#issuecomment-6879319000)).
+  #34's covers its re-check guard, not its approval-condition change.
+- #49: the squash commit's message on main (`f62d00d`) says the
+  orchestrator verified round 3, with
+  `TestARetryThatPassesLiftsTheMarkTheFailedRecheckLeft` failing when a
+  retry may lift only its own ID. It says nothing of the conflicts
+  `d1c3ecd` resolved by hand in `run.go`, `cmd/checker/main.go`,
+  `fakes_test.go` and `api_stack.ts`.
+- #41: the squash commit's message (`7e26428`) says the orchestrator read
+  the post-approval `docs/results.md` changes. It says nothing of
+  `31121a1`'s `--scene` test.
+- #28: the orchestrator's
+  [record](https://github.com/JairJosafath/mcp-customs/pull/28#issuecomment-6881578992),
+  posted after the merge, says it read the round-3 diff of
+  `submission.go` and `view.go` from `77e8e8f` to `7d11024` and saw the
+  new test rows, did not revert the fixes itself (the implementer
+  reported that check), and saw the check green on `7d11024`. It doesn't
+  cover the conflicts the merge `77e8e8f` resolved by hand.
 
-- **Alone:** every product change came from an implementer session working
-  an issue, and a reviewer session read each pull request. #22, #24, #34
-  and #37 merged with commits no reviewer read: their last rounds were
-  accepted on the orchestrator's own checks or on the round limit, and the
-  pull requests' comments say how.
-- **With a prompt:** the orchestrator filed follow-up issues where a review
-  found a hole the pull request didn't open (#23, #25, #33, #36), and
-  posted replies for implementers.
-- **With a hand:** three pull requests, #21, #22 and #24, merged after
-  their third round with the reviewer still requesting changes; the
-  orchestrator decided it and filed the findings as follow-ups (#23, #25,
-  #36; [friction row 20](plan.md#friction-log)). #34 had two reviews: its
-  third round, the implementer's push after round 2's only blocking
-  finding, a merge conflict with #35, was checked by the orchestrator, not
-  reviewed (row 21; follow-ups #40, #42).
-  TODO(deploy): the deploy and any hand-written fix after Sunday noon.
+#21, #22 and #24 merged on the round limit with the last review still
+asking for changes. The orchestrator's
+[note on #24](https://github.com/JairJosafath/mcp-customs/pull/24#issuecomment-6877384416)
+gives the call for all three, with their findings moved to #23, #25 and
+#36; #21 and #22 carry no note of their own. Ten pull requests changed
+only by merging main after their approval: #11, #13, #15, #16, #17, #31,
+#35, #47, #54 and #55, of which #17, #47 and #55 resolved conflicts.
 
-## theos's feedback
-
-The [friction log](plan.md#friction-log) has 21 rows. None has blocked
-the build yet; row 2, durable functions and MicroVMs in the CDK app, is
-still to be seen until the deploy. In groups:
-
-- **Deploy and hosting:** no AWS deploy (row 1), no template for durable
-  functions or MicroVMs (2, still to be seen), repositories in Gitea (3).
-- **The Standard's checks:** no limits on function size (4,
-  [theos#262](https://github.com/JairJosafath/theos/issues/262)); a
-  durable function trips three rules (11,
-  [theos#275](https://github.com/JairJosafath/theos/issues/275)); gosec
-  and `nilerr` against fixtures and handlers (15, 19,
-  [theos#279](https://github.com/JairJosafath/theos/issues/279)); a
-  deletable bucket fails the Standard's own tests (18,
-  [theos#283](https://github.com/JairJosafath/theos/issues/283)).
-- **Template and scaffolding:** CI needs an operator's variable (6, 9,
-  [theos#263](https://github.com/JairJosafath/theos/issues/263)); wrong
-  names from `hack/render` (7,
-  [theos#264](https://github.com/JairJosafath/theos/issues/264)); one
-  repository per Container (8,
-  [theos#270](https://github.com/JairJosafath/theos/issues/270)); a second
-  function got the first one's binary (10,
-  [theos#274](https://github.com/JairJosafath/theos/issues/274)); tool
-  versions disagree (14,
-  [theos#278](https://github.com/JairJosafath/theos/issues/278)).
-- **Role guides:** they assume the operator, Gitea and one Lambda handler
-  (13, 19, [theos#277](https://github.com/JairJosafath/theos/issues/277));
-  a runbook change is a Standard change (12, 16,
-  [theos#276](https://github.com/JairJosafath/theos/issues/276),
-  [theos#282](https://github.com/JairJosafath/theos/issues/282)); no exit
-  from the round limit but a person (20,
-  [theos#302](https://github.com/JairJosafath/theos/issues/302)); no
-  subagents per role (5,
-  [theos#259](https://github.com/JairJosafath/theos/issues/259),
-  [theos#260](https://github.com/JairJosafath/theos/issues/260)).
-- **The Standard's checks, again:** `make check` runs no build-tagged
-  tests and CI runs as non-root, so the egress tests skip there; main
-  moving between rounds cost #34 a round (21,
-  [theos#303](https://github.com/JairJosafath/theos/issues/303)).
-- **The cloud route, not theos:** implementer and reviewer sessions share
-  the owner's GitHub account, so a review is a comment, never an approval
-  or a request for changes (17).
+TODO(deploy): final rows, the cost of the sessions that reported none, and
+the deploy's own time and AWS cost.
 
 ## Unverified until deploy
 
