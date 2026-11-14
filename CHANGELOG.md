@@ -52,7 +52,15 @@ Every user-visible change, newest first. The format follows
   `InstallGet` prefix must reach a public address too. 6to4
   (`2002::/16`), Teredo (`2001::/32`) and site-local (`fec0::/10`)
   addresses are not public. The allow action's refusal names the host it
-  refused.
+  refused. pip resolves PyPI packages with `--only-binary=:all:`, so an
+  sdist is refused before its build backend runs.
+
+- A server the sandbox can't install ends at review, decided by code,
+  with an `install-failed` finding naming what failed, instead of failing
+  the check (#39). A PyPI dependency only an sdist ships fails the
+  install with a log line naming it, as its build dependencies can't be
+  pinned; a blank line in pip's set no longer panics the harness, and a
+  harness that can't end what an install step left running fails the step.
 
 - The sandbox's egress proxy refuses a connection to a name that resolves
   to an address inside a network: loopback, link-local, private, shared or

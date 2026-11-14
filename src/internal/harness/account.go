@@ -121,10 +121,11 @@ func killGroup(cmd *exec.Cmd) error {
 // SIGKILL to -1, which reaches every process the account may signal, those
 // that left their process group or session included, and not the shell
 // itself. Without Switch the account is the harness's own user, whose
-// processes are the harness's: then nothing is killed.
+// processes are the harness's: nothing can be killed without killing the
+// harness, so it is an error, and the step it ends fails.
 func (a Account) killAll(ctx context.Context) error {
 	if !a.Switch {
-		return nil
+		return errors.New("the harness runs as its own user, so it can't end what the account left running")
 	}
 	// kill fails only when nothing was left to kill.
 	return a.run(ctx, "/", a.env("/usr/bin:/bin"), []string{"/bin/sh", "-c", "kill -KILL -1 2>/dev/null; exit 0"}, io.Discard)

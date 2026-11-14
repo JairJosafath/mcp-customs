@@ -2,6 +2,7 @@ package checker
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -32,6 +33,9 @@ type resolved struct {
 	Hash     string             `json:"hash"`
 	LogTail  string             `json:"logTail"`
 	Findings []findings.Finding `json:"findings"`
+	// InstallFailed says the harness could not install the server; the
+	// sandbox is ended already, and Findings holds an install-failed one.
+	InstallFailed bool `json:"installFailed,omitempty"`
 	// Oversized is the answer's size when it was too large to keep.
 	Oversized int `json:"oversized,omitempty"`
 }
@@ -45,8 +49,9 @@ type rawAnswer struct {
 }
 
 type installAnswer struct {
-	Log    string `json:"log"`
-	SHA256 string `json:"sha256"`
+	Message string `json:"message"`
+	Log     string `json:"log"`
+	SHA256  string `json:"sha256"`
 }
 
 // resolve launches the check's sandbox with fresh canaries and a fresh run
@@ -74,14 +79,21 @@ func resolve(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 		body := map[string]any{"kind": r.in.Submission.Kind, "ref": r.in.Submission.Ref, "canaries": set, "allowHosts": []string{}}
 		obs, err := callHarness(sc, r.deps.Sandbox, vm, http.MethodPost, "/install", body, &answer)
 		if err != nil {
-			// Nothing after a failed step knows this sandbox: end it here.
+			// Nothing after a failed step or install knows this sandbox:
+			// end it here.
 			if endErr := r.deps.Sandbox.Terminate(sc, vm); endErr != nil {
 				return res, fmt.Errorf("%w; and end the sandbox: %w", err, endErr)
 			}
-			return res, err
+			if !errors.Is(err, ErrInstallFailed) {
+				return res, err
+			}
+			res.InstallFailed = true
 		}
 		res.Hash, res.LogTail = answer.SHA256, tail(answer.Log, maxLogTail)
 		res.Findings = findings.FromObservations(obs, set)
+		if res.InstallFailed {
+			res.Findings = append(res.Findings, installFailed(answer.Message))
+		}
 		if n := sizeOf(res); n > maxStepResult {
 			// The sandbox is kept, so the failure can end it.
 			return resolved{VM: res.VM, Oversized: n}, r.keepOversized(sc, string(ActResolve), rawAnswer{Observations: obs, Findings: res.Findings})
@@ -92,9 +104,13 @@ func resolve(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 		return outcome{}, err
 	}
 	r.vm, r.canaries, r.resolved = res.VM, res.Canaries, res
+	r.ended = res.InstallFailed
 	if res.Oversized > 0 {
 		r.vm.Token = r.deps.Token(r.in.CheckID)
 		return outcome{}, r.tooLarge(string(ActResolve), res.Oversized)
+	}
+	if res.InstallFailed {
+		return outcome{Summary: fmt.Sprintf("The sandbox could not install %s %s, so nothing more is checked.", r.in.Submission.Kind, r.in.Submission.Ref), Findings: res.Findings}, nil
 	}
 	r.vm.Token = r.deps.Token(r.in.CheckID)
 	return outcome{Summary: fmt.Sprintf("Resolved %s %s in the sandbox; its dependency set hashes to %s.", r.in.Submission.Kind, r.in.Submission.Ref, res.Hash)}, nil
