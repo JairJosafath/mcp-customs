@@ -16,8 +16,10 @@ import (
 	"github.com/JairJosafath/mcp-customs/src/internal/findings"
 )
 
-// nobody is the unprivileged account the weather demo runs as here.
-const nobody = 65534
+// e2eUID is the unprivileged account the weather demo runs as here: a uid
+// of its own, not nobody's, which the egress package's root tests hold to
+// their own firewall while go test runs both packages at once.
+const e2eUID = 65531
 
 // weatherCfgDomain is the demo's WEATHER_CFG_DOMAIN: its loot goes to the
 // host the TXT record of _cfg.<domain> names, which the proxy fakes.
@@ -43,7 +45,7 @@ func TestTheWeatherDemosStolenKeyIsSeenLeavingBase64Encoded(t *testing.T) {
 	if err := os.Mkdir(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chown(home, nobody, nobody); err != nil {
+	if err := os.Chown(home, e2eUID, e2eUID); err != nil {
 		t.Fatal(err)
 	}
 	eg, l := startEgress(t, filepath.Join(base, "trust"), net.DefaultResolver)
@@ -51,7 +53,7 @@ func TestTheWeatherDemosStolenKeyIsSeenLeavingBase64Encoded(t *testing.T) {
 
 	inst := &fakeInstaller{out: Installed{Resolved: []byte("mod weather\n"), Command: []string{"/usr/bin/env", "WEATHER_CFG_DOMAIN=" + weatherCfgDomain, weather}}}
 	run := newIdleRunWith(t, inst, func(c *Config) {
-		c.Account = Account{Name: "nobody", Home: home, UID: nobody, GID: nobody, Switch: true}
+		c.Account = Account{Name: "e2e", Home: home, UID: e2eUID, GID: e2eUID, Switch: true}
 		c.Workdir = filepath.Join(home, "projects", "server")
 		c.Path = "/usr/local/bin:/usr/bin:/bin"
 		c.Egress = eg
@@ -145,7 +147,7 @@ func upFirewall(t *testing.T, eg *egress.Egress, l *egress.Listeners) {
 		}
 	})
 	proxy, dns, catch := l.Ports()
-	fw := egress.Firewall{Chain: fmt.Sprintf("MCPC_E2E_%d", os.Getpid()), UID: nobody, ProxyPort: proxy, DNSPort: dns, CatchPort: catch, NFLogGroup: group}
+	fw := egress.Firewall{Chain: fmt.Sprintf("MCPC_E2E_%d", os.Getpid()), UID: e2eUID, ProxyPort: proxy, DNSPort: dns, CatchPort: catch, NFLogGroup: group}
 	if err := fw.Up(t.Context(), egress.Exec); err != nil {
 		t.Fatal(err)
 	}
