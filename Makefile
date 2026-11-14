@@ -92,7 +92,6 @@ dist: deps synth ## Write both tiers' cloud assemblies, flat, into dist/ for a r
 clean: ## Remove what synth and dist wrote.
 	rm -rf cdk.out dist
 
-
 # The demo Go module proxy's files, to look at: what the next deploy
 # publishes, from infra/demo-versions.json (docs/runbook.md, "The demo
 # proxy"). Nothing here calls AWS. It runs the CDK app's demo-build
