@@ -60,6 +60,9 @@ type ConnectDetail struct {
 	// Via is "proxy" for a CONNECT tunnel, "direct" for traffic that
 	// ignored the proxy.
 	Via string `json:"via"`
+	// ServerName is the name a tunnel's TLS client asked for (SNI), which
+	// is sent in the clear and searched for canaries.
+	ServerName string `json:"serverName,omitempty"`
 	// Intercepted is true when the proxy read the tunnel's TLS; false when
 	// the client refused its certificate or spoke something else.
 	Intercepted bool `json:"intercepted"`
@@ -67,14 +70,21 @@ type ConnectDetail struct {
 	Allowed bool `json:"allowed"`
 	// Refused is true when the traffic was turned away.
 	Refused bool `json:"refused"`
-	// Canaries are those found in a refused packet's payload.
+	// Canaries are those found in a refused packet's payload, in what a
+	// refused TCP connection sent, or in a tunnel's CONNECT request and
+	// server name.
 	Canaries []findings.Match `json:"canaries,omitempty"`
+	// Unscanned says why what a refused TCP connection sent was not all
+	// searched: it sent more than 64 KiB, kept sending past the wait, or
+	// came while too many others were being read.
+	Unscanned string `json:"unscanned,omitempty"`
 	// More is true on the last direct observation a run records in full:
 	// later refused traffic is still searched, and recorded only when it
 	// holds a canary.
 	More bool `json:"more,omitempty"`
-	// Dropped counts refused packets the kernel dropped before the harness
-	// could read them (the NFLOG queue overflowed): unrecorded, unsearched.
+	// Dropped counts packets the kernel dropped before the harness could
+	// read them, unrecorded and unsearched: datagrams to port 53 by the
+	// DNS socket's count, or 1 each time the NFLOG queue overflowed.
 	Dropped int `json:"dropped,omitempty"`
 	// Stopped says why the harness stopped reading refused packets: those
 	// refused after it are unrecorded, unsearched.
@@ -243,21 +253,25 @@ func (e *Egress) recordDirect(d ConnectDetail) {
 // maxDropped bounds how many times one run records dropped packets.
 const maxDropped = 10
 
-// recordDropped records that the kernel dropped refused packets before
-// the harness could read them: each time it says so, up to maxDropped.
-func (e *Egress) recordDropped() {
+// recordDropped records that the kernel dropped packets before the harness
+// could read them, n of them by its count, as d: refused packets, or
+// datagrams to the DNS socket. Each time it says so, up to maxDropped a run.
+func (e *Egress) recordDropped(d ConnectDetail, n int) {
 	e.mu.Lock()
 	e.dropped++
-	n := e.dropped
+	times := e.dropped
 	e.mu.Unlock()
-	if n <= maxDropped {
-		e.record(KindConnect, ConnectDetail{Via: "direct", Refused: true, Dropped: n})
+	if times <= maxDropped {
+		d.Via, d.Refused, d.Dropped = "direct", true, n
+		e.record(KindConnect, d)
 	}
 }
 
-// recordStopped records that the reader of refused packets stopped, and why.
-func (e *Egress) recordStopped(why string) {
-	e.record(KindConnect, ConnectDetail{Via: "direct", Refused: true, Stopped: why})
+// recordStopped records that a reader of the server's traffic, d's, stopped
+// early, and why: what is sent after goes unread.
+func (e *Egress) recordStopped(d ConnectDetail, why string) {
+	d.Via, d.Refused, d.Stopped = "direct", true, why
+	e.record(KindConnect, d)
 }
 
 // noteFake remembers which name a faked address was given for, so a direct

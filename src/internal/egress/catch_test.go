@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/canary"
@@ -45,5 +46,66 @@ func TestADirectTCPConnectionsPayloadIsSearchedForCanaries(t *testing.T) {
 	d, _ := rec.of(KindConnect)[0].(ConnectDetail)
 	if d.Address != "203.0.113.9" || d.Port != 9997 || !slices.Contains(d.Canaries, findings.Match{Canary: canary.GitHubToken, Encoding: findings.Plain}) {
 		t.Errorf("connect = %+v, want 203.0.113.9:9997 with the token", d)
+	}
+}
+
+func TestADirectTCPReadCutShortIsUnscanned(t *testing.T) {
+	rec := newRecorded()
+	e := New(Config{})
+	e.Observe(rec.observe)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() {
+		served <- e.ServeCatch(l, func(net.Conn) (netip.AddrPort, error) { return netip.MustParseAddrPort("203.0.113.9:9997"), nil })
+	}()
+	t.Cleanup(func() {
+		_ = l.Close()
+		<-served
+	})
+	conn, err := net.DialTCP("tcp", nil, net.TCPAddrFromAddrPort(netip.MustParseAddrPort(l.Addr().String())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	// More than the catcher reads; the write fails once it resets.
+	_, _ = conn.Write(make([]byte, catchRead+1))
+	_ = conn.CloseWrite()
+	rec.waitFor(t, func() bool { return len(rec.of(KindConnect)) > 0 })
+	if !hasRule(leftAs(t, rec), findings.RuleBodyUnscanned) {
+		t.Errorf("findings = %+v, want %s", leftAs(t, rec), findings.RuleBodyUnscanned)
+	}
+}
+
+func TestADirectConnectionPastTheReadersIsRecordedAtOnceAsUnscanned(t *testing.T) {
+	rec := newRecorded()
+	e := New(Config{})
+	e.Observe(rec.observe)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() {
+		served <- e.ServeCatch(l, func(net.Conn) (netip.AddrPort, error) { return netip.MustParseAddrPort("203.0.113.9:9997"), nil })
+	}()
+	t.Cleanup(func() {
+		_ = l.Close()
+		<-served
+	})
+	// Silent connections hold every reader until its wait ends; one more
+	// is recorded before any of them.
+	for range maxCatching + 1 {
+		conn, err := net.Dial("tcp", l.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+	}
+	rec.waitFor(t, func() bool { return len(rec.of(KindConnect)) > 0 })
+	if d, _ := rec.of(KindConnect)[0].(ConnectDetail); !strings.Contains(d.Unscanned, "reset unread") {
+		t.Errorf("first recorded = %+v, want the one reset unread, as unscanned", d)
 	}
 }

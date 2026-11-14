@@ -197,6 +197,9 @@ func startEgress(ctx context.Context, account harness.Account, log *slog.Logger)
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := l.HoldBursts(); err != nil {
+		return nil, nil, err
+	}
 	eg := egress.New(egress.Config{
 		CA:           ca,
 		Upstream:     &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second},

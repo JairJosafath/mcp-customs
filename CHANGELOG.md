@@ -15,6 +15,16 @@ Every user-visible change, newest first. The format follows
   connection sends is searched before it is reset; and if the harness
   stops reading refused packets, a `connect {via: direct, stopped}`
   observation gives `direct-traffic-unrecorded`, at least review.
+- What the egress proxy can't read fails closed: a burst to port 53 is
+  held in a 64 MiB buffer and any datagram the kernel drops is recorded
+  (`dropped`, `direct-traffic-unrecorded`); every byte sent to the proxy
+  is searched as sent, so a chunk extension, an oversized or malformed
+  header, a body cut short and bytes that aren't HTTP are found, and what
+  it couldn't read as a request gives `body-not-scanned`; a tunnel's TLS
+  server name is recorded (`serverName`) and searched; a refused TCP
+  connection whose read was cut short, or that came while 64 others were
+  being read, gives `body-not-scanned`; and a DNS reader that stops is
+  recorded as the NFLOG reader is.
 - Every character a person can't see is a code finding of a check, with its
   escaped form as evidence: besides ANSI escapes, tag, zero-width and bidi
   characters, now every default-ignorable code point

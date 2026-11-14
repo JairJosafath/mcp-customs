@@ -111,12 +111,13 @@ func networkFindings(o Observation, canaries canary.Set) []Finding {
 
 // unreadFinding is the finding of traffic the egress proxy couldn't read:
 // a tunnel to a host not allowed whose TLS the client wouldn't let it
-// intercept, as a client pinning its own roots does, a request body it
-// couldn't search whole, or refused direct traffic it couldn't record all
-// of, or stopped reading. What it couldn't read may hold a canary.
+// intercept, as a client pinning its own roots does, a request or direct
+// connection it couldn't search whole, or refused direct traffic it
+// couldn't record all of, or stopped reading. What it couldn't read may hold a canary.
 func unreadFinding(o Observation) (Finding, bool) {
 	var d struct {
 		Host        string `json:"host"`
+		Address     string `json:"address"`
 		Via         string `json:"via"`
 		Intercepted bool   `json:"intercepted"`
 		Allowed     bool   `json:"allowed"`
@@ -137,8 +138,12 @@ func unreadFinding(o Observation) (Finding, bool) {
 		return Finding{Source: Code, Rule: RuleDirectUnrecorded, Evidence: "the kernel dropped refused packets before the harness could read them; any of them may hold a canary"}, true
 	case o.Kind == ObservedConnect && d.Via == "direct" && d.More:
 		return Finding{Source: Code, Rule: RuleDirectUnrecorded, Evidence: "more direct traffic was refused than a run records; only what held a canary was recorded after"}, true
-	case o.Kind == ObservedHTTP && d.Unscanned != "":
-		return Finding{Source: Code, Rule: RuleBodyUnscanned, Evidence: d.Host + ": " + d.Unscanned}, true
+	case d.Unscanned != "":
+		where := d.Host
+		if where == "" {
+			where = d.Address
+		}
+		return Finding{Source: Code, Rule: RuleBodyUnscanned, Evidence: where + ": " + d.Unscanned}, true
 	}
 	return Finding{}, false
 }

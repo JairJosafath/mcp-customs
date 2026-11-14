@@ -90,6 +90,10 @@ func TestFromObservationsFindsWhatCodeCanTell(t *testing.T) {
 			[]Observation{observed(ObservedHTTP, map[string]any{"method": "POST", "host": "big.example", "path": "/", "unscanned": "the body is over 8 MiB; only its first 8 MiB were searched"})},
 			[]Finding{{Code, RuleBodyUnscanned, "big.example: the body is over 8 MiB; only its first 8 MiB were searched"}},
 		},
+		"a direct connection the catcher couldn't read whole": {
+			[]Observation{observed(ObservedConnect, map[string]any{"address": "203.0.113.9", "port": 4444, "proto": "tcp", "via": "direct", "refused": true, "unscanned": "it sent over 64 KiB; only the first 64 KiB were searched"})},
+			[]Finding{{Code, RuleBodyUnscanned, "203.0.113.9: it sent over 64 KiB; only the first 64 KiB were searched"}},
+		},
 		"a process, and a file with no path": {
 			[]Observation{observed(ObservedProcess, map[string]any{"command": "sh"}), observed(ObservedFile, map[string]any{})},
 			nil,

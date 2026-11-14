@@ -42,6 +42,7 @@ func (e *Egress) Proxy() http.Handler {
 			return
 		}
 		if r.URL.Host == "" {
+			e.recordNotProxied(r)
 			http.Error(w, "not a proxy request", http.StatusBadRequest)
 			return
 		}
@@ -54,6 +55,13 @@ func (e *Egress) Proxy() http.Handler {
 // as if it were the host.
 func (e *Egress) tunnel(w http.ResponseWriter, r *http.Request) {
 	host, port := splitHostPort(r.Host, 443)
+	// The CONNECT request as sent is searched, as is the server name.
+	var seen bytes.Buffer
+	if rc := rawConnOf(r.Context()); rc != nil {
+		seen.Write(rc.handOff())
+	}
+	seen.WriteString(r.Host + "\n")
+	_ = r.Header.Write(&seen)
 	conn, _, err := http.NewResponseController(w).Hijack()
 	if err != nil {
 		http.Error(w, "cannot tunnel", http.StatusInternalServerError)
@@ -63,10 +71,12 @@ func (e *Egress) tunnel(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
 		return
 	}
+	var serverName string
 	tlsConn := tls.Server(conn, &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		NextProtos: []string{"http/1.1"},
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			serverName = hello.ServerName
 			if hello.ServerName != "" {
 				return e.cfg.CA.leaf(hello.ServerName)
 			}
@@ -76,7 +86,14 @@ func (e *Egress) tunnel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), handshakeTimeout)
 	err = tlsConn.HandshakeContext(ctx)
 	cancel()
-	e.record(KindConnect, ConnectDetail{Host: host, Port: port, Via: "proxy", Intercepted: err == nil, Allowed: e.isAllowed(host)})
+	// The server name is sent in the clear, so a key may ride in it: it is
+	// searched as sent and with its dots taken out.
+	seen.WriteString(serverName + "\n" + strings.ReplaceAll(serverName, ".", ""))
+	d := ConnectDetail{Host: host, ServerName: serverName, Port: port, Via: "proxy", Intercepted: err == nil, Allowed: e.isAllowed(host)}
+	if found := e.match(seen.Bytes()); len(found) > 0 {
+		d.Canaries = found
+	}
+	e.record(KindConnect, d)
 	if err != nil {
 		return
 	}
@@ -86,19 +103,16 @@ func (e *Egress) tunnel(w http.ResponseWriter, r *http.Request) {
 		}),
 		ReadHeaderTimeout: handshakeTimeout,
 		IdleTimeout:       idleTimeout,
+		ConnContext:       withRawConn,
 	}
-	_ = inner.Serve(newOneConnListener(tlsConn))
+	_ = inner.Serve(newOneConnListener(e.newRawConn(tlsConn, host)))
 }
 
 // forward records one request, searched for canaries, then sends it on to
 // an allowed host or answers it with a fake 200.
 func (e *Egress) forward(w http.ResponseWriter, r *http.Request, scheme, hostport string) {
 	host, port := splitHostPort(hostport, 0)
-	head, body, more, err := readScanned(r.Body)
-	if err != nil {
-		http.Error(w, "cannot read the request", http.StatusBadRequest)
-		return
-	}
+	head, body, more, readErr := readScanned(r.Body)
 	var seen bytes.Buffer
 	_ = r.Header.Write(&seen)
 	seen.WriteString(r.Method + " " + r.URL.RequestURI() + "\n")
@@ -110,8 +124,20 @@ func (e *Egress) forward(w http.ResponseWriter, r *http.Request, scheme, hostpor
 	if more {
 		unscanned = fmt.Sprintf("the body is over %d MiB; only its first %d MiB were searched", maxScan>>20, maxScan>>20)
 	}
+	// What was sent for this request, as sent: chunk extensions, which the
+	// parser drops, and a body cut short or malformed.
+	if rc := rawConnOf(r.Context()); rc != nil {
+		raw, over := rc.take()
+		seen.Write(raw)
+		if over && unscanned == "" {
+			unscanned = fmt.Sprintf("the request is over %d MiB as sent; only its first %d MiB were searched as sent", maxScan>>20, maxScan>>20)
+		}
+	}
+	if readErr != nil {
+		unscanned = "the body could not be read whole; what was read was searched"
+	}
 	target, err := upstreamURL(scheme, host, port, r.URL)
-	allowed := e.isAllowed(host) && err == nil
+	allowed := e.isAllowed(host) && err == nil && readErr == nil
 	e.record(KindHTTP, HTTPDetail{
 		Method:    r.Method,
 		Host:      host,
@@ -120,12 +146,30 @@ func (e *Egress) forward(w http.ResponseWriter, r *http.Request, scheme, hostpor
 		Canaries:  e.match(seen.Bytes()),
 		Unscanned: unscanned,
 	})
+	if readErr != nil {
+		http.Error(w, "cannot read the request", http.StatusBadRequest)
+		return
+	}
 	if !allowed {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, fakeBody)
 		return
 	}
 	e.pass(w, r, target, body)
+}
+
+// recordNotProxied records a request sent to the proxy as if it were the
+// host, which goes nowhere: what was sent for it is searched as sent.
+func (e *Egress) recordNotProxied(r *http.Request) {
+	var seen bytes.Buffer
+	_ = r.Header.Write(&seen)
+	seen.WriteString(r.Method + " " + r.URL.RequestURI() + "\n")
+	if rc := rawConnOf(r.Context()); rc != nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, maxScan))
+		raw, _ := rc.take()
+		seen.Write(raw)
+	}
+	e.record(KindHTTP, HTTPDetail{Method: r.Method, Host: normalHost(r.Host), Path: r.URL.Path, Canaries: e.match(seen.Bytes())})
 }
 
 // upstreamURL is where an allowed request goes: built from the host and
@@ -179,14 +223,15 @@ var hopHeaders = []string{
 }
 
 // readScanned reads up to maxScan bytes of body for searching, and returns
-// them with a reader of the whole body, and whether there was more.
+// them with a reader of the whole body, and whether there was more. When
+// the read fails, it returns what it read before.
 func readScanned(body io.Reader) ([]byte, io.Reader, bool, error) {
 	if body == nil {
 		return nil, http.NoBody, false, nil
 	}
 	head, err := io.ReadAll(io.LimitReader(body, maxScan+1))
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("read the body: %w", err)
+		return head, nil, false, fmt.Errorf("read the body: %w", err)
 	}
 	more := len(head) > maxScan
 	return head[:min(len(head), maxScan)], io.MultiReader(bytes.NewReader(head), body), more, nil

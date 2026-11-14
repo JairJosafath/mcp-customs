@@ -777,7 +777,7 @@ func TestDroppedPacketsAreRecordedUpToTheirBound(t *testing.T) {
 	e := New(Config{})
 	e.Observe(rec.observe)
 	for range maxDropped + 3 {
-		e.recordDropped()
+		e.recordDropped(ConnectDetail{}, 1)
 	}
 	obs := rec.of(KindConnect)
 	if len(obs) != maxDropped {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -29,7 +30,9 @@ const (
 // redirected there: TCP the server sent anywhere but the proxy. It reads
 // what each sends, for catchWait or up to catchRead bytes, and records it
 // as a connect observation naming where it was headed and the canaries in
-// its payload, then resets it. It returns when l is closed, once every
+// its payload, then resets it. A read cut short, and a connection that
+// came while maxCatching others were being read, which is reset unread,
+// are recorded as unscanned. It returns when l is closed, once every
 // connection is recorded.
 func (e *Egress) ServeCatch(l net.Listener, dst OriginalDestination) error {
 	var wg sync.WaitGroup
@@ -49,11 +52,17 @@ func (e *Egress) ServeCatch(l net.Listener, dst OriginalDestination) error {
 			d.Port = int(to.Port())
 			d.Host = e.fakeName(d.Address)
 		}
-		slots <- struct{}{}
-		wg.Go(func() {
-			defer func() { <-slots }()
-			e.catch(conn, d)
-		})
+		select {
+		case slots <- struct{}{}:
+			wg.Go(func() {
+				defer func() { <-slots }()
+				e.catch(conn, d)
+			})
+		default:
+			d.Unscanned = fmt.Sprintf("it came while %d other direct connections were being read, and was reset unread", maxCatching)
+			e.recordDirect(d)
+			reset(conn)
+		}
 	}
 }
 
@@ -62,7 +71,14 @@ func (e *Egress) ServeCatch(l net.Listener, dst OriginalDestination) error {
 func (e *Egress) catch(conn net.Conn, d ConnectDetail) {
 	_ = conn.SetReadDeadline(time.Now().Add(catchWait))
 	// A deadline or reset ends the read; what came before it is searched.
-	payload, _ := io.ReadAll(io.LimitReader(conn, catchRead))
+	payload, err := io.ReadAll(io.LimitReader(conn, catchRead+1))
+	switch {
+	case len(payload) > catchRead:
+		payload = payload[:catchRead]
+		d.Unscanned = fmt.Sprintf("it sent over %d KiB; only the first %d KiB were searched", catchRead>>10, catchRead>>10)
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		d.Unscanned = fmt.Sprintf("it was still open after %v; what it sent after was not searched", catchWait)
+	}
 	if found := e.match(payload); len(found) > 0 {
 		d.Canaries = found
 	}

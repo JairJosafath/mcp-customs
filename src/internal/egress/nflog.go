@@ -154,18 +154,19 @@ func (e *Egress) ServeNFLog(n *NFLog) error {
 		case errors.Is(err, syscall.EINTR):
 			continue
 		case errors.Is(err, syscall.ENOBUFS):
-			// The queue overflowed: the kernel dropped packets unread.
-			e.recordDropped()
+			// The queue overflowed: the kernel dropped packets unread, how
+			// many it doesn't say.
+			e.recordDropped(ConnectDetail{}, 1)
 			continue
 		case err != nil && n.closed.Load():
 			return nil
 		case err != nil:
 			err = fmt.Errorf("read NFLOG group %d: %w", n.group, err)
-			e.recordStopped(err.Error())
+			e.recordStopped(ConnectDetail{}, err.Error())
 			return err
 		case got == 0:
 			if !n.closed.Load() {
-				e.recordStopped(fmt.Sprintf("NFLOG group %d closed", n.group))
+				e.recordStopped(ConnectDetail{}, fmt.Sprintf("NFLOG group %d closed", n.group))
 			}
 			return nil
 		}

@@ -5,11 +5,15 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -38,22 +42,81 @@ var fakeNet = netip.MustParsePrefix("198.18.0.0/15")
 // becomes a dns observation, query or not, searched whole for canaries.
 // Allowed names are looked up for real; for any other name, A and TXT
 // queries get fake answers, so a server that learns where to send its loot
-// from DNS still sends it, and shows where.
+// from DNS still sends it, and shows where. When pc is a UDP socket, the
+// datagrams the kernel dropped unread are recorded too, by its count; and
+// if ServeDNS stops early, it records that it stopped.
 func (e *Egress) ServeDNS(pc net.PacketConn) error {
 	buf := make([]byte, maxDNSPacket)
+	inode, counted := socketInode(pc)
+	var drops uint64
 	for {
 		n, addr, err := pc.ReadFrom(buf)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			return err
+			e.recordStopped(dnsSocket, err.Error())
+			return fmt.Errorf("read DNS: %w", err)
+		}
+		// A drop needs a full queue, so a datagram read after it always
+		// comes: checking after each read misses none.
+		if counted {
+			if total, ok := udpDrops(inode); ok && total > drops {
+				e.recordDropped(dnsSocket, int(total-drops)) //nolint:gosec // a count of datagrams, far below int's range
+				drops = total
+			}
 		}
 		reply, ok := e.answerDNS(buf[:n])
 		if ok {
 			_, _ = pc.WriteTo(reply, addr)
 		}
 	}
+}
+
+// dnsSocket is how observations of the DNS socket name it.
+var dnsSocket = ConnectDetail{Proto: "udp", Port: 53}
+
+// socketInode is the inode of pc's socket, which names it in
+// /proc/net/udp, when it is one.
+func socketInode(pc net.PacketConn) (uint64, bool) {
+	sc, ok := pc.(syscall.Conn)
+	if !ok {
+		return 0, false
+	}
+	raw, err := sc.SyscallConn()
+	if err != nil {
+		return 0, false
+	}
+	var st syscall.Stat_t
+	var serr error
+	if err := raw.Control(func(fd uintptr) { serr = syscall.Fstat(int(fd), &st) }); err != nil || serr != nil {
+		return 0, false
+	}
+	return st.Ino, true
+}
+
+// udpDrops is the kernel's count of datagrams the UDP socket of inode has
+// dropped, from /proc/net/udp.
+func udpDrops(inode uint64) (uint64, bool) {
+	table, err := os.ReadFile("/proc/net/udp")
+	if err != nil {
+		return 0, false
+	}
+	return dropsIn(table, inode)
+}
+
+// dropsIn reads the drops column of inode's line in a /proc/net/udp table.
+func dropsIn(table []byte, inode uint64) (uint64, bool) {
+	want := strconv.FormatUint(inode, 10)
+	for line := range strings.SplitSeq(string(table), "\n") {
+		f := strings.Fields(line)
+		// sl local rem st tx:rx tr:when retrnsmt uid timeout inode ref pointer drops
+		if len(f) >= 13 && f[9] == want {
+			n, err := strconv.ParseUint(f[12], 10, 64)
+			return n, err == nil
+		}
+	}
+	return 0, false
 }
 
 // answerDNS records one datagram and answers its first question; ok is
@@ -74,8 +137,15 @@ func (e *Egress) answerDNS(packet []byte) ([]byte, bool) {
 			why = "a DNS message with no question"
 		}
 	}
+	var texts []string
+	for _, q := range questions {
+		texts = append(texts, q.Name.String())
+	}
+	if err == nil {
+		texts = append(texts, recordTexts(&p)...)
+	}
 	d := DNSDetail{Answers: []string{}, Unanswered: why}
-	if m := e.match(searched(packet, questions)); len(m) > 0 {
+	if m := e.match(searched(packet, texts)); len(m) > 0 {
 		d.Canaries = m
 	}
 	if why != "" {
@@ -106,13 +176,37 @@ func allQuestions(p *dnsmessage.Parser) []dnsmessage.Question {
 	}
 }
 
+// recordTexts are the owner names and TXT strings of every record after
+// the questions, up to the first p can't parse: each searched with its
+// pieces joined, as a key spread over labels or strings would be.
+func recordTexts(p *dnsmessage.Parser) []string {
+	var out []string
+	sections := []func() (dnsmessage.Resource, error){p.Answer, p.Authority, p.Additional}
+	for _, next := range sections {
+		for {
+			r, err := next()
+			if errors.Is(err, dnsmessage.ErrSectionDone) {
+				break
+			}
+			if err != nil {
+				return out
+			}
+			out = append(out, r.Header.Name.String())
+			if txt, ok := r.Body.(*dnsmessage.TXTResource); ok {
+				out = append(out, strings.Join(txt.TXT, ""))
+			}
+		}
+	}
+	return out
+}
+
 // searched is what of a datagram is searched for canaries: all of it, and
-// each question's name as sent, which keeps its case for base64 in a
+// each name and text in it as sent, which keeps its case for base64 in a
 // label, and with its dots taken out.
-func searched(packet []byte, questions []dnsmessage.Question) []byte {
+func searched(packet []byte, texts []string) []byte {
 	out := slices.Clone(packet)
-	for _, q := range questions {
-		raw := strings.TrimSuffix(q.Name.String(), ".")
+	for _, t := range texts {
+		raw := strings.TrimSuffix(t, ".")
 		out = append(out, "\n"+raw+"\n"+strings.ReplaceAll(raw, ".", "")...)
 	}
 	return out
