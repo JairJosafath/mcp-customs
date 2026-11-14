@@ -1,0 +1,5 @@
+{
+  "action": "clock",
+  "arguments": { "offset": "720h" },
+  "reason": "See whether a trigger waits for a month."
+}

@@ -8,6 +8,9 @@ import {
   ApiStack,
   CALLBACK_ACTION,
   DURABLE_EXECUTION_ACTIONS,
+  JUDGE_INFERENCE_PROFILE,
+  JUDGE_MODEL,
+  JUDGE_MODEL_REGIONS,
   REPORT_PREFIXES,
   WEB_ROUTES,
 } from './api_stack';
@@ -189,6 +192,7 @@ describe('ApiStack', () => {
             DYNAMODB_TABLE_NAME: { Ref: table },
             REPORTS_BUCKET_NAME: { Ref: bucket },
             RUN_TOKEN_SECRET_ARN: { Ref: key },
+            JUDGE_MODEL_ID: JUDGE_INFERENCE_PROFILE,
           },
         },
       },
@@ -274,6 +278,7 @@ describe('ApiStack', () => {
         '"dynamodb:UpdateItem"',
         '"s3:PutObject"',
         '"secretsmanager:GetSecretValue"',
+        '"bedrock:InvokeModel"',
         ...DURABLE_EXECUTION_ACTIONS.map((action) => `"${action}"`),
         ...[...SANDBOX_ACTIONS, PASS_CONNECTOR_ACTION].map((action) => `"${action}"`),
         '"logs:CreateLogStream"',
@@ -291,6 +296,49 @@ describe('ApiStack', () => {
             Resource: { 'Fn::Join': ['', [{ 'Fn::GetAtt': [checker, 'Arn'] }, ':*']] },
           },
         ],
+      },
+    });
+  });
+
+  it('lets the Checker call the judge’s model only, through its inference profile', () => {
+    const role = idOf(development, 'AWS::IAM::Role', 'CheckerRole');
+    expect(actionsOf(development, role).filter((action) => action.includes('bedrock:'))).toEqual([
+      '"bedrock:InvokeModel"',
+    ]);
+    development.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          {
+            Action: 'bedrock:InvokeModel',
+            Effect: 'Allow',
+            Resource: [
+              {
+                'Fn::Join': [
+                  '',
+                  [
+                    'arn:',
+                    { Ref: 'AWS::Partition' },
+                    ':bedrock:',
+                    { Ref: 'AWS::Region' },
+                    ':',
+                    { Ref: 'AWS::AccountId' },
+                    `:inference-profile/${JUDGE_INFERENCE_PROFILE}`,
+                  ],
+                ],
+              },
+              ...JUDGE_MODEL_REGIONS.map((region) => ({
+                'Fn::Join': [
+                  '',
+                  [
+                    'arn:',
+                    { Ref: 'AWS::Partition' },
+                    `:bedrock:${region}::foundation-model/${JUDGE_MODEL}`,
+                  ],
+                ],
+              })),
+            ],
+          },
+        ]),
       },
     });
   });
