@@ -144,13 +144,33 @@ Choices made, and why:
 
 | When | Who | Step |
 | --- | --- | --- |
-| Sat | session | Install or reuse theos on the owner's Kind cluster, add project `mcp-customs`, apply the Brief ([kickoff.md](kickoff.md)) |
-| Sat | theos | Planner writes the model, Crews and first issues |
-| Sat | session | Check the plan against this file; correct with `spec.prompts`, never by hand-editing the model. Log every correction |
-| Sat | theos | Crews build the weather-tool demo end to end first: Checker, sandbox with egress proxy, code findings, web page |
-| Sun | session | First `cdk deploy` to us-east-2; one real check end to end |
-| Sun | theos + session | The rug-pull demo, the "new and fine" path; a recorded demo run |
-| Mon AM | session, then owner | Mirror the repositories to GitHub, diagram, write-up; the owner uploads the video and submits before 13:00 PT |
+| Sat | orchestrator | The model in `model/`, validated against theos's CRDs; the first issues on each Container repository ([kickoff.md](kickoff.md)) |
+| Sat | implementer and reviewer sessions | The weather-tool demo end to end first: sandbox with egress proxy, code findings, Checker, web page |
+| Sun | orchestrator, owner's AWS access | First deploy to us-east-2; one real check end to end |
+| Sun | sessions | The rug-pull demo, the "new and fine" path; a recorded demo run |
+| Mon AM | orchestrator, then owner | Diagram, write-up, results; the owner uploads the video and submits before 13:00 PT |
+| After | owner | The same Brief in the real factory, compared with this build |
+
+### The cloud route
+
+The owner wants no manual work and cloud sessions only, so for the weekend
+theos's operator is played by an orchestrator session and its Crew roles by
+cloud sessions (decided 2026-11-14). theos's own parts are used unchanged:
+
+| theos | Here |
+| --- | --- |
+| Planner turns the Brief into the model and issues | The orchestrator writes `model/`, validated offline against theos's CRDs and CEL, and files issues with acceptance criteria |
+| Operator scaffolds each Container | theos's `hack/render` rendered each repository as the operator would (`aws-lambda-go`, `aws-standard`, `dynamodb` for the Checker, GitHub Actions) |
+| Implementer in a sandbox | One cloud session per issue, following the repository's `AGENTS.md` and `docs/agents/implementer.md` |
+| CI's required check | The Standard's `make check`, run by implementer and reviewer, until the GitHub check can run |
+| Reviewer | A fresh session per pull request, following `docs/agents/reviewer.md` |
+| Operator merges, rounds, cost | The orchestrator, by hand; cost and rounds in `docs/runs.md` |
+
+What theos learns: whether its templates, Standards, CRDs and role guides
+hold up on a real project. What it doesn't: the operator (the Task loop,
+the fence, checkpoints, cost records, scheduling, merge rules). That comes
+after the deadline, when the real factory builds the same Brief and its
+result is compared with this one.
 
 Rules for the weekend:
 
@@ -160,9 +180,8 @@ Rules for the weekend:
   issue says so.
 - **No hand-written product code in the Containers' repositories** unless
   theos can't get there by Sunday noon. Each such commit is logged, with why.
-- **The session runs the factory and the deploys** on the owner's machine,
-  by the owner's word of 2026-11-14 (CLAUDE.md says what only the owner
-  can do).
+- **Sessions only, no cluster,** by the owner's word of 2026-11-14
+  (CLAUDE.md says what only the owner can do).
 
 ## Done when
 
@@ -182,3 +201,5 @@ One row per thing that went wrong or needed a person. Newest last.
 | 3 | Fri | Known before starting: the repositories live in the in-cluster Gitea; the entry needs them public | [github-host.md](https://github.com/JairJosafath/theos/blob/main/docs/plans/github-host.md) | no (mirror by hand) | |
 | 4 | Fri | No Standard limits Go function size, complexity or file length, and a project can't add limits itself | `templates/go-standard/.golangci.yml` | no | [theos#262](https://github.com/JairJosafath/theos/issues/262) |
 | 5 | Sat | Agents can't be told to use subagents per role, and no agent outside the cluster can fill a Crew spot | the Standards' role guides; `Agent.spec.harness` | no | [theos#259](https://github.com/JairJosafath/theos/issues/259), [theos#260](https://github.com/JairJosafath/theos/issues/260) |
+| 6 | Sat | A repository rendered for GitHub can't run its check: the workflow needs an Actions variable only the operator sets, naming a private image | `.theos/ci/` GitHub workflow | no (`make check` in the sessions is the gate) | [theos#263](https://github.com/JairJosafath/theos/issues/263) |
+| 7 | Sat | `hack/render` writes `project: webshop`, `softwareSystem: shop` into `.theos.yaml`; edited by hand to `mcp-customs` | `hack/render` | no | [theos#264](https://github.com/JairJosafath/theos/issues/264) |
