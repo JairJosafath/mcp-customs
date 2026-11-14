@@ -5,7 +5,7 @@ page; each scene ends on something the page shows, so a cue below is what
 is on screen when the line starts. Each section's time is its slot, and
 each recorder scene's budget is the sum of its sections' slots (the tag
 after the time). The narration (the quoted lines) fits its slot at 150
-words a minute; `demo/record.test.ts` checks both.
+words a minute; `demo/script.test.ts` checks both.
 
 Record the whole demo with:
 

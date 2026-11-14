@@ -25,7 +25,7 @@ export const SCENES = ['weather', 'mail', 'mail-next'] as const;
 export type SceneName = (typeof SCENES)[number];
 
 /**
- * Each scene's budget: its slots in demo/script.md (record.test.ts checks
+ * Each scene's budget: its slots in demo/script.md (demo/script.test.ts checks
  * they match), summing to 2:50, so the video stays under 3 minutes and
  * the narration stays in step with it.
  */
