@@ -22,14 +22,26 @@ var noRetry = durable.WithRetry(durable.NoRetry())
 const maxLogTail = 2048
 
 // resolved is what resolve found: the sandbox it launched (without its
-// token), the canaries planted in it, and the hash of the whole resolved
-// dependency set.
+// token), the canaries planted in it, the hash of the whole resolved
+// dependency set, and the code findings of what the install was seen
+// doing. The observations themselves are the server's, of any number, so
+// they are never kept in the step: observe keeps them all in the bucket.
 type resolved struct {
-	VM           sandbox.VM             `json:"vm"`
-	Canaries     canary.Set             `json:"canaries"`
-	Hash         string                 `json:"hash"`
-	LogTail      string                 `json:"logTail"`
+	VM       sandbox.VM         `json:"vm"`
+	Canaries canary.Set         `json:"canaries"`
+	Hash     string             `json:"hash"`
+	LogTail  string             `json:"logTail"`
+	Findings []findings.Finding `json:"findings"`
+	// Oversized is the answer's size when it was too large to keep.
+	Oversized int `json:"oversized,omitempty"`
+}
+
+// rawAnswer is an oversized answer as the bucket keeps it: the
+// observations behind it and what code made of them.
+type rawAnswer struct {
+	Initialize   json.RawMessage        `json:"initialize,omitempty"`
 	Observations []findings.Observation `json:"observations"`
+	Findings     []findings.Finding     `json:"findings"`
 }
 
 type installAnswer struct {
@@ -54,10 +66,13 @@ func resolve(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 		if err := r.deps.Store.UpdateCheck(sc, r.in.CheckID, store.CheckUpdate{SandboxID: vm.ID}); err != nil {
 			return resolved{}, err
 		}
+		// The checkpoint keeps no token: the execution's history outlives
+		// the sandbox. It is derived again below, on every replay.
 		res := resolved{VM: vm, Canaries: set}
+		res.VM.Token = ""
 		var answer installAnswer
 		body := map[string]any{"kind": r.in.Submission.Kind, "ref": r.in.Submission.Ref, "canaries": set, "allowHosts": []string{}}
-		res.Observations, err = callHarness(sc, r.deps.Sandbox, vm, http.MethodPost, "/install", body, &answer)
+		obs, err := callHarness(sc, r.deps.Sandbox, vm, http.MethodPost, "/install", body, &answer)
 		if err != nil {
 			// Nothing after a failed step knows this sandbox: end it here.
 			if endErr := r.deps.Sandbox.Terminate(sc, vm); endErr != nil {
@@ -66,15 +81,21 @@ func resolve(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 			return res, err
 		}
 		res.Hash, res.LogTail = answer.SHA256, tail(answer.Log, maxLogTail)
-		// The checkpoint keeps no token: the execution's history outlives
-		// the sandbox. It is derived again below, on every replay.
-		res.VM.Token = ""
+		res.Findings = findings.FromObservations(obs, set)
+		if n := sizeOf(res); n > maxStepResult {
+			// The sandbox is kept, so the failure can end it.
+			return resolved{VM: res.VM, Oversized: n}, r.keepOversized(sc, string(ActResolve), rawAnswer{Observations: obs, Findings: res.Findings})
+		}
 		return res, nil
 	}, noRetry)
 	if err != nil {
 		return outcome{}, err
 	}
 	r.vm, r.canaries, r.resolved = res.VM, res.Canaries, res
+	if res.Oversized > 0 {
+		r.vm.Token = r.deps.Token(r.in.CheckID)
+		return outcome{}, r.tooLarge(string(ActResolve), res.Oversized)
+	}
 	r.vm.Token = r.deps.Token(r.in.CheckID)
 	return outcome{Summary: fmt.Sprintf("Resolved %s %s in the sandbox; its dependency set hashes to %s.", r.in.Submission.Kind, r.in.Submission.Ref, res.Hash)}, nil
 }
@@ -115,12 +136,15 @@ func (r *run) start(sc durable.StepContext) (started, error) {
 	return s, err
 }
 
-// installed is what install recorded: the server's start, and the code
-// findings of everything the install and the start did.
+// installed is what install recorded: the server's initialize result, if
+// install started it, and the code findings of everything the install and
+// the start did.
 type installed struct {
-	Started  bool               `json:"started"`
-	Start    started            `json:"start"`
-	Findings []findings.Finding `json:"findings"`
+	Started    bool               `json:"started"`
+	Initialize json.RawMessage    `json:"initialize,omitempty"`
+	Findings   []findings.Finding `json:"findings"`
+	// Oversized is the answer's size when it was too large to keep.
+	Oversized int `json:"oversized,omitempty"`
 }
 
 // install closes the recorded install phase: it starts the installed
@@ -129,22 +153,28 @@ type installed struct {
 func install(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 	got, err := durable.Step(ctx, string(ActInstall), func(sc durable.StepContext) (installed, error) {
 		out := installed{Started: r.listing.Started}
+		var s started
 		if !out.Started {
-			s, err := r.start(sc)
-			if err != nil {
+			var err error
+			if s, err = r.start(sc); err != nil {
 				return out, err
 			}
-			out.Started, out.Start = true, s
+			out.Started, out.Initialize = true, s.Initialize
 		}
-		obs := append(append([]findings.Observation{}, r.resolved.Observations...), out.Start.Observations...)
-		out.Findings = findings.FromObservations(obs, r.canaries)
+		out.Findings = unique(append(append([]findings.Finding{}, r.resolved.Findings...), findings.FromObservations(s.Observations, r.canaries)...))
+		if n := sizeOf(out); n > maxStepResult {
+			return installed{Oversized: n}, r.keepOversized(sc, string(ActInstall), rawAnswer{Initialize: s.Initialize, Observations: s.Observations, Findings: out.Findings})
+		}
 		return out, nil
 	}, noRetry)
 	if err != nil {
 		return outcome{}, err
 	}
-	if got.Start.Initialize != nil {
-		r.listing.Initialize = got.Start.Initialize
+	if got.Oversized > 0 {
+		return outcome{}, r.tooLarge(string(ActInstall), got.Oversized)
+	}
+	if got.Initialize != nil {
+		r.listing.Initialize = got.Initialize
 	}
 	r.listing.Started = true
 	return outcome{
