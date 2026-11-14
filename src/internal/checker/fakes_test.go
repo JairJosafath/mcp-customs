@@ -400,7 +400,7 @@ func (s *server) respond(vm sandbox.VM, req sandbox.Request) (sandbox.Response, 
 		return answer(http.StatusOK, map[string]any{"hosts": body["hosts"], "observations": []any{}}), nil
 	case "/clock":
 		body, _ := req.Body.(map[string]any)
-		return answer(http.StatusOK, map[string]any{"offset": body["offset"], "observations": []any{}}), nil
+		return answer(http.StatusOK, map[string]any{"offset": body["offset"], "now": "2026-12-14T12:00:00Z", "observations": []any{}}), nil
 	case "/source":
 		body, _ := req.Body.(map[string]any)
 		p, _ := body["path"].(string)
