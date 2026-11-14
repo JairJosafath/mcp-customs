@@ -33,6 +33,7 @@ the rules `make check` and the reviewer hold every change to.
 - **Deadline:** Monday 2026-11-16, 13:00 PT. Scope cuts follow the ranked
   list in the plan's security review.
 - **Tooling for `make check`:** Go 1.26, Node 22, `uv`, and golangci-lint
-  v2.13.1 or later built with Go 1.26 (`go install
-github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1`); an older
-  golangci-lint on the PATH refuses the module's Go version.
+  v2.13.1 or later built with Go 1.26: `GOTOOLCHAIN=go1.26.0 go install
+github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1`, then put
+  `$(go env GOPATH)/bin` first on the PATH. An older golangci-lint refuses
+  the module's Go version.
