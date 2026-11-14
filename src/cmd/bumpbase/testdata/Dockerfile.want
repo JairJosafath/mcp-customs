@@ -1,0 +1,13 @@
+# The base, pinned by digest: the manifest list of al2023-minimal.2026.11.12.03,
+# Amazon Linux 2023 release 2023.12.20261112.
+FROM public.ecr.aws/lambda/microvms:al2023-minimal.2026.11.12.03@sha256:26a0636249b5091ab9a9ef0186e5830aec26425ed223731fc121542062bf9545
+ARG AL2023_RELEASE=2023.12.20261112
+
+RUN echo "${AL2023_RELEASE}" > /etc/dnf/vars/releasever \
+    && dnf install -y --setopt=install_weak_deps=False \
+      ca-certificates-2025.2.80-1.0.amzn2023.0.1 findutils-1:4.10.0-1.amzn2023.0.1 \
+      git-2.50.1-1.amzn2023.0.10 tar-2:1.35-1.amzn2023.0.1 \
+    && dnf clean all
+
+RUN dnf install -y --setopt=install_weak_deps=False gcc-11.5.0-5.amzn2023.0.6 make-1:4.3-5.amzn2023.0.2 \
+    && dnf remove -y gcc make
