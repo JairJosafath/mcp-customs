@@ -145,7 +145,7 @@ describe('ApiStack', () => {
 
   it('empties and deletes the reports bucket with the stack in development, never in production', () => {
     production.resourceCountIs('Custom::S3AutoDeleteObjects', 0);
-    production.resourceCountIs('AWS::Lambda::Function', 2);
+    production.resourceCountIs('AWS::Lambda::Function', 3);
     const bucket = idOf(development, 'AWS::S3::Bucket', 'Reports');
     development.resourceCountIs('Custom::S3AutoDeleteObjects', 1);
     development.hasResource('Custom::S3AutoDeleteObjects', {
@@ -238,7 +238,7 @@ describe('ApiStack', () => {
     expect(
       production.findResources('AWS::Lambda::Function')[web]?.['Properties'],
     ).not.toHaveProperty('DurableConfig');
-    production.resourceCountIs('AWS::Lambda::Function', 2);
+    production.resourceCountIs('AWS::Lambda::Function', 3);
   });
 
   it('builds each function from its own package into one bootstrap binary for arm64 Linux', () => {
@@ -248,8 +248,8 @@ describe('ApiStack', () => {
     while (key.next()) {
       keys.push(key.asString());
     }
-    // Two programs, so two different binaries.
-    expect(new Set(keys).size).toBe(2);
+    // Three programs, so three different binaries.
+    expect(new Set(keys).size).toBe(3);
     for (const key of keys) {
       const dir = path.join(outdir, `asset.${key.replace(/\.zip$/, '')}`);
       expect(readdirSync(dir)).toEqual(['bootstrap']);
@@ -466,10 +466,11 @@ describe('ApiStack', () => {
 
   it('alarms on the API, every function and the table, in either tier', () => {
     // 5xx; errors, throttles and duration of each function (development's
-    // third empties the bucket); the table's read and write throttles and
-    // system errors.
-    production.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 2 * 3 + 3);
-    development.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 3 * 3 + 3);
+    // fourth empties the bucket); the table's read and write throttles and
+    // system errors; the re-check's dead letters, and its schedule group's
+    // dropped and undelivered polls.
+    production.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 3 * 3 + 3 + 3);
+    development.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 4 * 3 + 3 + 3);
     for (const template of [production, development]) {
       template.resourceCountIs('AWS::CloudWatch::Dashboard', 1);
       // The p99 duration alarms fire at 8 of the web function's 10 seconds

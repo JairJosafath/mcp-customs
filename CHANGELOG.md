@@ -8,6 +8,15 @@ Every user-visible change, newest first. The format follows
 
 ### Added
 
+- Re-checks of new versions: every five minutes a schedule asks the registry
+  of each approved npm, Go or PyPI package for its latest version and starts
+  a check of a new one, linked to the approved check. A re-check is probed in
+  full even when its tool list matches the approved one, so a rug pull such
+  as the demo mail server's v1.0.1 ends at block when the canary address
+  leaves. The check page and `GET /api/checks/<id>` show `recheckOf`, the
+  check that approved the earlier version. The registries are settings
+  (`NPM_REGISTRY_URL`, `GO_PROXY_URL`, `PYPI_URL`) with the public ones as
+  defaults.
 - The web page and API: submit a pinned package or an https URL from the
   form on `/` or `POST /api/checks`, which start the Checker asynchronously
   and answer the check's ID (`400` with a message for bad input); watch a
