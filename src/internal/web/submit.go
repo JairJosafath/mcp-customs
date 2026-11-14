@@ -35,7 +35,7 @@ func (h *Handler) submitJSON(ctx context.Context, req *events.APIGatewayV2HTTPRe
 	}
 	var id string
 	if key, ok := header(req, "idempotency-key"); ok {
-		if id, err = checkIDFor(key, s); err != nil {
+		if id, err = checkIDFor(key); err != nil {
 			return problem(http.StatusBadRequest, sentence(err)), nil
 		}
 	}

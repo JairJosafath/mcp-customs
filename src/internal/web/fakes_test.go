@@ -46,7 +46,8 @@ type started struct {
 type answered struct{ callbackID, decision string }
 
 // fakeChecker records the checks started and the decisions sent; startErr
-// and answerErr make them fail.
+// and answerErr make them fail. Like a durable execution's name, a check ID
+// started again with another submission is refused with ErrAlreadyStarted.
 type fakeChecker struct {
 	started   []started
 	answered  []answered
@@ -57,6 +58,11 @@ type fakeChecker struct {
 func (f *fakeChecker) Start(_ context.Context, id string, s store.Submission) error {
 	if f.startErr != nil {
 		return f.startErr
+	}
+	for _, earlier := range f.started {
+		if earlier.id == id && earlier.s != s {
+			return ErrAlreadyStarted
+		}
 	}
 	f.started = append(f.started, started{id, s})
 	return nil

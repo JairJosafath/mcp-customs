@@ -6,7 +6,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -19,9 +21,11 @@ const maxRefLength = 512
 
 // The messages of a submission that names no server the Checker can check.
 var (
-	errBadKind = errors.New(`the kind must be "go", "npm", "pypi" or "remote"`)
-	errBadRef  = fmt.Errorf("the ref must be 1 to %d characters", maxRefLength)
-	errBadURL  = errors.New("a remote server's ref must be an https:// URL with a host, and no user, password or fragment")
+	errBadKind   = errors.New(`the kind must be "go", "npm", "pypi" or "remote"`)
+	errBadRef    = fmt.Errorf("the ref must be 1 to %d characters", maxRefLength)
+	errBadURL    = errors.New("a remote server's ref must be an https:// URL with a host, and no user, password or fragment")
+	errNotPublic = errors.New("a remote server's host must be a public name or address: " +
+		"not localhost, a single label, a numeric name, or a loopback, private, link-local, shared or metadata address")
 )
 
 // pinned say, for each package kind, what it is called and what a pinned
@@ -69,7 +73,60 @@ func checkRemoteURL(ref string) error {
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" || u.Opaque != "" {
 		return errBadURL
 	}
+	if !publicHost(u.Hostname()) {
+		return errNotPublic
+	}
 	return nil
+}
+
+// metadataHosts are names that answer with a cloud's instance metadata.
+var metadataHosts = []string{"metadata", "metadata.google.internal", "instance-data", "instance-data.ec2.internal"}
+
+// notPublic are the address ranges a remote server can't be at: what a
+// request from the sandbox would turn into a request inside a network
+// rather than to the internet.
+var notPublic = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),      // this network
+	netip.MustParsePrefix("10.0.0.0/8"),     // private
+	netip.MustParsePrefix("100.64.0.0/10"),  // shared (carrier-grade NAT)
+	netip.MustParsePrefix("127.0.0.0/8"),    // loopback
+	netip.MustParsePrefix("169.254.0.0/16"), // link-local, and the instance metadata at .169.254
+	netip.MustParsePrefix("172.16.0.0/12"),  // private
+	netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments
+	netip.MustParsePrefix("192.168.0.0/16"), // private
+	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking
+	netip.MustParsePrefix("224.0.0.0/3"),    // multicast and reserved, and broadcast
+	netip.MustParsePrefix("::/128"),         // unspecified
+	netip.MustParsePrefix("::1/128"),        // loopback
+	netip.MustParsePrefix("64:ff9b::/96"),   // IPv4 translated, which can reach the ranges above
+	netip.MustParsePrefix("fc00::/7"),       // unique local, and the instance metadata at fd00:ec2::254
+	netip.MustParsePrefix("fe80::/10"),      // link-local
+	netip.MustParsePrefix("ff00::/8"),       // multicast
+}
+
+// publicHost reports whether host, a URL's host without brackets or port,
+// names a public server: an address outside notPublic, or a name of at
+// least two labels whose last isn't numeric (which some resolvers read as
+// an address, such as 2130706433 or 0x7f.1), and that isn't localhost or
+// a metadata name. A public name that resolves to a private address is
+// the sandbox's egress to refuse: only the place that connects can know.
+func publicHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if addr, err := netip.ParseAddr(host); err == nil {
+		addr = addr.Unmap()
+		return !slices.ContainsFunc(notPublic, func(p netip.Prefix) bool { return p.Contains(addr) })
+	}
+	labels := strings.Split(host, ".")
+	last := labels[len(labels)-1]
+	switch {
+	case len(labels) < 2, last == "localhost", last == "internal", last == "local":
+		return false
+	case slices.Contains(metadataHosts, host):
+		return false
+	case strings.HasPrefix(last, "0x") || strings.Trim(last, "0123456789") == "":
+		return false
+	}
+	return true
 }
 
 // checkIDLength is the length of a check ID: 16 bytes, base64url.
@@ -90,10 +147,11 @@ const maxIdempotencyKey = 128
 // errBadIdempotencyKey says an Idempotency-Key header can't be used.
 var errBadIdempotencyKey = fmt.Errorf("an Idempotency-Key must be 1 to %d printable ASCII characters", maxIdempotencyKey)
 
-// checkIDFor is the check ID of a submission sent with a client's
-// idempotency key: the same key and submission give the same ID, so a
-// retried request starts no second check.
-func checkIDFor(key string, s store.Submission) (string, error) {
+// checkIDFor is the check ID of a client's idempotency key: the same key
+// gives the same ID, so a retried request starts no second check, and the
+// key sent again with another submission is refused by the Checker's
+// durable execution name.
+func checkIDFor(key string) (string, error) {
 	if key == "" || len(key) > maxIdempotencyKey {
 		return "", errBadIdempotencyKey
 	}
@@ -102,6 +160,6 @@ func checkIDFor(key string, s store.Submission) (string, error) {
 			return "", errBadIdempotencyKey
 		}
 	}
-	sum := sha256.Sum256([]byte(key + "\x00" + s.Kind + "\x00" + s.Ref))
+	sum := sha256.Sum256([]byte(key))
 	return base64.RawURLEncoding.EncodeToString(sum[:])[:checkIDLength], nil
 }
