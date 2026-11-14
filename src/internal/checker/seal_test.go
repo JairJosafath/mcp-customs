@@ -73,3 +73,24 @@ func TestASealOrLastReadThatFailsEndsTheCheckAtReview(t *testing.T) {
 		}
 	}
 }
+
+func TestAStepThatCantBeWrittenAfterAWorkingSealEndsAtReviewAsNotRecorded(t *testing.T) {
+	for name, after := range map[string]string{string(ActSeal): "", string(ActObserve): string(ActSeal)} {
+		w := newWorld(cleanServer())
+		w.rec.failStep, w.rec.failAfter = name, after
+		_, out, report := runToEnd(t, w, npm)
+		rules := rulesOf(report.Findings)
+		if out.Status != store.StatusDone || out.Verdict != verdict.Review || !slices.Contains(rules, "code:"+findings.RuleStepNotRecorded) {
+			t.Errorf("the %s step fails: output %+v, findings %v; want done at review, step not recorded", name, out, rules)
+		}
+		if slices.Contains(rules, "code:"+findings.RuleNotSealed) {
+			t.Errorf("the %s step fails: findings %v; the seal worked, so not not-sealed", name, rules)
+		}
+		if w.vms.StateOf(sandbox.VM{ID: "mvm-fake-1"}) != sandbox.StateTerminated {
+			t.Errorf("the %s step fails: the sandbox runs on", name)
+		}
+		if _, ok := w.rec.verdicts[depsHash]; ok {
+			t.Errorf("the %s step fails: approved a check whose steps aren't all recorded", name)
+		}
+	}
+}

@@ -101,17 +101,27 @@ var ErrBadArguments = errors.New("the action's arguments are not what it takes")
 // do runs action a with args, then records its STEP# item in a step of its
 // own: a replay finds both recorded and runs neither again.
 func (r *run) do(ctx durable.Context, a Action, args json.RawMessage) error {
+	out, err := r.act(ctx, a, args)
+	if err != nil {
+		return err
+	}
+	return r.record(ctx, string(a), out)
+}
+
+// act runs action a with args and keeps its findings, without recording
+// its STEP# item.
+func (r *run) act(ctx durable.Context, a Action, args json.RawMessage) (outcome, error) {
 	e, ok := registry[a]
 	if !ok {
-		return fmt.Errorf("%q: %w", a, ErrUnknownAction)
+		return outcome{}, fmt.Errorf("%q: %w", a, ErrUnknownAction)
 	}
 	r.current = string(a)
 	out, err := e.run(ctx, r, args)
 	if err != nil {
-		return fmt.Errorf("%s: %w", a, err)
+		return outcome{}, fmt.Errorf("%s: %w", a, err)
 	}
 	r.code = append(r.code, out.Findings...)
-	return r.record(ctx, string(a), out)
+	return out, nil
 }
 
 // record writes the check's next STEP# item, in a durable step named after
