@@ -37,19 +37,25 @@ type Judge struct {
 	nonce func() (string, error)
 	// wait pauses before a call is tried again; a timer unless a test sets it.
 	wait func(ctx context.Context, d time.Duration) error
+	// perAttempt bounds one try of a call; attemptTimeout unless a test sets it.
+	perAttempt time.Duration
 }
 
 // New is a judge asking model through client.
 func New(client Converser, model string) *Judge {
-	return &Judge{client: client, model: model, nonce: randomNonce, wait: wait}
+	return &Judge{client: client, model: model, nonce: randomNonce, wait: wait, perAttempt: attemptTimeout}
 }
 
 // attempts bounds the tries of one call a busy model turned away, and
 // firstBackoff is the wait before the second, doubled before each next:
-// 2, 4 and 8 seconds, well inside the Checker's five minutes.
+// 2, 4 and 8 seconds. attemptTimeout bounds each try, so a model that
+// hangs is asked again like one that timed out, and the tries and waits
+// of one call (4 × 60 s + 14 s) end well inside the Checker's five
+// minutes, which a step must fit in.
 const (
-	attempts     = 4
-	firstBackoff = 2 * time.Second
+	attempts       = 4
+	firstBackoff   = 2 * time.Second
+	attemptTimeout = 60 * time.Second
 )
 
 func wait(ctx context.Context, d time.Duration) error {
@@ -63,22 +69,34 @@ func wait(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// converse sends in, trying again with backoff while the model is busy.
+// converse sends in, trying again with backoff while the model is busy
+// or a try ran past its deadline.
 func (j *Judge) converse(ctx context.Context, in *bedrockruntime.ConverseInput) (*bedrockruntime.ConverseOutput, error) {
 	backoff := firstBackoff
 	for attempt := 1; ; attempt++ {
-		out, err := j.client.Converse(ctx, in)
+		out, timedOut, err := j.try(ctx, in)
 		if err == nil {
 			return out, nil
 		}
-		if attempt == attempts || !isBusy(err) {
-			return nil, fmt.Errorf("ask %s, attempt %d: %w", j.model, attempt, err)
-		}
-		if err := j.wait(ctx, backoff); err != nil {
+		err = fmt.Errorf("ask %s, attempt %d: %w", j.model, attempt, err)
+		if attempt == attempts || (!timedOut && !isBusy(err)) {
 			return nil, err
+		}
+		if waitErr := j.wait(ctx, backoff); waitErr != nil {
+			return nil, errors.Join(err, waitErr)
 		}
 		backoff *= 2
 	}
+}
+
+// try sends in once, within its own deadline, and says whether that
+// deadline, not ctx's, ended it.
+func (j *Judge) try(ctx context.Context, in *bedrockruntime.ConverseInput) (*bedrockruntime.ConverseOutput, bool, error) {
+	attemptCtx, cancel := context.WithTimeout(ctx, j.perAttempt)
+	defer cancel()
+	out, err := j.client.Converse(attemptCtx, in)
+	timedOut := err != nil && ctx.Err() == nil && errors.Is(attemptCtx.Err(), context.DeadlineExceeded)
+	return out, timedOut, err
 }
 
 func randomNonce() (string, error) {
