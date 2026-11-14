@@ -43,7 +43,8 @@ func TestParsePackageAcceptsOnlyPinnedVersions(t *testing.T) {
 }
 
 // fakeRun is a sandbox's runner that records each command and answers
-// with the output given for its first two words, or fails.
+// with the output given for the whole command or, failing that, for its
+// first two words, or fails.
 type fakeRun struct {
 	ran     [][]string
 	outputs map[string]string
@@ -57,9 +58,25 @@ func (f *fakeRun) run(_ context.Context, args []string, out io.Writer) error {
 		_, _ = io.WriteString(out, "it broke\n")
 		return errors.New("exit status 1")
 	}
-	_, err := io.WriteString(out, f.outputs[key])
+	answer, ok := f.outputs[strings.Join(args, " ")]
+	if !ok {
+		answer = f.outputs[key]
+	}
+	_, err := io.WriteString(out, answer)
 	return err
 }
+
+// pipReportJSON is pip's report for weather-mcp 1.0.0 and httpx.
+const pipReportJSON = `{"version":"1","install":[
+{"download_info":{"archive_info":{"hashes":{"sha256":"` + hashA + `"}}},"requested":true,"metadata":{"name":"weather-mcp","version":"1.0.0"}},
+{"download_info":{"archive_info":{"hashes":{"sha256":"` + hashB + `"}}},"requested":false,"metadata":{"name":"httpx","version":"0.27.0"}}]}`
+
+const (
+	hashA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	hashB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	// pipSetAB is the set pipReportJSON gives.
+	pipSetAB = "httpx==0.27.0 --hash=sha256:" + hashB + "\nweather-mcp==1.0.0 --hash=sha256:" + hashA + "\n"
+)
 
 const goVersionM = `/w/bin/weather: go1.26.0
 	path	github.com/acme/weather
@@ -88,31 +105,38 @@ func TestToolchainInstallsEachEcosystemAsTheAccount(t *testing.T) {
 			resolved: "mod github.com/acme/weather v1.2.3 h1:aaa=\ndep golang.org/x/net v0.30.0 h1:bbb=\n=> golang.org/x/net v0.31.0 h1:ccc=\n",
 			command:  []string{"/w/bin/weather"},
 		},
-		"an npm package": {
+		"an npm package, its lockfile read before any of its scripts run": {
 			pkg: Package{EcosystemNPM, "@acme/weather", "1.0.1"},
 			outputs: map[string]string{
-				"npm install": "added 12 packages\n",
-				"cat --":      `{"name":"@acme/weather","bin":{"weather":"dist/index.js"}}`,
+				"npm install":                 "added 12 packages\n",
+				"cat -- /w/package-lock.json": `{"lockfileVersion":3}`,
+				"cat -- /w/node_modules/@acme/weather/package.json": `{"name":"@acme/weather","bin":{"weather":"dist/index.js"}}`,
 			},
 			wantRan: [][]string{
-				{"npm", "install", "--prefix", "/w", "--no-audit", "--no-fund", "--save-exact", "@acme/weather@1.0.1"},
+				{"npm", "install", "--prefix", "/w", "--no-audit", "--no-fund", "--save-exact", "--package-lock-only", "--ignore-scripts", "@acme/weather@1.0.1"},
 				{"cat", "--", "/w/package-lock.json"},
+				{"npm", "ci", "--prefix", "/w", "--no-audit", "--no-fund"},
 				{"cat", "--", "/w/node_modules/@acme/weather/package.json"},
 			},
-			resolved: `{"name":"@acme/weather","bin":{"weather":"dist/index.js"}}`,
+			resolved: `{"lockfileVersion":3}`,
 			command:  []string{"/w/node_modules/.bin/weather"},
 		},
-		"a PyPI package": {
+		"a PyPI package, its set the resolver's before anything is installed": {
 			pkg: Package{EcosystemPyPI, "weather-mcp", "1.0.0"},
 			outputs: map[string]string{
 				"python3 -I": "httpx==0.27.0\nweather-mcp==1.0.0\n",
+				"cat --":     pipReportJSON,
 			},
 			wantRan: [][]string{
 				{"python3", "-m", "venv", "/w/venv"},
-				{"/w/venv/bin/pip", "install", "--disable-pip-version-check", "weather-mcp==1.0.0"},
+				{"python3", "-I", "-c", venvDistributions, "/w/venv"},
+				{"/w/venv/bin/pip", "install", "--disable-pip-version-check", "--dry-run", "--ignore-installed", "--report", "/w/pip-report.json", "weather-mcp==1.0.0"},
+				{"cat", "--", "/w/pip-report.json"},
+				{"python3", "-I", "-c", writeFile, "/w/pip-requirements.txt", pipSetAB},
+				{"/w/venv/bin/pip", "install", "--disable-pip-version-check", "--no-deps", "--require-hashes", "-r", "/w/pip-requirements.txt"},
 				{"python3", "-I", "-c", venvDistributions, "/w/venv"},
 			},
-			resolved: "httpx==0.27.0\nweather-mcp==1.0.0\n",
+			resolved: pipSetAB,
 			command:  []string{"/w/venv/bin/weather-mcp"},
 		},
 	} {

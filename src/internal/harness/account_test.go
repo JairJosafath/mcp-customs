@@ -125,7 +125,7 @@ func TestTheVenvIsListedByTheHarnesssPythonNotOnePlantedInIt(t *testing.T) {
 		t.Skipf("no python3 venv here: %v %s", err, out.String())
 	}
 	out.Reset()
-	if err := sb.Run(t.Context(), []string{"python3", "-I", "-c", "import sysconfig, sys; print(sysconfig.get_path('purelib', vars={'base': sys.argv[1], 'platbase': sys.argv[1]}))", venv}, &out); err != nil {
+	if err := sb.Run(t.Context(), []string{"python3", "-I", "-c", "import sysconfig, sys; print(sysconfig.get_path('purelib', 'venv', vars={'base': sys.argv[1], 'platbase': sys.argv[1]}))", venv}, &out); err != nil {
 		t.Fatal(err)
 	}
 	site := strings.TrimSpace(out.String())

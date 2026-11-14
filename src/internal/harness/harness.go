@@ -248,6 +248,7 @@ func (h *Harness) sandbox() Sandbox {
 			}
 			return h.cfg.Account.run(ctx, w, env, trusted, out)
 		},
+		KillAll: h.cfg.Account.killAll,
 	}
 }
 

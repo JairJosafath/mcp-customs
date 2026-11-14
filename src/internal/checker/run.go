@@ -28,7 +28,7 @@ type Recorder interface {
 	AppendStep(ctx context.Context, checkID string, step store.Step) error
 	GetVerdict(ctx context.Context, hash string) (store.Verdict, bool, error)
 	PutVerdict(ctx context.Context, v store.Verdict) error
-	PutApproved(ctx context.Context, a store.Approved, fromCheckID string) error
+	PutApproved(ctx context.Context, a store.Approved, conditional bool) error
 }
 
 // Reports is where a check's report and raw observations go: the bucket.
@@ -68,10 +68,7 @@ type Output struct {
 }
 
 // The kinds of server a check takes, as docs/contracts.md's harness API names them.
-var kinds = []string{"go", "npm", kindPyPI, "remote"}
-
-// kindPyPI is a PyPI submission's kind.
-const kindPyPI = "pypi"
+var kinds = []string{"go", "npm", "pypi", "remote"}
 
 // maxRefLength bounds a submission's reference.
 const maxRefLength = 512
@@ -157,8 +154,8 @@ func Handler(deps Deps) durable.Handler[Input, Output] {
 
 // check runs the fixed checks and answers the verdict. A dependency set
 // and tool list an earlier check approved pass after resolve, lookup and
-// list, except a PyPI one, whose reported set the package can still shape
-// (#23), and a re-check, which is probed whatever it lists; anything else is installed, listed, scanned, probed with the
+// list, except a re-check, which is probed whatever it lists; anything
+// else is installed, listed, scanned, probed with the
 // judge's arguments, observed, judged and investigated, and a verdict
 // short of pass waits for a person.
 func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
@@ -167,7 +164,7 @@ func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
 			return "", err
 		}
 	}
-	if r.approved != nil && r.in.Submission.Kind != kindPyPI && r.in.Recheck == nil {
+	if r.approved != nil && r.in.Recheck == nil {
 		if err := r.do(ctx, ActList, nil); err != nil {
 			return "", err
 		}
