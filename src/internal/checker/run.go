@@ -127,6 +127,9 @@ type run struct {
 	// unsettled says a re-check that did not pass may be done but has not
 	// superseded the approved check: its failure is still retried.
 	unsettled bool
+	// passed says a re-check's decided verdict is pass: should it fail
+	// once done, it still lifts the mark (liftAfterPass).
+	passed bool
 	// ownAPI says allow refused the stack's own API host: the judge
 	// investigates nothing after it.
 	ownAPI bool
@@ -265,7 +268,7 @@ func (r *run) judge(ctx durable.Context) (verdict.Input, error) {
 			err = fmt.Errorf("%w: the judgement is over %d KB", ErrBadAnswer, maxStepResult>>10)
 		}
 		return got, err
-	}, noRetry)
+	}, judgeRetry)
 	var stepErr *durable.StepError
 	if err != nil && !errors.As(err, &stepErr) {
 		return verdict.Input{}, err
@@ -351,7 +354,8 @@ var terminal = []error{ErrUnknownAction, ErrBadArguments, ErrBadWait, ErrTooLarg
 // each in a step. A check already done keeps its verdict, its approval and
 // its page: nothing more is written, and no retry is asked, unless it is a
 // re-check that did not pass and hasn't superseded the approved check
-// (unsettled). Any other check
+// (unsettled); a re-check that passed still lifts the mark
+// (liftAfterPass). Any other check
 // gets a failed step saying which action failed, and a re-check is then
 // retried once, or its second failure recorded (afterFailedRecheck). It
 // answers err, with any failure of its own joined.
@@ -372,6 +376,7 @@ func (r *run) fail(ctx durable.Context, err error) error {
 		errs = append(errs, fmt.Errorf("record check %s as failed: %w", r.in.CheckID, updateErr))
 	}
 	if done && !r.unsettled {
+		r.liftAfterPass(ctx)
 		return errors.Join(errs...)
 	}
 	errs = append(errs, r.record(ctx, "failed", r.failedOutcome()), r.afterFailedRecheck(ctx))
