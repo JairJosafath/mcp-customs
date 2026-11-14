@@ -64,13 +64,20 @@ and `/allow` are best effort: an error answer is told to the judge, and the
 check goes on.
 
 The server under test never reaches the stack's own API. Before `allow`
-calls `/allow`, the Checker refuses an allowlist holding its API host
-(`API_HOST`), or a name that resolves to one of that host's addresses
-(or any name, when the API host doesn't resolve): no `/allow` is sent,
-the `allow` step records an `allow-own-api` code finding, at least
-review, and the judge investigates nothing more. The harness, given the
-same host as the image's `API_HOST`, answers `/allow`, and `/install`'s
-`allowHosts`, 403 when they name it.
+calls `/allow`, the Checker refuses an allowlist holding any name of its
+API (`API_HOST`, and its FIPS, dual-stack and VPC endpoint forms), or a
+name that resolves into API Gateway's published address ranges for the
+API's region (embedded from `ip-ranges.json`, so the answer is the same
+from run to run), or any name when `API_HOST` isn't an execute-api host:
+no `/allow` is sent, the `allow` step records an `allow-own-api` code
+finding, at least review, and the judge investigates nothing more. The
+harness, given the same host as the image's `API_HOST`, refuses to start
+without it (the image build fails at `/ready`), answers `/allow`, and
+`/install`'s `allowHosts`, 403 when they name the API in any form and 400
+for an IP address. Its egress proxy dials each allowed request at an
+address it resolved and checked, and refuses any in those ranges or among
+the API host's own addresses, so rebinding and a custom domain don't
+reach it either; only the install's GET-only demo Go proxy is exempt.
 
 `/seal` ends egress for good: the allowlist (the registries' too) is
 emptied, every new CONNECT is refused (recorded as a refused `connect`,

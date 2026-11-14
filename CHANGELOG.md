@@ -25,6 +25,14 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- The stack's own API is kept out by fixed rules (#56). The Checker's
+  refusal compares against API Gateway's published ranges for the region,
+  so it no longer changes from run to run, and refuses the API's FIPS and
+  dual-stack names too. The harness refuses to start without `API_HOST`,
+  refuses IP addresses in `/allow` and `/install` with 400, and ends an
+  install's registry access even when the installer panics; its egress
+  proxy refuses any connection to the API's addresses, DNS rebinding
+  included.
 - The server under test can never be allowed to reach MCP Customs' own
   API (#53). The Checker refuses an allowlist holding the stack's API host,
   or a name that resolves to it, as an `allow-own-api` code finding that
