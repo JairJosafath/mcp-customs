@@ -2,10 +2,13 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 // DynamoAPI is the part of DynamoDB's client the store calls, so a test
@@ -14,11 +17,28 @@ type DynamoAPI interface {
 	GetItem(ctx context.Context, in *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	PutItem(ctx context.Context, in *dynamodb.PutItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
 	Query(ctx context.Context, in *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
+	UpdateItem(ctx context.Context, in *dynamodb.UpdateItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+}
+
+// The errors of a check's META that can't be written as asked.
+var (
+	ErrCheckExists = errors.New("the check already exists")
+	ErrNoCheck     = errors.New("there is no such check")
+	ErrEmptyUpdate = errors.New("an update must set a status, a verdict or a callback ID")
+)
+
+// CheckUpdate is what an update of a check's META sets: only the fields
+// that aren't empty. The rest of the item stays as it is.
+type CheckUpdate struct {
+	Status     Status
+	Verdict    string
+	CallbackID string
 }
 
 // Store keeps checks, their steps and verdicts in one table keyed by pk
-// and sk. Every write puts a whole item, so a retried write changes nothing
-// twice.
+// and sk. A check's META is created once and then only updated, field by
+// field; every other write puts a whole item. A retried write changes
+// nothing twice.
 type Store struct {
 	client DynamoAPI
 	table  string
@@ -29,13 +49,69 @@ func New(client DynamoAPI, table string) *Store {
 	return &Store{client: client, table: table}
 }
 
-// PutCheck writes c's META item, replacing the one before.
+// PutCheck creates c's META item, only if check c.ID has none: otherwise it
+// changes nothing and answers ErrCheckExists, so an older write never
+// overwrites a later one. UpdateCheck changes the item after.
 func (s *Store) PutCheck(ctx context.Context, c Check) error {
 	pk, err := checkPK(c.ID)
 	if err != nil {
 		return err
 	}
-	return s.put(ctx, checkRow(pk, c), "check "+c.ID)
+	_, err = s.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           aws.String(s.table),
+		Item:                checkRow(pk, c),
+		ConditionExpression: aws.String("attribute_not_exists(pk)"),
+	})
+	if failed := new(types.ConditionalCheckFailedException); errors.As(err, &failed) {
+		return fmt.Errorf("create check %s: %w", c.ID, ErrCheckExists)
+	}
+	if err != nil {
+		return fmt.Errorf("create check %s in table %s: %w", c.ID, s.table, err)
+	}
+	return nil
+}
+
+// UpdateCheck sets, on check id's META item, the fields of u that aren't
+// empty, and leaves every other field as it is. It answers ErrNoCheck when
+// the check doesn't exist, without creating it.
+func (s *Store) UpdateCheck(ctx context.Context, id string, u CheckUpdate) error {
+	pk, err := checkPK(id)
+	if err != nil {
+		return err
+	}
+	var sets []string
+	names := map[string]string{}
+	values := row{}
+	for _, field := range []struct{ name, value string }{
+		{"status", string(u.Status)},
+		{"verdict", u.Verdict},
+		{"callbackId", u.CallbackID},
+	} {
+		if field.value == "" {
+			continue
+		}
+		sets = append(sets, fmt.Sprintf("#%s = :%s", field.name, field.name))
+		names["#"+field.name] = field.name
+		values[":"+field.name] = str(field.value)
+	}
+	if len(sets) == 0 {
+		return ErrEmptyUpdate
+	}
+	_, err = s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                 aws.String(s.table),
+		Key:                       row{"pk": str(pk), "sk": str(metaSK)},
+		UpdateExpression:          aws.String("SET " + strings.Join(sets, ", ")),
+		ConditionExpression:       aws.String("attribute_exists(pk)"),
+		ExpressionAttributeNames:  names,
+		ExpressionAttributeValues: values,
+	})
+	if failed := new(types.ConditionalCheckFailedException); errors.As(err, &failed) {
+		return fmt.Errorf("update check %s: %w", id, ErrNoCheck)
+	}
+	if err != nil {
+		return fmt.Errorf("update check %s in table %s: %w", id, s.table, err)
+	}
+	return nil
 }
 
 // GetCheck reads check id's META item, and false when there is none.
