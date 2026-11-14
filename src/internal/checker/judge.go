@@ -3,6 +3,9 @@ package checker
 import (
 	"context"
 	"encoding/json"
+	"errors"
+
+	"github.com/aws/aws-durable-execution-sdk-go/durable"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/findings"
 	"github.com/JairJosafath/mcp-customs/src/internal/store"
@@ -19,6 +22,23 @@ type Judge interface {
 	Judge(ctx context.Context, e Evidence) (Judgement, error)
 	Next(ctx context.Context, inv Investigation) (Move, error)
 }
+
+// ErrNoTime is a judge's answer when too little of the invocation is left
+// to ask the model at all. It is no failure of the judge: its step ends
+// the invocation and runs again in a fresh one (judgeRetry).
+var ErrNoTime = errors.New("too little of the invocation is left to ask the judge")
+
+// judgeAttempts bounds the tries of a judge's step that ErrNoTime ends; a
+// fresh invocation has its whole timeout, so the second one has the time.
+const judgeAttempts = 3
+
+// judgeRetry is for a judge's steps: only ErrNoTime is tried again, after
+// the SDK's least delay, in which the invocation suspends, as nothing
+// else runs, and the step resumes in a fresh one. Any other failure of
+// the judge is final, and gives review.
+var judgeRetry = durable.WithRetry(func(a durable.RetryAttempt) durable.RetryDecision {
+	return durable.RetryDecision{Retry: errors.Is(a.Err, ErrNoTime) && a.Attempt < judgeAttempts}
+})
 
 // Canary is one of the run's planted fake secrets, as the judge sees it.
 type Canary struct {

@@ -121,8 +121,8 @@ func TestACallWhoseOwnContextEndsIsNotTriedAgain(t *testing.T) {
 	h := &hangingBedrock{}
 	j := New(h, model)
 	j.wait = func(context.Context, time.Duration) error { return nil }
-	ctx, cancel := context.WithDeadline(t.Context(), time.Unix(0, 0))
-	defer cancel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
 	if _, err := j.Next(ctx, checker.Investigation{}); err == nil || h.tries != 1 {
 		t.Errorf("error %v after %d tries, want an error after 1", err, h.tries)
 	}

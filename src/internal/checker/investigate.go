@@ -42,7 +42,7 @@ func (r *run) writeProbes(ctx durable.Context) error {
 			return nil, fmt.Errorf("%w: the probes are over %d KB", ErrBadAnswer, maxStepResult>>10)
 		}
 		return out, nil
-	}, noRetry)
+	}, judgeRetry)
 	var stepErr *durable.StepError
 	if err != nil && !errors.As(err, &stepErr) {
 		return err
@@ -96,7 +96,7 @@ func (r *run) investigate(ctx durable.Context, in *verdict.Input, e Evidence, j 
 		inv := Investigation{Canaries: r.judgeCanaries(), Evidence: e, Judgement: j, Turns: r.turns, TurnsLeft: maxTurns - r.turn + 1}
 		m, err := durable.Step(ctx, fmt.Sprintf("investigate-%d", r.turn), func(sc durable.StepContext) (Move, error) {
 			return r.deps.Judge.Next(sc, inv)
-		}, noRetry)
+		}, judgeRetry)
 		var stepErr *durable.StepError
 		if err != nil && !errors.As(err, &stepErr) {
 			return err
