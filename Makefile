@@ -20,7 +20,7 @@ CDK := CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true $(BIN)/cdk 
 
 .DEFAULT_GOAL := help
 .PHONY: help check check-light deps fmt fmt-check lint typecheck test synth cfn-lint dist clean
-.PHONY: go-deps tidy-check go-fmt-check vet go-lint go-test
+.PHONY: go-deps tidy-check go-fmt-check vet go-lint go-test demo-publish
 
 help: ## List the targets.
 	@awk 'BEGIN {FS = ":.*## "} /^[a-z-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -91,3 +91,20 @@ dist: deps synth ## Write both tiers' cloud assemblies, flat, into dist/ for a r
 
 clean: ## Remove what synth and dist wrote.
 	rm -rf cdk.out dist
+
+# The live rug pull: the stack serves the demo servers' versions itself,
+# from its bucket's goproxy/ prefix, which no role of the stack may write
+# (docs/runbook.md, "The demo proxy"). The one target that calls AWS, with
+# the deployer's credentials; nothing else runs it. BUCKET, or else the
+# bucket STACK outputs, receives the files; publishing an earlier version
+# takes the later ones off.
+STACK ?= $(NAME)
+DEMO_PROXY_DIR := cdk.out/demo-proxy
+demo-publish: ## Publish the demo servers' VERSION (v1.0.0 or v1.0.1) to the stack's Go module proxy; needs AWS credentials.
+	@test -n "$(VERSION)" || { echo 'Name the version: make demo-publish VERSION=v1.0.1' >&2; exit 1; }
+	rm -rf $(DEMO_PROXY_DIR)
+	cd src && go run ./cmd/demopublish -version $(VERSION) -out ../$(DEMO_PROXY_DIR)
+	bucket='$(BUCKET)'; \
+	  if [ -z "$$bucket" ]; then bucket=$$(aws cloudformation describe-stacks --stack-name $(STACK) \
+	    --query "Stacks[0].Outputs[?OutputKey=='ReportsBucketName'].OutputValue" --output text); fi; \
+	  test -n "$$bucket" && aws s3 sync --delete $(DEMO_PROXY_DIR) "s3://$$bucket/goproxy/"
