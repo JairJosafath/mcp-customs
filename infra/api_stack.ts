@@ -56,6 +56,18 @@ export const REPORTS_BUCKET_NAME = 'REPORTS_BUCKET_NAME';
 /** The environment variable that hands the Checker the ARN of the key its run tokens are derived from. */
 export const RUN_TOKEN_SECRET_ARN = 'RUN_TOKEN_SECRET_ARN';
 
+/** The environment variable that names the judge's model to the Checker. */
+export const JUDGE_MODEL_ID = 'JUDGE_MODEL_ID';
+
+/** The judge's model on Amazon Bedrock. */
+export const JUDGE_MODEL = 'anthropic.claude-opus-5-5';
+
+/** The cross-region inference profile the Checker calls the judge's model through. */
+export const JUDGE_INFERENCE_PROFILE = `us.${JUDGE_MODEL}`;
+
+/** The regions that profile routes a call to, each of which must allow the model. */
+export const JUDGE_MODEL_REGIONS = ['us-east-1', 'us-east-2', 'us-west-2'] as const;
+
 /** The prefixes the Checker writes under, as docs/contracts.md names them. */
 export const REPORT_PREFIXES = ['reports/', 'observations/'] as const;
 
@@ -287,6 +299,7 @@ export class ApiStack extends Stack {
     this.grantReportWrites(checker, reports);
     this.grantRunTokenKey(checker, rules);
     this.grantDurableExecution(checker);
+    this.grantJudge(checker);
     // One MicroVM per check, from the harness image.
     new Sandbox(this, 'Sandbox', { logRetention: rules.logRetention }).grantLaunch(checker);
     // Nothing invokes the Checker yet: the web function starts checks in a
@@ -432,6 +445,26 @@ export class ApiStack extends Stack {
         reason: `Each check writes its own ${prefix}<check-id>.json, a key unknown until the check starts; the wildcard reaches only that prefix of the reports bucket, and only to put.`,
       });
     }
+  }
+
+  /**
+   * Lets `fn` call the judge's model, and no other: through its inference
+   * profile in the stack's region, which routes the call to the model in
+   * one of `JUDGE_MODEL_REGIONS`. The Converse API is `bedrock:InvokeModel`.
+   */
+  private grantJudge(fn: LambdaFunction): void {
+    fn.addEnvironment(JUDGE_MODEL_ID, JUDGE_INFERENCE_PROFILE);
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        actions: ['bedrock:InvokeModel'],
+        resources: [
+          `arn:${this.partition}:bedrock:${this.region}:${this.account}:inference-profile/${JUDGE_INFERENCE_PROFILE}`,
+          ...JUDGE_MODEL_REGIONS.map(
+            (region) => `arn:${this.partition}:bedrock:${region}::foundation-model/${JUDGE_MODEL}`,
+          ),
+        ],
+      }),
+    );
   }
 
   /**

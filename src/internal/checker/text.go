@@ -87,12 +87,13 @@ type tool struct {
 			Type any   `json:"type"`
 			Enum []any `json:"enum"`
 		} `json:"properties"`
+		Required []string `json:"required"`
 	} `json:"inputSchema"`
 }
 
 // stubArguments are placeholder arguments for a tool, one per property of
 // its input schema: the first enum value, or a value of the property's
-// type. The judge writes realistic ones (#8).
+// type: what a tool is probed with when the judge wrote none.
 func stubArguments(t tool) map[string]any {
 	args := map[string]any{}
 	for name, p := range t.InputSchema.Properties {

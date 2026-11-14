@@ -207,6 +207,7 @@ func list(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 // their code findings. The observations themselves go to the bucket.
 type observed struct {
 	Count     int                `json:"count"`
+	Seen      seen               `json:"seen"`
 	Findings  []findings.Finding `json:"findings"`
 	Oversized int                `json:"oversized,omitempty"`
 }
@@ -228,7 +229,7 @@ func observe(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 		if err := r.deps.Reports.PutObservations(sc, r.in.CheckID, raw); err != nil {
 			return observed{}, err
 		}
-		got := observed{Count: len(all.Observations), Findings: findings.FromObservations(all.Observations, r.canaries)}
+		got := observed{Count: len(all.Observations), Seen: seenIn(all.Observations), Findings: findings.FromObservations(all.Observations, r.canaries)}
 		if n := sizeOf(got); n > maxStepResult {
 			return observed{Oversized: n}, r.keepOversized(sc, "observe", got)
 		}
@@ -240,6 +241,7 @@ func observe(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 	if got.Oversized > 0 {
 		return outcome{}, r.tooLarge("observe", got.Oversized)
 	}
+	r.seen = got.Seen
 	return outcome{
 		Summary:  fmt.Sprintf("Read %d observation(s) of the run; code flags %d.", got.Count, len(got.Findings)),
 		Findings: got.Findings,

@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-durable-execution-sdk-go/durable"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/JairJosafath/mcp-customs/src/internal/canary"
 	"github.com/JairJosafath/mcp-customs/src/internal/checker"
+	"github.com/JairJosafath/mcp-customs/src/internal/checker/bedrock"
 	"github.com/JairJosafath/mcp-customs/src/internal/checker/sandbox"
 	"github.com/JairJosafath/mcp-customs/src/internal/store"
 )
@@ -35,7 +37,7 @@ func main() {
 	for _, name := range []string{
 		"DYNAMODB_TABLE_NAME", "REPORTS_BUCKET_NAME",
 		"SANDBOX_IMAGE_ARN", "SANDBOX_INGRESS_CONNECTOR_ARN", "SANDBOX_EGRESS_CONNECTOR_ARN",
-		"RUN_TOKEN_SECRET_ARN",
+		"RUN_TOKEN_SECRET_ARN", "JUDGE_MODEL_ID",
 	} {
 		env[name] = os.Getenv(name)
 		if env[name] == "" {
@@ -71,7 +73,7 @@ func main() {
 		Store:    store.New(dynamodb.NewFromConfig(cfg), env["DYNAMODB_TABLE_NAME"]),
 		Reports:  store.NewBucket(s3.NewFromConfig(cfg), env["REPORTS_BUCKET_NAME"]),
 		Sandbox:  vms,
-		Judge:    checker.StubJudge{},
+		Judge:    bedrock.New(bedrockruntime.NewFromConfig(cfg), env["JUDGE_MODEL_ID"]),
 		Canaries: canary.New,
 		Token:    func(checkID string) string { return sandbox.DeriveRunToken(key, checkID) },
 	}
