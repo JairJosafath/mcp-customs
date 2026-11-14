@@ -946,3 +946,48 @@ func TestACanaryInAnHTTPTrailerIsFound(t *testing.T) {
 		t.Errorf("canaries = %+v, want the token in the trailer", d.Canaries)
 	}
 }
+
+func TestAnInstallsGetThroughATunnelToAnotherPortIsRefusedAndRecorded(t *testing.T) {
+	api := "abc.execute-api.us-east-1.amazonaws.com"
+	mod := "/goproxy/github.com/!jair!josafath/mcp-customs/demo/mail/@v/list"
+	ca := newCA(t)
+	up := &fakeUpstream{}
+	rec := newRecorded()
+	e := New(Config{CA: ca, Upstream: up, InstallGet: []string{"https://" + api + "/goproxy/"}})
+	e.Observe(rec.observe)
+	e.Installing(true)
+	proxy := httptest.NewServer(e.Proxy())
+	t.Cleanup(proxy.Close)
+	client := proxyClient(proxy.URL, ca)
+	// The client tunnels with CONNECT host:port and names the same
+	// host:port in the inner request's Host.
+	for _, tc := range []struct {
+		url     string
+		allowed bool
+	}{
+		{"https://" + api + mod, true},
+		{"https://" + api + ":8443" + mod, false},
+	} {
+		before, sent := len(rec.of(KindHTTP)), len(up.got)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, tc.url, http.NoBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		obs := rec.of(KindHTTP)[before:]
+		if len(obs) != 1 {
+			t.Fatalf("%s: recorded %+v, want one request", tc.url, obs)
+		}
+		if d, _ := obs[0].(HTTPDetail); d.Allowed != tc.allowed || d.Host != api || d.Path != mod {
+			t.Errorf("%s: recorded %+v, want allowed %v", tc.url, d, tc.allowed)
+		}
+		if got := len(up.got) - sent; got != map[bool]int{true: 1, false: 0}[tc.allowed] {
+			t.Errorf("%s: the host got %d requests, want allowed %v", tc.url, got, tc.allowed)
+		}
+	}
+}
