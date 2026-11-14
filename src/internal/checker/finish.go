@@ -16,9 +16,11 @@ import (
 // last, the verdict to the check's META, with the approval of a pass this
 // check decided to HASH# and, for a package, to APPROVED in the same
 // transaction, so a check reads done only once its report and its verdict
-// step are there, and is approved only once it reads done. A verdict step that can't be written fails the
-// check before any approval is. A re-check that a person approved after
-// code did not pass lifts its superseded mark (lift).
+// step are there, and is approved only once it reads done. A verdict step
+// that can't be written fails the check before any approval is. A
+// re-check that a person approved after code did not pass lifts its
+// superseded mark (lift); a lift that fails then is logged, as the pass is
+// done.
 func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (verdict.Verdict, error) {
 	r.current = "verdict"
 	if err := r.endSandbox(ctx); err != nil {
@@ -43,7 +45,13 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 		return "", fmt.Errorf("write the verdict of check %s: %w", r.in.CheckID, err)
 	}
 	if err := r.settleSuperseded(ctx, decided.Verdict); err != nil {
-		return "", err
+		if decided.Verdict != verdict.Pass {
+			return "", err
+		}
+		// The pass is done and approved: a lift or its event that fails
+		// after it is logged, and the verdict stands.
+		ctx.Logger().ErrorContext(ctx, "lift the superseded mark after a pass",
+			"checkId", r.in.CheckID, "error", err.Error())
 	}
 	return decided.Verdict, nil
 }

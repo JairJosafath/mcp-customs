@@ -28,6 +28,7 @@ type Recorder interface {
 	AppendStep(ctx context.Context, checkID string, step store.Step) error
 	GetVerdict(ctx context.Context, hash string) (store.Verdict, bool, error)
 	PassCheck(ctx context.Context, p store.Pass) error
+	FailCheck(ctx context.Context, id string) error
 	MarkRetry(ctx context.Context, kind, name, version string) (bool, error)
 	MarkSuperseded(ctx context.Context, approvedID string, s store.Superseding) (bool, error)
 	LiftSuperseded(ctx context.Context, approvedID, recheckID string) (bool, error)
@@ -344,7 +345,8 @@ var terminal = []error{ErrUnknownAction, ErrBadArguments, ErrBadWait, ErrTooLarg
 
 // fail closes a check that failed, unless err is the SDK suspending the
 // invocation: it ends the sandbox, records a failed step saying which
-// action failed, and sets the check's status to failed, each in a step;
+// action failed, and sets the check's status to failed unless it is
+// already done, each in a step;
 // a re-check is then retried once, or its second failure recorded
 // (afterFailedRecheck). It answers err, with any failure of its own joined.
 func (r *run) fail(ctx durable.Context, err error) error {
@@ -364,7 +366,8 @@ func (r *run) fail(ctx durable.Context, err error) error {
 	}
 	errs = append(errs, r.record(ctx, "failed", failed))
 	if _, updateErr := durable.Step(ctx, "record-failure", func(sc durable.StepContext) (bool, error) {
-		return true, r.deps.Store.UpdateCheck(sc, r.in.CheckID, store.CheckUpdate{Status: store.StatusFailed})
+		// A check already done keeps its verdict and approval.
+		return true, ignore(r.deps.Store.FailCheck(sc, r.in.CheckID), store.ErrCheckDone)
 	}); updateErr != nil {
 		errs = append(errs, fmt.Errorf("record check %s as failed: %w", r.in.CheckID, updateErr))
 	}

@@ -150,6 +150,9 @@ func (f *fakeDynamo) holds(condition *string, key [2]string, values row) error {
 		ok = !exists
 	case "attribute_exists(pk)":
 		ok = exists
+	case "attribute_exists(pk) AND #status <> :done":
+		status, _ := readStr(item, "status")
+		ok = exists && status != string(StatusDone)
 	case "attribute_not_exists(pk) OR polled = :version":
 		version, _ := readStr(values, ":version")
 		existing, _ := readStr(item, "polled")
