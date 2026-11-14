@@ -122,7 +122,8 @@ the addresses of the API's standard and dual-stack names (IPv4 embedded in
 IPv6 read as itself), so rebinding and a custom domain don't reach it
 either. The one request it lets reach the API is an install's GET or HEAD
 under the demo Go proxy's prefix, which the proxy marks as it admits it;
-its connection is never kept for another request.
+its connection is never kept for another request, and it still reaches
+only a public address, never one inside a network.
 
 `/seal` ends egress for good: the allowlist (the registries' too) is
 emptied, every new CONNECT is refused (recorded as a refused `connect`,
