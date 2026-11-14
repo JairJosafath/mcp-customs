@@ -41,6 +41,7 @@ invocation and no execution history keeps it. JSON in and out; every response ca
 | `POST /list`        | `{}`                                                                                    | tools (whole schemas), resources, prompts, as raw JSON |
 | `POST /call`        | `{"tool":"name","arguments":{...}}`                                                     | the raw result                                         |
 | `POST /allow`       | `{"hosts":[...]}`                                                                       | the egress allowlist now in force                      |
+| `POST /seal`        | `{}`                                                                                    | `{"hosts":[]}`: egress ended for good                  |
 | `POST /clock`       | `{"offset":"720h"}`                                                                     | the fake clock now in force                            |
 | `POST /source`      | `{"path":"dist/index.js"}`, relative to the installed package                           | `{"path","content"}`                                   |
 | `POST /download`    | `{"path":"/home/dev/.cache/x"}`, a file the server wrote                                | `{"path","size","sha256","kind","excerpt"}`            |
@@ -58,6 +59,19 @@ of the unprivileged account.
 The investigation's calls (`/call` again, `/source`, `/download`, `/clock`)
 and `/allow` are best effort: an error answer is told to the judge, and the
 check goes on.
+
+`/seal` ends egress for good: the allowlist (the registries' too) is
+emptied, every new CONNECT is refused (recorded as a refused `connect`,
+searched), and a request still being sent on to an allowed host is cut;
+`/seal` answers only once every request allowed before it is done,
+recorded and cut, so none reaches its host after.
+DNS is still answered with fakes and every request still searched and
+recorded, so what the server tries after is seen; nothing leaves. Sealing
+again answers the same; `/allow` after it answers 409, and a harness
+with no egress proxy answers `/seal` 409. Once the investigation ends,
+the Checker calls `/seal`, then `GET /observations` a last time, then
+ends the MicroVM, and decides the verdict from that last read. A seal or
+last read that fails is a `not-sealed` code finding, at least review.
 
 An observation is `{"at","kind","detail"}`, where `kind` is one of `dns`
 (every UDP datagram to port 53, at any address: name, type, answers,
@@ -157,8 +171,9 @@ One DynamoDB table (`DYNAMODB_TABLE_NAME`), keys `pk` and `sk`:
 A check's `status` is `running`, `waiting` (for a person's Approve or
 Block, under its `callbackId`), `done` or `failed`. A `STEP#` item's `name`
 is the registered action that ran (`resolve`, `lookup`, `install`, `list`,
-`scan`, `compare` (a re-check's tool list against the approved one), `probe`, `observe`, `ask_human`, `wait`, and the investigation's
-`allow`, `call`, `read_source`, `inspect_download`, `clock`), or `start`,
+`scan`, `compare` (a re-check's tool list against the approved one), `probe`, `observe`, `ask_human`, `wait`, the investigation's
+`allow`, `call`, `read_source`, `inspect_download`, `clock`, and `seal`
+before the last `observe`), or `start`,
 `write_probes`, `judge`, `investigate` (one a turn: the move the judge
 picked), `verdict` or `failed`. A check that fails ends its sandbox, writes a
 `failed` step whose summary names the action that failed (never the

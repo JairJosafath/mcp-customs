@@ -24,6 +24,7 @@ type fakeEgress struct {
 	allowed    []string
 	observe    egress.Observer
 	installing []bool
+	seals      int
 }
 
 func (f *fakeEgress) Installing(on bool) {
@@ -52,6 +53,13 @@ func (f *fakeEgress) Allow(hosts ...string) []string {
 	f.allowed = append(f.allowed, hosts...)
 	slices.Sort(f.allowed)
 	return slices.Clone(f.allowed)
+}
+
+func (f *fakeEgress) Seal() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seals++
+	f.allowed = nil
 }
 
 func (f *fakeEgress) Env() []string { return []string{"HTTPS_PROXY=http://127.0.0.1:3128"} }

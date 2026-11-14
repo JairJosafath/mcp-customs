@@ -63,7 +63,7 @@ func TestTheRegistryMapsEachActionToItsOneDurableOperation(t *testing.T) {
 	want := map[Action]Operation{
 		ActResolve: OpStep, ActLookup: OpStep, ActInstall: OpStep, ActList: OpStep,
 		ActScan: OpMap, ActProbe: OpMap, ActObserve: OpStep, ActAskHuman: OpCallback, ActWait: OpWait,
-		ActCall: OpStep, ActReadSource: OpStep, ActInspectDownload: OpStep, ActClock: OpStep, ActAllow: OpStep,
+		ActCall: OpStep, ActReadSource: OpStep, ActInspectDownload: OpStep, ActClock: OpStep, ActAllow: OpStep, ActSeal: OpStep,
 	}
 	for a, op := range want {
 		if got, ok := OperationOf(a); !ok || got != op {
@@ -186,7 +186,7 @@ func TestASubmissionSeenBeforeWithAnotherToolListIsCheckedAsNew(t *testing.T) {
 	if result.Status != durabletest.Succeeded {
 		t.Fatalf("status %s, error %+v", result.Status, result.Error)
 	}
-	want := []string{"start", "resolve", "lookup", "list", "install", "scan", "write_probes", "probe", "observe", "judge", "allow", "investigate", "verdict"}
+	want := []string{"start", "resolve", "lookup", "list", "install", "scan", "write_probes", "probe", "observe", "judge", "allow", "investigate", "seal", "observe", "verdict"}
 	if got := w.rec.stepNames(); !reflect.DeepEqual(got, want) {
 		t.Errorf("steps %v, want %v", got, want)
 	}
@@ -211,7 +211,7 @@ func TestANewCleanSubmissionRunsEveryFixedCheckAndPasses(t *testing.T) {
 	if out.Verdict != verdict.Pass {
 		t.Errorf("verdict %s, want pass", out.Verdict)
 	}
-	if got, want := w.paths(), []string{"/install", "/start", "/list", "/call", "/observations", "/allow"}; !reflect.DeepEqual(got, want) {
+	if got, want := w.paths(), []string{"/install", "/start", "/list", "/call", "/observations", "/allow", "/seal", "/observations"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("harness calls %v, want %v", got, want)
 	}
 	// The probe sent the judge's arguments, limited to the tool's schema.

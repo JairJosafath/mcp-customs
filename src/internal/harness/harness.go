@@ -60,6 +60,8 @@ type Egress interface {
 	// Installing says whether an install runs, which alone may reach the
 	// package registries.
 	Installing(on bool)
+	// Seal empties the allowlist for good and refuses every new connection.
+	Seal()
 }
 
 // A Harness answers the Harness API for one run, once the /run hook has
@@ -74,7 +76,9 @@ type Harness struct {
 	run  *run
 	srv  *server
 	done bool
-	life lifecycle
+	// sealed says /seal has ended egress: /allow is refused after it.
+	sealed bool
+	life   lifecycle
 }
 
 // run is what the install call set up.
@@ -95,6 +99,7 @@ func New(cfg Config, log *slog.Logger) (*Harness, error) {
 	h.mux.HandleFunc("POST /list", h.handle(h.list))
 	h.mux.HandleFunc("POST /call", h.handle(h.call))
 	h.mux.HandleFunc("POST /allow", h.handle(h.allow))
+	h.mux.HandleFunc("POST /seal", h.handle(h.seal))
 	h.mux.HandleFunc("GET /observations", h.handle(h.observations))
 	h.mux.HandleFunc("/", h.handle(func(r *http.Request) (int, answer) {
 		return problem(http.StatusNotFound, "No call "+r.Method+" "+r.URL.Path+".")
@@ -411,6 +416,9 @@ func (h *Harness) allow(r *http.Request) (int, answer) {
 	}
 	if h.cfg.Egress == nil {
 		return problem(http.StatusConflict, "This harness has no egress proxy.")
+	}
+	if h.sealed {
+		return problem(http.StatusConflict, "Egress is sealed; no host can be allowed.")
 	}
 	return http.StatusOK, answer{"hosts": h.cfg.Egress.Allow(req.Hosts...)}
 }
