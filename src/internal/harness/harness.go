@@ -19,6 +19,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/JairJosafath/mcp-customs/src/internal/canary"
+	"github.com/JairJosafath/mcp-customs/src/internal/egress"
 )
 
 // Config is what a harness needs to know, read once at start.
@@ -39,9 +42,24 @@ type Config struct {
 	Installer Installer
 	// Now is the clock observations are stamped with.
 	Now func() time.Time
+	// Egress is the egress proxy the server's traffic goes through, or nil
+	// when there is none, as in tests that need no network.
+	Egress Egress
 	// InstallTimeout bounds one install; CallTimeout one MCP request.
 	InstallTimeout time.Duration
 	CallTimeout    time.Duration
+}
+
+// Egress is what the harness needs of the egress proxy (internal/egress).
+type Egress interface {
+	// Observe names who is told what the proxy sees.
+	Observe(o egress.Observer)
+	// SetCanaries names the canaries every request is searched for.
+	SetCanaries(c canary.Set)
+	// Allow adds hosts to the allowlist and answers the allowlist in force.
+	Allow(hosts ...string) []string
+	// Env is what the server's environment needs to go through the proxy.
+	Env() []string
 }
 
 // A Harness answers the Harness API for one run. Calls are answered one at
@@ -76,10 +94,14 @@ func New(cfg Config, log *slog.Logger) (*Harness, error) {
 	h.mux.HandleFunc("POST /start", h.handle(h.start))
 	h.mux.HandleFunc("POST /list", h.handle(h.list))
 	h.mux.HandleFunc("POST /call", h.handle(h.call))
+	h.mux.HandleFunc("POST /allow", h.handle(h.allow))
 	h.mux.HandleFunc("GET /observations", h.handle(h.observations))
 	h.mux.HandleFunc("/", h.handle(func(r *http.Request) (int, answer) {
 		return problem(http.StatusNotFound, "No call "+r.Method+" "+r.URL.Path+".")
 	}))
+	if cfg.Egress != nil {
+		cfg.Egress.Observe(func(kind string, detail any) { h.obs.add(ObservationKind(kind), detail) })
+	}
 	return h, nil
 }
 
@@ -168,10 +190,12 @@ func (h *Harness) install(r *http.Request) (int, answer) {
 	if err != nil {
 		return problem(http.StatusBadRequest, err.Error())
 	}
-	for _, host := range req.AllowHosts {
-		if host == "" || strings.ContainsAny(host, "/ ") {
-			return problem(http.StatusBadRequest, fmt.Sprintf("%q is not a host name", host))
-		}
+	if err := checkHosts(req.AllowHosts); err != nil {
+		return problem(http.StatusBadRequest, err.Error())
+	}
+	if h.cfg.Egress != nil {
+		h.cfg.Egress.SetCanaries(canaryList(req.Canaries))
+		h.cfg.Egress.Allow(req.AllowHosts...)
 	}
 	if err := plantHome(h.cfg.Account, canaries); err != nil {
 		return problem(http.StatusInternalServerError, "Could not plant the developer's home: "+err.Error())
@@ -204,7 +228,7 @@ func (h *Harness) install(r *http.Request) (int, answer) {
 // temporary files kept in the working directory.
 func (h *Harness) sandbox() Sandbox {
 	w := h.cfg.Workdir
-	env := h.cfg.Account.env(h.serverPath(),
+	env := h.cfg.Account.env(h.serverPath(), append(h.egressEnv(),
 		"GOPATH="+filepath.Join(w, ".go"),
 		"GOBIN="+filepath.Join(w, "bin"),
 		"GOCACHE="+filepath.Join(w, ".cache", "go-build"),
@@ -212,7 +236,7 @@ func (h *Harness) sandbox() Sandbox {
 		"npm_config_cache="+filepath.Join(w, ".npm"),
 		"PIP_CACHE_DIR="+filepath.Join(w, ".cache", "pip"),
 		"TMPDIR="+h.installTemp(),
-	)
+	)...)
 	return Sandbox{
 		Workdir: w,
 		Env:     env,
@@ -261,7 +285,7 @@ func (h *Harness) start(r *http.Request) (int, answer) {
 	if len(command) == 0 || command[0] == "" {
 		return problem(http.StatusBadRequest, "The install named no command; give one.")
 	}
-	srv, err := startServer(h.cfg.Account, h.cfg.Workdir, h.cfg.Account.env(h.serverPath()), command, h.obs.add)
+	srv, err := startServer(h.cfg.Account, h.cfg.Workdir, h.cfg.Account.env(h.serverPath(), h.egressEnv()...), command, h.obs.add)
 	if err != nil {
 		return problem(http.StatusBadGateway, err.Error())
 	}
@@ -355,6 +379,53 @@ func (h *Harness) serverFailed(method string, err error) (int, answer) {
 	status, body := problem(http.StatusBadGateway, fmt.Sprintf("The server failed %s: %v", method, err))
 	body["stderr"] = h.srv.stderr.String()
 	return status, body
+}
+
+// egressEnv is what the server's environment needs for the egress proxy.
+func (h *Harness) egressEnv() []string {
+	if h.cfg.Egress == nil {
+		return nil
+	}
+	return h.cfg.Egress.Env()
+}
+
+type allowRequest struct {
+	Hosts []string `json:"hosts"`
+}
+
+// allow adds hosts to the egress allowlist and answers the allowlist now in
+// force.
+func (h *Harness) allow(r *http.Request) (int, answer) {
+	var req allowRequest
+	if err := decode(r, &req); err != nil {
+		return problem(http.StatusBadRequest, err.Error())
+	}
+	if err := checkHosts(req.Hosts); err != nil {
+		return problem(http.StatusBadRequest, err.Error())
+	}
+	if h.cfg.Egress == nil {
+		return problem(http.StatusConflict, "This harness has no egress proxy.")
+	}
+	return http.StatusOK, answer{"hosts": h.cfg.Egress.Allow(req.Hosts...)}
+}
+
+// checkHosts refuses anything in hosts that is not a host name.
+func checkHosts(hosts []string) error {
+	for _, host := range hosts {
+		if host == "" || strings.ContainsAny(host, "/ :@") {
+			return fmt.Errorf("%q is not a host name", host)
+		}
+	}
+	return nil
+}
+
+// canaryList is the run's canaries as internal/canary has them.
+func canaryList(list []Canary) canary.Set {
+	set := make(canary.Set, 0, len(list))
+	for _, c := range list {
+		set = append(set, canary.Canary{Kind: canary.Kind(c.Kind), Value: c.Value})
+	}
+	return set
 }
 
 func (h *Harness) observations(*http.Request) (int, answer) {

@@ -8,6 +8,11 @@
 // default). The token is removed from the environment once read. It must
 // run as root, and refuses to start otherwise: it runs the server as the
 // unprivileged user, never as itself.
+//
+// Before it answers anything it starts the egress proxy, writes the proxy
+// CA's certificate (never its key) to /etc/mcp-customs, and puts up the
+// firewall that holds the unprivileged user's traffic to the proxy; it
+// refuses to start if any of that fails.
 package main
 
 import (
@@ -15,8 +20,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"os/user"
 	"path/filepath"
@@ -24,6 +31,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/JairJosafath/mcp-customs/src/internal/egress"
 	"github.com/JairJosafath/mcp-customs/src/internal/harness"
 )
 
@@ -51,6 +59,11 @@ func serve(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	eg, stopEgress, err := startEgress(context.Background(), account.UID)
+	if err != nil {
+		return err
+	}
+	defer stopEgress()
 	h, err := harness.New(harness.Config{
 		Token:          token,
 		Account:        account,
@@ -58,6 +71,7 @@ func serve(log *slog.Logger) error {
 		WatchRoots:     []string{"/tmp", "/var/tmp", "/dev/shm"},
 		Path:           envOr("PATH", "/usr/local/bin:/usr/bin:/bin"),
 		Installer:      harness.Toolchain{},
+		Egress:         eg,
 		Now:            time.Now,
 		InstallTimeout: 10 * time.Minute,
 		CallTimeout:    time.Minute,
@@ -114,6 +128,61 @@ func accountFor(u *user.User, euid int) (harness.Account, error) {
 		GID:    uint32(gid),
 		Switch: true,
 	}, nil
+}
+
+// trustDir is where the server finds the proxy CA's certificate.
+const trustDir = "/etc/mcp-customs"
+
+// firewallChain names the netfilter chains of the firewall.
+const firewallChain = "MCP_CUSTOMS"
+
+// startEgress starts the egress proxy and puts up the firewall for uid. The
+// stop function takes both down.
+func startEgress(ctx context.Context, uid uint32) (*egress.Egress, func(), error) {
+	ca, err := egress.NewCA(time.Now)
+	if err != nil {
+		return nil, nil, err
+	}
+	roots, err := egress.SystemRoots()
+	if err != nil {
+		return nil, nil, err
+	}
+	trust, err := egress.WriteTrust(trustDir, ca, roots)
+	if err != nil {
+		return nil, nil, err
+	}
+	l, err := egress.Listen(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	eg := egress.New(egress.Config{
+		CA:        ca,
+		Upstream:  &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second},
+		Resolver:  net.DefaultResolver,
+		Allow:     egress.RegistryHosts,
+		ServerEnv: egress.Env(l.Proxy.Addr().String(), trust),
+	})
+	stop := eg.Serve(l, egress.RedirectedFrom)
+	proxy, dns, catch := l.Ports()
+	fw := egress.Firewall{Chain: firewallChain, UID: uid, ProxyPort: proxy, DNSPort: dns, CatchPort: catch}
+	fw.Down(ctx, runCommand) // what an earlier harness left
+	if err := fw.Up(ctx, runCommand); err != nil {
+		stop()
+		return nil, nil, err
+	}
+	return eg, func() {
+		fw.Down(context.Background(), runCommand)
+		stop()
+	}, nil
+}
+
+// runCommand runs an iptables command.
+func runCommand(ctx context.Context, c egress.Command) error {
+	out, err := exec.CommandContext(ctx, c[0], c[1:]...).CombinedOutput() //nolint:gosec // the firewall's own fixed commands
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, out)
+	}
+	return nil
 }
 
 func envOr(name, fallback string) string {
