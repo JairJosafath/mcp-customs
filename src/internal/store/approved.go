@@ -53,15 +53,33 @@ func approvedSK(kind, name string) (string, error) {
 	return kind + "#" + name, nil
 }
 
-// PutApproved writes a's APPROVED item, replacing the one before, with
-// Polled set to its version.
-func (s *Store) PutApproved(ctx context.Context, a Approved) error {
+// PutApproved writes a's APPROVED item with Polled set to its version. A
+// fresh approval (fromCheckID empty) is written whatever was there before.
+// A re-check's approval (fromCheckID the check it re-checked) is written
+// only while the package still carries that approval or has none: a
+// re-check that finished after a newer version was already approved does
+// not pull the approval back to its older version, and that no-op is not an
+// error.
+func (s *Store) PutApproved(ctx context.Context, a Approved, fromCheckID string) error {
 	sk, err := approvedSK(a.Kind, a.Name)
 	if err != nil || a.Version == "" {
 		return ErrBadPackage
 	}
 	a.Polled = a.Version
-	return s.put(ctx, approvedRow(sk, a), "the approval of "+sk)
+	in := &dynamodb.PutItemInput{TableName: aws.String(s.table), Item: approvedRow(sk, a)}
+	if fromCheckID != "" {
+		in.ConditionExpression = aws.String("attribute_not_exists(pk) OR checkId = :from")
+		in.ExpressionAttributeValues = row{":from": str(fromCheckID)}
+	}
+	_, err = s.client.PutItem(ctx, in)
+	if failed := new(types.ConditionalCheckFailedException); errors.As(err, &failed) {
+		// A newer version was approved while this re-check ran: leave it.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("put the approval of %s into table %s: %w", sk, s.table, err)
+	}
+	return nil
 }
 
 // ListApproved reads every APPROVED item.

@@ -45,7 +45,7 @@ func (f *fakeDynamo) PutItem(_ context.Context, in *dynamodb.PutItemInput, _ ...
 		return nil, f.err
 	}
 	f.tables = append(f.tables, aws.ToString(in.TableName))
-	if err := f.holds(in.ConditionExpression, keyOf(in.Item)); err != nil {
+	if err := f.holds(in.ConditionExpression, keyOf(in.Item), in.ExpressionAttributeValues); err != nil {
 		return nil, err
 	}
 	f.items[keyOf(in.Item)] = in.Item
@@ -59,7 +59,7 @@ func (f *fakeDynamo) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput,
 	}
 	f.tables = append(f.tables, aws.ToString(in.TableName))
 	key := keyOf(in.Key)
-	if err := f.holds(in.ConditionExpression, key); err != nil {
+	if err := f.holds(in.ConditionExpression, key, in.ExpressionAttributeValues); err != nil {
 		return nil, err
 	}
 	sets, ok := strings.CutPrefix(aws.ToString(in.UpdateExpression), "SET ")
@@ -85,18 +85,23 @@ func (f *fakeDynamo) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput,
 
 // holds checks a write's condition on the item at key, failing as DynamoDB
 // does when it doesn't hold.
-func (f *fakeDynamo) holds(condition *string, key [2]string) error {
-	_, exists := f.items[key]
+func (f *fakeDynamo) holds(condition *string, key [2]string, values row) error {
+	item, exists := f.items[key]
+	ok := true
 	switch aws.ToString(condition) {
 	case "":
-		return nil
 	case "attribute_not_exists(pk)":
-		exists = !exists
+		ok = !exists
 	case "attribute_exists(pk)":
+		ok = exists
+	case "attribute_not_exists(pk) OR checkId = :from":
+		from, _ := readStr(values, ":from")
+		existing, _ := readStr(item, "checkId")
+		ok = !exists || existing == from
 	default:
 		return errors.New("unexpected condition " + aws.ToString(condition))
 	}
-	if !exists {
+	if !ok {
 		return &types.ConditionalCheckFailedException{Message: aws.String("The conditional request failed")}
 	}
 	return nil
