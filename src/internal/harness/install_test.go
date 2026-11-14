@@ -130,7 +130,7 @@ func TestToolchainInstallsEachEcosystemAsTheAccount(t *testing.T) {
 			wantRan: [][]string{
 				{"python3", "-m", "venv", "/w/venv"},
 				{"python3", "-I", "-c", venvDistributions, "/w/venv"},
-				{"/w/venv/bin/pip", "install", "--disable-pip-version-check", "--dry-run", "--ignore-installed", "--report", "/w/pip-report.json", "weather-mcp==1.0.0"},
+				{"/w/venv/bin/pip", "install", "--disable-pip-version-check", "--dry-run", "--ignore-installed", "--only-binary=:all:", "--report", "/w/pip-report.json", "weather-mcp==1.0.0"},
 				{"cat", "--", "/w/pip-report.json"},
 				{"python3", "-I", "-c", writeFile, "/w/pip-requirements.txt", pipSetAB},
 				{"/w/venv/bin/pip", "install", "--disable-pip-version-check", "--no-deps", "--require-hashes", "-r", "/w/pip-requirements.txt"},

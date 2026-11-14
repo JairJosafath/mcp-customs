@@ -233,8 +233,11 @@ func allow(ctx durable.Context, r *run, args json.RawMessage) (outcome, error) {
 	if a.Hosts == nil {
 		a.Hosts = []string{}
 	}
-	if len(a.Hosts) > maxHosts || slices.ContainsFunc(a.Hosts, func(h string) bool { return !allowedHost(h) }) {
+	if len(a.Hosts) > maxHosts {
 		return outcome{}, fmt.Errorf("%w: at most %d host names", ErrBadArguments, maxHosts)
+	}
+	if i := slices.IndexFunc(a.Hosts, func(h string) bool { return !allowedHost(h) }); i >= 0 {
+		return outcome{}, fmt.Errorf("%w: %q is not a public host name", ErrBadArguments, a.Hosts[i])
 	}
 	refusal, err := r.ownAPIRefusal(ctx, a.Hosts)
 	if err != nil {

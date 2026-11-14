@@ -29,8 +29,11 @@ var notPublic = []netip.Prefix{
 	netip.MustParsePrefix("::/96"),          // IPv4-compatible, such as ::127.0.0.1
 	netip.MustParsePrefix("64:ff9b::/96"),   // IPv4 translated, which can reach the ranges above
 	netip.MustParsePrefix("64:ff9b:1::/48"), // IPv4 translated for local use
+	netip.MustParsePrefix("2001::/32"),      // Teredo, which carries an IPv4 address
+	netip.MustParsePrefix("2002::/16"),      // 6to4, which carries an IPv4 address
 	netip.MustParsePrefix("fc00::/7"),       // unique local, and the instance metadata at fd00:ec2::254
 	netip.MustParsePrefix("fe80::/10"),      // link-local
+	netip.MustParsePrefix("fec0::/10"),      // site-local, deprecated but still routed inside some networks
 	netip.MustParsePrefix("ff00::/8"),       // multicast
 }
 
