@@ -21,20 +21,21 @@ var strictness = map[Verdict]int{Pass: 0, Review: 1, Block: 2}
 // codeFloors is the least strict verdict each code rule allows. A code rule
 // missing here gives review.
 var codeFloors = map[string]Verdict{
-	findings.RuleCanaryLeft:     Block,
-	findings.RuleAgentConfig:    Block,
-	findings.RuleShellStartup:   Block,
-	findings.RuleSampling:       Review,
-	findings.RuleElicitation:    Review,
-	findings.RuleANSIEscape:     Review,
-	findings.RuleTagCharacters:  Review,
-	findings.RuleZeroWidth:      Review,
-	findings.RuleBidiControl:    Review,
-	findings.RuleInstruction:    Review,
-	findings.RuleSensitivePath:  Review,
-	findings.RuleSecretResend:   Review,
-	findings.RuleJudgeError:     Review,
-	findings.RuleJudgeOutOfTurn: Review,
+	findings.RuleCanaryLeft:        Block,
+	findings.RuleAgentConfig:       Block,
+	findings.RuleShellStartup:      Block,
+	findings.RuleSampling:          Review,
+	findings.RuleElicitation:       Review,
+	findings.RuleANSIEscape:        Review,
+	findings.RuleTagCharacters:     Review,
+	findings.RuleZeroWidth:         Review,
+	findings.RuleBidiControl:       Review,
+	findings.RuleVariationSelector: Review,
+	findings.RuleInstruction:       Review,
+	findings.RuleSensitivePath:     Review,
+	findings.RuleSecretResend:      Review,
+	findings.RuleJudgeError:        Review,
+	findings.RuleJudgeOutOfTurn:    Review,
 }
 
 // Input is what a verdict is decided from.

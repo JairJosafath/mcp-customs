@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -147,5 +148,37 @@ func TestPasswordHasEveryKindOfCharacter(t *testing.T) {
 func TestGetUnknownKindIsEmpty(t *testing.T) {
 	if got := New().Get("unknown"); got != "" {
 		t.Errorf("Get(unknown) = %q, want empty", got)
+	}
+}
+
+func TestSSHKeyNeedlesLeaveOutTheLineEveryKeyShares(t *testing.T) {
+	a := Canary{SSHPrivateKey, sshPrivateKey()}
+	b := Canary{SSHPrivateKey, sshPrivateKey()}
+	firstLine := func(c Canary) string { return strings.Split(c.Value, "\n")[1] }
+	if firstLine(a) != firstLine(b) {
+		t.Fatalf("first body lines differ: %q, %q; the needles assume they don't", firstLine(a), firstLine(b))
+	}
+	needles := a.Needles()
+	if len(needles) < 3 {
+		t.Fatalf("Needles = %q, want the key's body lines", needles)
+	}
+	for _, n := range needles {
+		if n == firstLine(a) || strings.Contains(n, "-") || !strings.Contains(a.Value, n+"\n") {
+			t.Errorf("needle %q is not a body line of the key carrying key material", n)
+		}
+		if slices.Contains(b.Needles(), n) {
+			t.Errorf("needle %q is shared by two keys", n)
+		}
+	}
+}
+
+func TestNeedlesOfOtherKindsAreTheirValue(t *testing.T) {
+	for _, c := range New() {
+		if c.Kind == SSHPrivateKey {
+			continue
+		}
+		if got := c.Needles(); !slices.Equal(got, []string{c.Value}) {
+			t.Errorf("%s Needles = %q, want its value", c.Kind, got)
+		}
 	}
 }

@@ -41,29 +41,37 @@ type view struct {
 
 // MatchCanaries finds each canary in data, plain, reversed, base64
 // (standard and URL), hex or URL-encoded, even inside a longer encoded
-// payload, and returns one match per canary and form.
+// payload or one wrapped across lines, and returns one match per canary
+// and form. A canary is found when any of its needles is.
 func MatchCanaries(data []byte, canaries canary.Set) []Match {
+	unwrapped := unwrap(data)
 	views := []view{
 		{Plain, [][]byte{data}},
 		{Reversed, [][]byte{reverse(data)}},
-		{Base64, decodeBase64Runs(data, base64.RawStdEncoding, isStdBase64)},
-		{Base64URL, decodeBase64Runs(data, base64.RawURLEncoding, isURLBase64)},
-		{Hex, decodeHexRuns(data)},
+		{Base64, decodeBase64Runs(unwrapped, base64.RawStdEncoding, isStdBase64)},
+		{Base64URL, decodeBase64Runs(unwrapped, base64.RawURLEncoding, isURLBase64)},
+		{Hex, decodeHexRuns(unwrapped)},
 	}
 	unescaped := percentDecode(data)
 	var matches []Match
 	for _, c := range canaries {
-		value := []byte(c.Value)
+		needles := c.Needles()
 		for _, v := range views {
-			if slices.ContainsFunc(v.decoded, func(d []byte) bool { return bytes.Contains(d, value) }) {
+			if slices.ContainsFunc(v.decoded, func(d []byte) bool { return containsAny(d, needles) }) {
 				matches = append(matches, Match{c.Kind, v.encoding})
 			}
 		}
-		if bytes.Count(unescaped, value) > bytes.Count(data, value) {
+		if slices.ContainsFunc(needles, func(n string) bool {
+			return bytes.Count(unescaped, []byte(n)) > bytes.Count(data, []byte(n))
+		}) {
 			matches = append(matches, Match{c.Kind, URLEncoded})
 		}
 	}
 	return matches
+}
+
+func containsAny(data []byte, needles []string) bool {
+	return slices.ContainsFunc(needles, func(n string) bool { return bytes.Contains(data, []byte(n)) })
 }
 
 func reverse(b []byte) []byte {

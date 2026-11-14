@@ -10,10 +10,11 @@ import (
 	"github.com/JairJosafath/mcp-customs/src/internal/canary"
 )
 
-// testCanaries are fixed values whose base64 forms differ between the
-// standard and URL alphabets.
+// testCanaries are a fresh token, made at run time so no secret-shaped
+// literal sits in the code, and a password and email fixed so that their
+// base64 forms differ between the standard and URL alphabets.
 var testCanaries = canary.Set{
-	{Kind: canary.GitHubToken, Value: "ghp_R8b2Kq0LmZx7Vt4NcWy1Hs9Jd3Fp6Ga5Ue0Q1r2s"}, //nolint:gosec // a made-up canary, not a credential
+	{Kind: canary.GitHubToken, Value: canary.New().Get(canary.GitHubToken)},
 	{Kind: canary.Password, Value: "p>?~>?~Tq9!x#Lz"},
 	{Kind: canary.Email, Value: "sam.chen482913@proton.me"},
 }

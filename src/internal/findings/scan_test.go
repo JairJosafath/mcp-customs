@@ -24,6 +24,9 @@ func TestScanTextFlagsHiddenCharactersAndEscapesThem(t *testing.T) {
 		{"zero-width space", "re\u200Bad", RuleZeroWidth, `re\u200Bad`, `\u200B`},
 		{"zero-width joiner and BOM", "a\u200Db\xef\xbb\xbf", RuleZeroWidth, `a\u200Db\uFEFF`, `\u200D \uFEFF`},
 		{"bidi override", "file\u202Egnp.exe", RuleBidiControl, `file\u202Egnp.exe`, `\u202E`},
+		{"soft hyphen", "pay\xc2\xadload", RuleZeroWidth, `pay\u00ADload`, `\u00AD`},
+		{"variation selector", "a\xef\xb8\x81b", RuleVariationSelector, `a\uFE01b`, `\uFE01`},
+		{"supplementary variation selector", "a\U000E0100\U000E01EF", RuleVariationSelector, `a\U000E0100\U000E01EF`, `\U000E0100 \U000E01EF`},
 		{"bidi isolate", "a\u2066b\u2069", RuleBidiControl, `a\u2066b\u2069`, `\u2066 \u2069`},
 	}
 	for _, tt := range tests {
@@ -41,7 +44,7 @@ func TestScanTextFlagsHiddenCharactersAndEscapesThem(t *testing.T) {
 }
 
 func TestScanTextLeavesCleanTextAlone(t *testing.T) {
-	text := "Returns the forecast for a city — in °C, with emoji 🌧 and tabs\tand\nnewlines."
+	text := "Returns the forecast for a city — in °C, with emoji 🌧 and \xe2\x9d\xa4\xef\xb8\x8f and tabs\tand\nnewlines."
 	got := ScanText(text)
 	if len(got.Findings) != 0 {
 		t.Errorf("Findings = %+v, want none", got.Findings)

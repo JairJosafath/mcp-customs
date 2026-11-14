@@ -26,8 +26,12 @@ type hiddenClass struct {
 var hiddenClasses = []hiddenClass{
 	{RuleANSIEscape, []runeRange{{0x1B, 0x1B}, {0x9B, 0x9B}}},
 	{RuleTagCharacters, []runeRange{{0xE0000, 0xE007F}}},
-	{RuleZeroWidth, []runeRange{{0x180E, 0x180E}, {0x200B, 0x200D}, {0x2060, 0x2064}, {0xFEFF, 0xFEFF}}},
+	{RuleZeroWidth, []runeRange{{0x00AD, 0x00AD}, {0x180E, 0x180E}, {0x200B, 0x200D}, {0x2060, 0x2064}, {0xFEFF, 0xFEFF}}},
 	{RuleBidiControl, []runeRange{{0x061C, 0x061C}, {0x200E, 0x200F}, {0x202A, 0x202E}, {0x2066, 0x2069}}},
+	// U+FE0E and U+FE0F, which pick text or emoji style, are left out: they
+	// follow most emoji. The rest carry no meaning, and are used to smuggle
+	// bytes past a reader.
+	{RuleVariationSelector, []runeRange{{0xFE00, 0xFE0D}, {0xE0100, 0xE01EF}}},
 }
 
 // ScanText scans one piece of server text (a description, a schema field, a

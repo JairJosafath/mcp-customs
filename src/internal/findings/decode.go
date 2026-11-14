@@ -1,6 +1,7 @@
 package findings
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
 )
@@ -19,6 +20,20 @@ func isAlphaNum(c byte) bool {
 
 func isHex(c byte) bool {
 	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}
+
+// lineBreaks are what wraps an encoded payload: raw line breaks, as
+// coreutils base64, MIME and PEM write them, and the same escaped in JSON.
+var lineBreaks = [][]byte{[]byte("\r"), []byte("\n"), []byte(`\r`), []byte(`\n`)}
+
+// unwrap removes every line break, so a wrapped payload decodes as one run.
+// Text glued on in front of a run is harmless: decoding at each alignment
+// finds the payload after it.
+func unwrap(data []byte) []byte {
+	for _, lb := range lineBreaks {
+		data = bytes.ReplaceAll(data, lb, nil)
+	}
+	return data
 }
 
 // runs splits data into the maximal runs of bytes in an alphabet.

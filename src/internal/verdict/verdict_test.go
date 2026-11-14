@@ -33,6 +33,7 @@ func TestDecide(t *testing.T) {
 		{"shell startup write, model pass", Input{Code: []findings.Finding{code(findings.RuleShellStartup)}, ModelVerdict: Pass}, Block},
 		{"unexplained sampling, model pass", Input{Code: []findings.Finding{code(findings.RuleSampling)}, ModelVerdict: Pass}, Review},
 		{"unexplained elicitation, model pass", Input{Code: []findings.Finding{code(findings.RuleElicitation)}, ModelVerdict: Pass}, Review},
+		{"variation selector, model pass", Input{Code: []findings.Finding{code(findings.RuleVariationSelector)}, ModelVerdict: Pass}, Review},
 		{"ANSI escape, model pass", Input{Code: []findings.Finding{code(findings.RuleANSIEscape)}, ModelVerdict: Pass}, Review},
 		{"tag characters, model pass", Input{Code: []findings.Finding{code(findings.RuleTagCharacters)}, ModelVerdict: Pass}, Review},
 		{"zero-width, model pass", Input{Code: []findings.Finding{code(findings.RuleZeroWidth)}, ModelVerdict: Pass}, Review},
