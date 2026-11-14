@@ -109,8 +109,18 @@ func TestAMergedPRNoRowNamesIsListedAsUnmapped(t *testing.T) {
 }
 
 func TestOnlySquashCommitsCountAsMerges(t *testing.T) {
-	got := ParseMerges("fix: b (#12)\ndocs(runs): #12 merged\nMerge branch 'main'\nfeat: a (#11)\n")
+	got := ParseMerges("fix: b (#12)\ndocs(runs): #12 merged\nfeat: c (#13) and more\nMerge branch 'main'\nfeat: a (#11)\n")
 	if len(got) != 2 || got[0] != 11 || got[1] != 12 {
 		t.Errorf("ParseMerges = %v, want [11 12]", got)
+	}
+}
+
+func TestASessionUnderTwoRolesIsAnError(t *testing.T) {
+	rows := []Row{
+		{Issues: []int{1}, Role: RoleImplementer, Session: "s"},
+		{Issues: []int{1}, Role: RoleReviewer, Session: "s"},
+	}
+	if _, err := Compute(rows, nil); err == nil {
+		t.Error("Compute named no error for a session under two roles")
 	}
 }

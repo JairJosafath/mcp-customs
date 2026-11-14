@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -38,9 +39,20 @@ func gitIn(repo string) git {
 	}
 }
 
+// errShallow refuses a shallow clone, whose log is missing the oldest
+// merges: counting there undercounts without a sign.
+var errShallow = errors.New("the clone is shallow, so git log misses the oldest merges; run git fetch --unshallow first")
+
 // run counts runs.md as committed at rev, and the pull requests merged on
 // rev's first-parent history.
 func run(w io.Writer, repo, runs, rev string, g git) error {
+	shallow, err := g("rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(shallow) == "true" {
+		return errShallow
+	}
 	head, err := g("rev-parse", "--short", rev)
 	if err != nil {
 		return err

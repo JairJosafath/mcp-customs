@@ -267,7 +267,10 @@ func (st *Stats) addSessions(rows []Row) error {
 			byID[r.Session] = s
 			order = append(order, r.Session)
 		}
-		if !slices.Contains(s.Roles, r.Role) {
+		if len(s.Roles) > 0 && s.Roles[0] != r.Role {
+			return fmt.Errorf("session %s is both %s and %s", r.Session, s.Roles[0], r.Role)
+		}
+		if len(s.Roles) == 0 {
 			s.Roles = append(s.Roles, r.Role)
 		}
 	}
