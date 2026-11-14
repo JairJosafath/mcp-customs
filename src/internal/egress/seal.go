@@ -18,7 +18,7 @@ func (e *Egress) Seal() {
 	e.mu.Lock()
 	e.allowed = map[string]bool{}
 	e.install = map[string]bool{}
-	e.installGet = map[string][]string{}
+	e.installGet = map[string][]installPrefix{}
 	e.installing = false
 	e.seal()
 	e.mu.Unlock()
@@ -33,13 +33,13 @@ func (e *Egress) isSealed() bool {
 }
 
 // admit decides, under the same lock Seal takes, whether a request of
-// method for u on host may be sent on. One that may is in flight until done
+// method for u on scheme://host:port may be sent on. One that may is in flight until done
 // is called, and Seal waits for it. installGet says it may only as an
 // install's GET under an InstallGet prefix (installGetLocked).
-func (e *Egress) admit(method, host string, u *url.URL) (done func(), ok, installGet bool) {
+func (e *Egress) admit(method, scheme, host string, port int, u *url.URL) (done func(), ok, installGet bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if !e.requestAllowedLocked(method, host, u) {
+	if !e.requestAllowedLocked(method, scheme, host, port, u) {
 		return func() {}, false, false
 	}
 	h := normalHost(host)
