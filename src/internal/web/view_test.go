@@ -32,6 +32,7 @@ func TestVisibleEscapesEveryCharacterAPersonCannotSee(t *testing.T) {
 		"an interlinear annotation separator":  0xFFFA,
 		"an interlinear annotation terminator": 0xFFFB,
 		"a replacement character":              0xFFFD,
+		"a blank Braille pattern":              0x2800,
 		"a Kaithi number sign":                 0x110BD,
 		"an Egyptian hieroglyph joiner":        0x13430,
 		"a musical symbol begin beam":          0x1D173,

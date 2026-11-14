@@ -37,7 +37,8 @@ func hiddenRune(r rune) bool {
 	switch r {
 	case '\n', '\t', 0xFE0E, 0xFE0F:
 		return false
-	case unicode.ReplacementChar:
+	case unicode.ReplacementChar, 0x2800:
+		// U+2800, the blank Braille pattern, is graphic but shows nothing.
 		return true
 	}
 	return !unicode.IsGraphic(r) ||
