@@ -1,7 +1,11 @@
 package harness
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -37,5 +41,74 @@ func TestAccountWithoutSwitchRunsAsTheHarnessUser(t *testing.T) {
 	}
 	if cmd := a.command(t.Context(), a.Home, nil, []string{"/usr/bin/true"}); !slices.Equal(cmd.Args, []string{"/usr/bin/true"}) {
 		t.Errorf("command = %q, want it unwrapped", cmd.Args)
+	}
+}
+
+func TestResolveFindsTheHarnesssCommandsOnTheTrustedPathOnly(t *testing.T) {
+	trusted, planted := t.TempDir(), t.TempDir()
+	for _, dir := range []string{trusted, planted} {
+		if err := os.WriteFile(filepath.Join(dir, "cat"), []byte("#!/bin/sh\n"), 0o755); err != nil { //nolint:gosec // an executable test script
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(trusted, "notes"), []byte("not a command\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		args []string
+		path string
+		want []string
+	}{
+		"a bare name":            {[]string{"cat", "--", "f"}, "relative/bin:" + trusted, []string{filepath.Join(trusted, "cat"), "--", "f"}},
+		"a name with a slash":    {[]string{"./cat"}, trusted, []string{"./cat"}},
+		"an absolute path":       {[]string{"/usr/bin/true"}, trusted, []string{"/usr/bin/true"}},
+		"a file not executable":  {[]string{"notes"}, trusted, nil},
+		"not on the trusted one": {[]string{"go"}, trusted, nil},
+	} {
+		got, err := resolve(tc.args, tc.path)
+		if tc.want == nil {
+			if err == nil {
+				t.Errorf("%s: resolve = %q, want an error", name, got)
+			}
+			continue
+		}
+		if err != nil || !slices.Equal(got, tc.want) {
+			t.Errorf("%s: resolve = %q, %v; want %q", name, got, err, tc.want)
+		}
+	}
+}
+
+func TestTheInstallsOwnCommandsIgnoreCommandsThePackagePlants(t *testing.T) {
+	run := newTestRun(t, &fakeInstaller{})
+	sb := run.h.sandbox()
+	planted := []string{
+		filepath.Join(run.workdir, "bin"),
+		filepath.Join(run.workdir, "node_modules", ".bin"),
+		filepath.Join(run.workdir, "venv", "bin"),
+	}
+	for _, dir := range planted {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"cat", "go"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\necho FORGED\n"), 0o755); err != nil { //nolint:gosec // an executable test script
+				t.Fatal(err)
+			}
+		}
+	}
+	// The planted directories come first on both the server's PATH and,
+	// here, the test's own, so only the harness's trusted PATH avoids them.
+	t.Setenv("PATH", strings.Join(append(planted, os.Getenv("PATH")), string(os.PathListSeparator)))
+	lock := filepath.Join(run.workdir, "package-lock.json")
+	if err := os.WriteFile(lock, []byte("the real lockfile\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readAsAccount(t.Context(), sb, lock)
+	if err != nil || string(got) != "the real lockfile\n" {
+		t.Errorf("readAsAccount = %q, %v; want the real file, not a planted cat's", got, err)
+	}
+	var out bytes.Buffer
+	if err := sb.Run(t.Context(), []string{"go", "version"}, &out); err != nil || strings.Contains(out.String(), "FORGED") {
+		t.Errorf("go version = %q, %v; want the toolchain's, not a planted go", out.String(), err)
 	}
 }

@@ -206,8 +206,15 @@ func (h *Harness) sandbox() Sandbox {
 	return Sandbox{
 		Workdir: w,
 		Env:     env,
+		// The harness's own commands (cat, go, npm) are found on the trusted
+		// PATH, never on the server's, whose first directories the package
+		// being installed writes.
 		Run: func(ctx context.Context, args []string, out io.Writer) error {
-			return h.cfg.Account.run(ctx, w, env, args, out)
+			trusted, err := resolve(args, h.cfg.Path)
+			if err != nil {
+				return err
+			}
+			return h.cfg.Account.run(ctx, w, env, trusted, out)
 		},
 	}
 }

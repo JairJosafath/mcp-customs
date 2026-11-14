@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -223,4 +224,27 @@ func filesUnder(t *testing.T, dir string) []string {
 		t.Fatal(err)
 	}
 	return files
+}
+
+func TestTwoRacingRunsStartTheRunOnceAndTheLoserIsObserved(t *testing.T) {
+	run := newIdleRun(t, &fakeInstaller{})
+	statuses := make(chan int, 2)
+	for _, token := range []string{testToken, "attacker-token"} {
+		body := runHookRequest(t, token, testCanaries)
+		go func() {
+			raw, _ := json.Marshal(body)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, HooksPrefix+"run", bytes.NewReader(raw))
+			rec := httptest.NewRecorder()
+			run.h.Hooks().ServeHTTP(rec, req)
+			statuses <- rec.Code
+		}()
+	}
+	got := []int{<-statuses, <-statuses}
+	if !slices.Contains(got, http.StatusOK) || !slices.Contains(got, http.StatusConflict) {
+		t.Fatalf("two racing /runs = %v, want one 200 and one 409", got)
+	}
+	obs := run.h.obs.all()
+	if len(obs) != 1 || obs[0].Kind != ObservedHook {
+		t.Errorf("observations = %+v, want the refused /run", obs)
+	}
 }

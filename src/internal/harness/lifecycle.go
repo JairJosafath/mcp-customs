@@ -97,7 +97,8 @@ func (h *Harness) Hooks() http.Handler {
 		after := h.life.started()
 		rec := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		mux.ServeHTTP(rec, r)
-		if after {
+		// A /run refused because another won the race is observed too.
+		if after || (r.URL.Path == HooksPrefix+"run" && rec.status == http.StatusConflict) {
 			h.obs.add(ObservedHook, HookDetail{Method: r.Method, Path: r.URL.Path, From: r.RemoteAddr, Status: rec.status})
 		}
 	})

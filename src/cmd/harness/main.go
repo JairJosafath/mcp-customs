@@ -48,16 +48,7 @@ func serve(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	h, err := harness.New(harness.Config{
-		Account:        account,
-		Workdir:        envOr("HARNESS_WORKDIR", filepath.Join(account.Home, "projects", "server")),
-		WatchRoots:     []string{"/tmp", "/var/tmp", "/dev/shm"},
-		Path:           serverPath,
-		Installer:      harness.Toolchain{},
-		Now:            time.Now,
-		InstallTimeout: 10 * time.Minute,
-		CallTimeout:    time.Minute,
-	}, log)
+	h, err := harness.New(configFor(account), log)
 	if err != nil {
 		return err
 	}
@@ -97,9 +88,25 @@ func serve(log *slog.Logger) error {
 }
 
 // serverPath is the PATH the server under test and its install get after
-// their own commands: the image's toolchains and the system's, never the
+// their own commands, and the only one the harness finds its own install
+// commands on: the image's toolchains and the system's, never the
 // harness's own PATH (root's, with /root/.local/bin).
 const serverPath = "/usr/local/bin:/usr/local/go/bin:/usr/local/node/bin:/usr/bin:/bin"
+
+// configFor is the harness's configuration for the account: nothing of it
+// per run, and the server's PATH its own, not the harness's.
+func configFor(account harness.Account) harness.Config {
+	return harness.Config{
+		Account:        account,
+		Workdir:        envOr("HARNESS_WORKDIR", filepath.Join(account.Home, "projects", "server")),
+		WatchRoots:     []string{"/tmp", "/var/tmp", "/dev/shm"},
+		Path:           serverPath,
+		Installer:      harness.Toolchain{},
+		Now:            time.Now,
+		InstallTimeout: 10 * time.Minute,
+		CallTimeout:    time.Minute,
+	}
+}
 
 func httpServer(h http.Handler) *http.Server {
 	return &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}

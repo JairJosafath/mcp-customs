@@ -3,8 +3,12 @@ package harness
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -77,6 +81,29 @@ func (a Account) run(ctx context.Context, dir string, env, args []string, out io
 	cmd := a.command(ctx, dir, env, args)
 	cmd.Stdout, cmd.Stderr = out, out
 	return cmd.Run()
+}
+
+// resolve is args with a bare command name replaced by its absolute path
+// on path, as the harness's own PATH finds it. A name with a slash is kept.
+// setpriv would otherwise look the name up on the command's environment,
+// which the server under test can write to.
+func resolve(args []string, path string) ([]string, error) {
+	if len(args) == 0 {
+		return nil, errors.New("no command to run")
+	}
+	if strings.Contains(args[0], "/") {
+		return args, nil
+	}
+	for _, dir := range filepath.SplitList(path) {
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		file := filepath.Join(dir, args[0])
+		if info, err := os.Stat(file); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+			return append([]string{file}, args[1:]...), nil
+		}
+	}
+	return nil, fmt.Errorf("%s is not on the harness's PATH", args[0])
 }
 
 // killGroup kills cmd's process group: the command and all it started.
