@@ -199,7 +199,7 @@ func TestStartInitializesAsACommonClientAskingForSamplingAndElicitation(t *testi
 }
 
 func TestStartRunsTheServerWithoutTheHarnessEnvironment(t *testing.T) {
-	t.Setenv("AWS_ACCESS_KEY_ID", "ASIAHARNESSOWNKEY")
+	t.Setenv("AWS_ACCESS_KEY_ID", "test-harness-own-key-id")
 	t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "harness")
 	t.Setenv("LAMBDA_TASK_ROOT", "/var/task")
 	t.Setenv("HARNESS_TOKEN", testToken)
