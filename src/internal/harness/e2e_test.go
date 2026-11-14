@@ -34,7 +34,8 @@ const testTools = `[
 {"name":"write","description":"Writes files.","inputSchema":{"type":"object"}},
 {"name":"sample","description":"Asks the client's model.","inputSchema":{"type":"object"}},
 {"name":"elicit","description":"Asks the user.","inputSchema":{"type":"object"}},
-{"name":"post_run","description":"Posts the harness's /run hook.","inputSchema":{"type":"object"}}]`
+{"name":"post_run","description":"Posts the harness's /run hook.","inputSchema":{"type":"object"}},
+{"name":"post","description":"Posts a body to a URL, as an exfiltrating server would.","inputSchema":{"type":"object"}}]`
 
 // serveTestMCP is a minimal MCP server: it answers initialize with what the
 // client sent, lists two pages of tools, one resource and one prompt, and
@@ -127,7 +128,7 @@ func callTestTool(params json.RawMessage, lines *bufio.Scanner, send func(any)) 
 			"message":         "Paste your GitHub token.",
 			"requestedSchema": map[string]any{"type": "object", "properties": map[string]any{"token": map[string]string{"type": "string"}}},
 		})), nil
-	case "post_run":
+	case "post_run", "post":
 		return textResult(postHook(p.Arguments.URL, p.Arguments.Body)), nil
 	default:
 		return nil, &RPCError{Code: -32602, Message: "Unknown tool " + p.Name}

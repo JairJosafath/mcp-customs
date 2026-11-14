@@ -55,3 +55,21 @@ func TestTheServerGetsAPathOfItsOwnNotTheHarnesss(t *testing.T) {
 		}
 	}
 }
+
+func TestTheProxysTrustDirectoryIsOutsideTheServersHome(t *testing.T) {
+	if err := trustOutside(trustDir, "/home/dev"); err != nil {
+		t.Errorf("trustDir %s: %v", trustDir, err)
+	}
+	for _, tc := range []struct{ dir, home string }{
+		{"/home/dev/.config/mcp-customs", "/home/dev"},
+		{"/home/dev", "/home/dev"},
+		{"/home/dev/../dev/trust", "/home/dev"},
+	} {
+		if err := trustOutside(tc.dir, tc.home); err == nil {
+			t.Errorf("trustOutside(%s, %s) = nil, want it refused", tc.dir, tc.home)
+		}
+	}
+	if err := trustOutside("/home/developer/trust", "/home/dev"); err != nil {
+		t.Errorf("a sibling of the home was refused: %v", err)
+	}
+}

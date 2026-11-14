@@ -73,9 +73,15 @@ func newTestRun(t *testing.T, inst Installer) testRun {
 // newIdleRun is a harness as the image's snapshot holds it: no run yet.
 func newIdleRun(t *testing.T, inst Installer) testRun {
 	t.Helper()
+	return newIdleRunWith(t, inst, nil)
+}
+
+// newIdleRunWith is newIdleRun with its configuration changed by change.
+func newIdleRunWith(t *testing.T, inst Installer, change func(*Config)) testRun {
+	t.Helper()
 	home := t.TempDir()
 	workdir := filepath.Join(home, "projects", "server")
-	h, err := New(Config{
+	cfg := Config{
 		Account:        Account{Name: "dev", Home: home},
 		Workdir:        workdir,
 		Path:           os.Getenv("PATH"),
@@ -83,7 +89,11 @@ func newIdleRun(t *testing.T, inst Installer) testRun {
 		Now:            func() time.Time { return testNow },
 		InstallTimeout: time.Minute,
 		CallTimeout:    time.Minute,
-	}, slog.New(slog.DiscardHandler))
+	}
+	if change != nil {
+		change(&cfg)
+	}
+	h, err := New(cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
