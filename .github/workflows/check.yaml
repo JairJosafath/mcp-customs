@@ -28,6 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      - name: Check out
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       # theos runs this job in its toolchain image, named by an Actions
       # variable only its operator sets (theos#263). This repository has no
       # operator, so the job installs the same tools itself.
@@ -43,9 +45,10 @@ jobs:
       - name: uv, for cfn-lint
         uses: astral-sh/setup-uv@v6
       - name: golangci-lint
-        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$HOME/go/bin" v2.13.1 && echo "$HOME/go/bin" >> "$GITHUB_PATH"
-      - name: Check out
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        # Built with the module's Go, which an older golangci-lint refuses.
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       # A change to only the changelog, docs/ or images has nothing for the
       # steps below to verify: the job passes without them, so the required
       # check still reports and the change merges. Any other file, a first
