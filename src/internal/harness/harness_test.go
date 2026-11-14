@@ -23,13 +23,15 @@ const testToken = "run-token-1"
 var testNow = time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
 
 // testCanaries are one of each kind, in the shape internal/canary makes.
+// The harness doesn't check their formats, so they are plainly fake: no
+// secret scanner should take them for real ones.
 var testCanaries = []Canary{
-	{CanaryGitHubToken, "ghp_testtokentesttokentesttoken0abcde"},
-	{CanaryAWSAccessKeyID, "AKIAQYLPMN5HHHFPZAM2"},
-	{CanaryAWSSecretKey, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
-	{CanarySSHPrivateKey, "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----"},
+	{CanaryGitHubToken, "test-github-token"},
+	{CanaryAWSAccessKeyID, "test-aws-access-key-id"},
+	{CanaryAWSSecretKey, "test-aws-secret-access-key"},
+	{CanarySSHPrivateKey, "test-ssh-private-key\nline2"},
 	{CanaryEmail, "alex.morgan@example.net"},
-	{CanaryPassword, "Tr0ub4dor&3-horse!"},
+	{CanaryPassword, "test-password"},
 }
 
 // fakeInstaller records what it was asked and answers what it was given,
@@ -174,7 +176,7 @@ func TestEveryCallWithoutTheTokenAnswers401(t *testing.T) {
 }
 
 func TestInstallPlantsTheDeveloperHomeAndAnswersTheLogAndHash(t *testing.T) {
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "the-harness-own")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-harness-own")
 	t.Setenv("LAMBDA_TASK_ROOT", "/var/task")
 	t.Setenv("HARNESS_TOKEN", testToken)
 	resolved := []byte("mod example.com/weather v1.2.3 h1:abc=\ndep golang.org/x/net v0.30.0 h1:def=\n")
@@ -289,6 +291,7 @@ func TestInstallObservesFilesItWritesOutsideTheWorkdir(t *testing.T) {
 func TestInstallRefusesBadInput(t *testing.T) {
 	missing := map[string]any{"kind": "go", "ref": "example.com/x@v1.0.0", "canaries": testCanaries[1:]}
 	unknown := map[string]any{"kind": "go", "ref": "example.com/x@v1.0.0", "canaries": append([]Canary{{"slack-token", "xoxb-1"}}, testCanaries...)}
+	multiline := map[string]any{"kind": "go", "ref": "example.com/x@v1.0.0", "canaries": append(append([]Canary{}, testCanaries[:5]...), Canary{CanaryPassword, "test\npassword"})}
 	extra := installBody("go", "example.com/x@v1.0.0")
 	extra["sudo"] = true
 	for name, body := range map[string]any{
@@ -301,6 +304,7 @@ func TestInstallRefusesBadInput(t *testing.T) {
 		"an unknown kind":         installBody("cargo", "serde@1.0.0"),
 		"a missing canary":        missing,
 		"an unknown canary":       unknown,
+		"a password on two lines": multiline,
 		"an unknown field":        extra,
 		"a host name with a path": map[string]any{"kind": "go", "ref": "example.com/x@v1.0.0", "canaries": testCanaries, "allowHosts": []string{"x.com/a"}},
 	} {

@@ -61,6 +61,18 @@ func TestAnswerAnswersNotFoundAsJSON(t *testing.T) {
 		"an unknown API route": {request(http.MethodGet, "/api/nothing", "GET /api/{proxy+}"), "No API route GET /api/nothing."},
 		"another method":       {request(http.MethodPost, "/api/health", "POST /api/{proxy+}"), "No API route POST /api/health."},
 		"an unknown page":      {request(http.MethodGet, "/nothing", "$default"), "No page GET /nothing."},
+		"a path of 100 characters, whole": {
+			request(http.MethodGet, "/"+strings.Repeat("a", 99), "$default"),
+			"No page GET /" + strings.Repeat("a", 99) + ".",
+		},
+		"a long API path, cut to 100 characters": {
+			request(http.MethodGet, "/api/"+strings.Repeat("a", 10000), "GET /api/{proxy+}"),
+			"No API route GET /api/" + strings.Repeat("a", 94) + "….",
+		},
+		"a long page path, cut between characters, not bytes": {
+			request(http.MethodGet, "/"+strings.Repeat("é", 200), "$default"),
+			"No page GET /" + strings.Repeat("é", 98) + "….",
+		},
 	} {
 		resp := Answer(t.Context(), tc.req, noLog)
 		var body struct {

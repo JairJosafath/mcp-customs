@@ -13,10 +13,11 @@ import (
 	"github.com/JairJosafath/mcp-customs/src/internal/store"
 )
 
-// Recorder is where a check's progress goes: the store's writes the Checker
+// Recorder is where a check's progress goes: the store's calls the Checker
 // makes.
 type Recorder interface {
 	PutCheck(ctx context.Context, c store.Check) error
+	GetCheck(ctx context.Context, id string) (store.Check, bool, error)
 	AppendStep(ctx context.Context, checkID string, step store.Step) error
 }
 
@@ -61,7 +62,7 @@ func Handler(rec Recorder) durable.Handler[Input, Output] {
 			ExecutionARN: ctx.ExecutionArn(),
 		}
 		if _, err := durable.Step(ctx, "record-check", func(sc durable.StepContext) (bool, error) {
-			return true, rec.PutCheck(sc, check)
+			return true, recordCheck(sc, rec, check)
 		}); err != nil {
 			return Output{}, fmt.Errorf("record check %s as running: %w", in.CheckID, err)
 		}
@@ -73,4 +74,23 @@ func Handler(rec Recorder) durable.Handler[Input, Output] {
 		}
 		return Output{CheckID: in.CheckID, Status: store.StatusRunning}, nil
 	}
+}
+
+// recordCheck creates check's META. A step retried after its first attempt
+// created it, but failed before the SDK recorded that, finds the check its
+// own execution made, and that is done; a check made by any other
+// execution stays refused.
+func recordCheck(ctx context.Context, rec Recorder, check store.Check) error {
+	err := rec.PutCheck(ctx, check)
+	if !errors.Is(err, store.ErrCheckExists) {
+		return err
+	}
+	existing, found, getErr := rec.GetCheck(ctx, check.ID)
+	if getErr != nil {
+		return fmt.Errorf("read check %s, which exists: %w", check.ID, getErr)
+	}
+	if found && existing.ExecutionARN == check.ExecutionARN {
+		return nil
+	}
+	return err
 }

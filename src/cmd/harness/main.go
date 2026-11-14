@@ -5,12 +5,15 @@
 // It reads HARNESS_TOKEN (the run's bearer token, required), HARNESS_USER
 // (the unprivileged user, "dev" by default), HARNESS_WORKDIR (the server's
 // working directory, ~/projects/server by default) and PORT (8080 by
-// default). The token is removed from the environment once read.
+// default). The token is removed from the environment once read. It must
+// run as root, and refuses to start otherwise: it runs the server as the
+// unprivileged user, never as itself.
 package main
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -34,11 +37,17 @@ func main() {
 
 func serve(log *slog.Logger) error {
 	token := os.Getenv("HARNESS_TOKEN")
-	// Nothing started later may read the token from this process's environment.
+	// This drops the token from Go's copy of the environment, so nothing the
+	// harness starts inherits it. /proc/<pid>/environ still holds it; only
+	// running the server as another user keeps it out of reach.
 	if err := os.Unsetenv("HARNESS_TOKEN"); err != nil {
 		return err
 	}
-	account, err := lookupAccount(envOr("HARNESS_USER", "dev"))
+	u, err := user.Lookup(envOr("HARNESS_USER", "dev"))
+	if err != nil {
+		return err
+	}
+	account, err := accountFor(u, os.Geteuid())
 	if err != nil {
 		return err
 	}
@@ -78,27 +87,32 @@ func serve(log *slog.Logger) error {
 	return nil
 }
 
-// lookupAccount finds the unprivileged user. The harness switches to it
-// when it runs as root, as it does in the MicroVM.
-func lookupAccount(name string) (harness.Account, error) {
-	u, err := user.Lookup(name)
-	if err != nil {
-		return harness.Account{}, err
+// accountFor is the unprivileged account the server under test runs as.
+// The harness must run as root (euid 0) and switch to it: run as the
+// harness's own user, the server could read the token from the harness's
+// /proc/<pid>/environ, ptrace it and read its files. So it refuses to
+// start as anyone else, and refuses an account that is root.
+func accountFor(u *user.User, euid int) (harness.Account, error) {
+	if euid != 0 {
+		return harness.Account{}, fmt.Errorf("the harness runs as uid %d; it must run as root to run the server as %s", euid, u.Username)
 	}
 	uid, err := strconv.ParseUint(u.Uid, 10, 32)
 	if err != nil {
-		return harness.Account{}, err
+		return harness.Account{}, fmt.Errorf("the uid of %s: %w", u.Username, err)
 	}
 	gid, err := strconv.ParseUint(u.Gid, 10, 32)
 	if err != nil {
-		return harness.Account{}, err
+		return harness.Account{}, fmt.Errorf("the gid of %s: %w", u.Username, err)
+	}
+	if uid == 0 || gid == 0 {
+		return harness.Account{}, fmt.Errorf("%s is root; the server must run as an unprivileged user", u.Username)
 	}
 	return harness.Account{
 		Name:   u.Username,
 		Home:   u.HomeDir,
 		UID:    uint32(uid),
 		GID:    uint32(gid),
-		Switch: os.Geteuid() == 0,
+		Switch: true,
 	}, nil
 }
 

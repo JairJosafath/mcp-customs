@@ -15,6 +15,12 @@ the deadline. Cost and tokens come from each session's own report.
 | #4    | implementer | session_01SZoxckcHTcgtbYQjWfJUD4 | 2026-11-14 07:39 | 1      | PR #16, 15 min, 46 turns                                                                        | $4.07 |
 | #14   | implementer | session_01SZoxcnyK3xCTTbYFreeMPY | 2026-11-14 07:40 | 1      | PR #15, 9 min, 38 turns                                                                         | $2.74 |
 | #3    | merge       |                                  | 2026-11-14 08:02 |        | PR #13 merged after a CI rerun on #12                                                           |       |
-| #2    | reviewer    | session_01SZoxcnUwyrMYtCHMWAg78H | 2026-11-14 08:03 | 2      |                                                                                                 |       |
-| #14   | reviewer    | session_01SZoxckwoDW5poMVaocbPMD | 2026-11-14 08:03 | 1      |                                                                                                 |       |
-| #4    | reviewer    | session_01SZoxcmGSt796rtTH2FMFAu | 2026-11-14 08:03 | 1      |                                                                                                 |       |
+| #2    | reviewer    | session_01SZoxcnUwyrMYtCHMWAg78H | 2026-11-14 08:03 | 2      | approved; probed 50 fresh canary sets                                                           | $1.56 |
+| #14   | reviewer    | session_01SZoxckwoDW5poMVaocbPMD | 2026-11-14 08:03 | 1      | approved                                                                                        | $1.10 |
+| #4    | reviewer    | session_01SZoxcmGSt796rtTH2FMFAu | 2026-11-14 08:03 | 1      | changes requested: token readable via /proc when not root; secret-shaped fixtures               | $1.88 |
+| #6    | implementer | session_01SZoxcpFFXBJjqYoP9MUAUW | 2026-11-14 08:04 | 1      | PR #17, stacked on #16; read AWS's MicroVM docs: build-time snapshot, no host filtering         | $6.38 |
+| #4    | implementer | session_01SZoxckcHTcgtbYQjWfJUD4 | 2026-11-14 08:26 | 2      | root-only harness, fake fixtures, weather /start+/list test                                     |       |
+| #2    | merge       |                                  | 2026-11-14 08:35 |        | PR #11 merged                                                                                   |       |
+| #4    | reviewer    | session_01SZoxco8notiYfRyBXdqb7X | 2026-11-14 08:30 | 2      | approved; ran the binary under real users: no environ, memory, files or ptrace                  | $1.19 |
+| #6    | reviewer    | session_01SZoxck91sAwsWMLUY6TQgw | 2026-11-14 08:36 | 1      | approved; checked AWS docs and pinned downloads                                                 | $1.83 |
+| #14   | merge       |                                  | 2026-11-14 08:45 |        | PR #15 merged                                                                                   |       |

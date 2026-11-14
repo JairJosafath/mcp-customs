@@ -134,6 +134,37 @@ describe('ApiStack', () => {
     development.hasResource('AWS::S3::Bucket', { DeletionPolicy: 'Delete' });
   });
 
+  it('empties and deletes the reports bucket with the stack in development, never in production', () => {
+    production.resourceCountIs('Custom::S3AutoDeleteObjects', 0);
+    production.resourceCountIs('AWS::Lambda::Function', 2);
+    const bucket = idOf(development, 'AWS::S3::Bucket', 'Reports');
+    development.resourceCountIs('Custom::S3AutoDeleteObjects', 1);
+    development.hasResource('Custom::S3AutoDeleteObjects', {
+      DeletionPolicy: 'Delete',
+      Properties: { BucketName: { Ref: bucket } },
+    });
+    // The function that empties it logs as JSON to its own log group, kept
+    // for the tier's time, and its role may only write that log group and
+    // empty the bucket.
+    const emptier = idOf(development, 'AWS::Lambda::Function', 'CustomS3AutoDeleteObjects');
+    const logs = idOf(development, 'AWS::Logs::LogGroup', 'ReportsAutoDeleteLogs');
+    development.hasResourceProperties('AWS::Lambda::Function', {
+      Description: Match.anyValue(),
+      LoggingConfig: { LogFormat: 'JSON', LogGroup: { Ref: logs } },
+    });
+    development.hasResourceProperties('AWS::Logs::LogGroup', {
+      RetentionInDays: Match.anyValue(),
+    });
+    const role = idOf(development, 'AWS::IAM::Role', 'CustomS3AutoDeleteObjects');
+    expect(development.findResources('AWS::IAM::Role')[role]).not.toHaveProperty(
+      'Properties.ManagedPolicyArns',
+    );
+    expect(actionsOf(development, role)).toEqual(['"logs:CreateLogStream"', '"logs:PutLogEvents"']);
+    expect(JSON.stringify(development.findResources('AWS::Lambda::Function')[emptier])).toContain(
+      'ReportsAutoDeleteLogsPolicy',
+    );
+  });
+
   it('runs the Checker as a durable function whose execution outlasts a week of waiting', () => {
     const checker = idOf(production, 'AWS::Lambda::Function', 'Checker');
     const table = idOf(production, 'AWS::DynamoDB::Table', 'Table');
@@ -198,10 +229,11 @@ describe('ApiStack', () => {
     });
   });
 
-  it('lets the Checker only put items, checkpoint its own executions, run its sandboxes and write its logs', () => {
+  it('lets the Checker only put and get items, checkpoint its own executions, run its sandboxes and write its logs', () => {
     const role = idOf(development, 'AWS::IAM::Role', 'CheckerRole');
     expect(actionsOf(development, role)).toEqual(
       [
+        '"dynamodb:GetItem"',
         '"dynamodb:PutItem"',
         ...DURABLE_EXECUTION_ACTIONS.map((action) => `"${action}"`),
         ...[...SANDBOX_ACTIONS, PASS_CONNECTOR_ACTION].map((action) => `"${action}"`),
@@ -237,17 +269,19 @@ describe('ApiStack', () => {
     );
   });
 
-  it('gives no function role a managed policy', () => {
-    production.resourcePropertiesCountIs(
-      'AWS::IAM::Role',
-      {
-        AssumeRolePolicyDocument: Match.objectLike({
-          Statement: [Match.objectLike({ Principal: { Service: 'lambda.amazonaws.com' } })],
-        }),
-        ManagedPolicyArns: Match.anyValue(),
-      },
-      0,
-    );
+  it('gives no function role a managed policy, in either tier', () => {
+    for (const template of [production, development]) {
+      template.resourcePropertiesCountIs(
+        'AWS::IAM::Role',
+        {
+          AssumeRolePolicyDocument: Match.objectLike({
+            Statement: [Match.objectLike({ Principal: { Service: 'lambda.amazonaws.com' } })],
+          }),
+          ManagedPolicyArns: Match.anyValue(),
+        },
+        0,
+      );
+    }
   });
 
   it('routes GET / and GET /api/* to the web function, open to the public', () => {
@@ -287,11 +321,13 @@ describe('ApiStack', () => {
     });
   });
 
-  it('alarms on the API, both functions and the table, in either tier', () => {
+  it('alarms on the API, every function and the table, in either tier', () => {
+    // 5xx; errors, throttles and duration of each function (development's
+    // third empties the bucket); the table's read and write throttles and
+    // system errors.
+    production.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 2 * 3 + 3);
+    development.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 3 * 3 + 3);
     for (const template of [production, development]) {
-      // 5xx; errors, throttles and duration of each function; the table's
-      // read and write throttles and system errors.
-      template.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 2 * 3 + 3);
       template.resourceCountIs('AWS::CloudWatch::Dashboard', 1);
       // The p99 duration alarms fire at 8 of the web function's 10 seconds
       // and 240 of the Checker's 300.

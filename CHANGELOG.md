@@ -19,6 +19,15 @@ Every user-visible change, newest first. The format follows
   call, suspend, resume and terminate MicroVMs of it; the Checker's client
   for them (`src/internal/checker/sandbox`), with a fake for tests.
 
+### Changed
+
+- A check is created once: a second create of the same check is refused,
+  and its status, verdict and callback ID change only by an update of
+  those fields.
+- A `404` repeats at most 100 characters of the path asked for.
+- Deleting the development stack empties and deletes its reports bucket;
+  production still keeps it.
+
 ### Removed
 
 - The items API theos scaffolded (`PUT` and `GET /items/{id}`) and its
