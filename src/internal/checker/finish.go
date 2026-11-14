@@ -39,9 +39,15 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 	// pass is unsettled: should it fail from here, even with its verdict
 	// written, it is still retried.
 	r.unsettled = r.in.Recheck != nil && decided.Verdict != verdict.Pass && !r.supersedeDone
-	if err := r.record(ctx, "verdict", outcome{Summary: summary, Findings: decided.Findings}); err != nil {
+	// A re-check that passed lifts the mark even when its verdict step
+	// fails after the pass committed (fail).
+	r.passed = r.in.Recheck != nil && decided.Verdict == verdict.Pass
+	r.report = &report
+	r.verdictStep = &outcome{Summary: summary, Findings: decided.Findings}
+	if err := r.record(ctx, "verdict", *r.verdictStep); err != nil {
 		return "", err
 	}
+	r.verdictRecorded = true
 	if _, err := durable.Step(ctx, "verdict", func(sc durable.StepContext) (bool, error) {
 		report.DecidedAt = time.Now().UTC()
 		return true, r.writeVerdict(sc, report)
@@ -49,16 +55,41 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 		return "", fmt.Errorf("write the verdict of check %s: %w", r.in.CheckID, err)
 	}
 	if err := r.settleSuperseded(ctx, decided.Verdict); err != nil {
-		if decided.Verdict != verdict.Pass {
+		// The SDK suspending for the lift's own retry is no failed lift.
+		if decided.Verdict != verdict.Pass || isSuspend(err) {
 			return "", err
 		}
 		// The pass is done and approved: a lift or its event that fails
 		// after it is logged, and the verdict stands.
-		ctx.Logger().ErrorContext(ctx, LiftFailedLog, LiftFailedKey, 1,
-			"checkId", r.in.CheckID, "error", err.Error())
+		r.logLiftFailed(ctx, err)
 	}
-	r.unsettled = false
 	return decided.Verdict, nil
+}
+
+// liftAfterPass lifts the mark for a re-check whose pass is done though
+// its verdict step failed, as when the pass committed but its reply was
+// lost. The lift is conditional, so repeating it is safe; one that fails
+// is logged, as the pass stands. It answers only the SDK suspending, for
+// the lift's own retry, which the caller passes on.
+func (r *run) liftAfterPass(ctx durable.Context) error {
+	if !r.passed {
+		return nil
+	}
+	err := r.lift(ctx)
+	if isSuspend(err) {
+		return err
+	}
+	if err != nil {
+		r.logLiftFailed(ctx, err)
+	}
+	return nil
+}
+
+// logLiftFailed logs a lift that failed after a pass: the entry raises an
+// alarm (LiftFailedLog).
+func (r *run) logLiftFailed(ctx durable.Context, err error) {
+	ctx.Logger().ErrorContext(ctx, LiftFailedLog, LiftFailedKey, 1,
+		"checkId", r.in.CheckID, "error", err.Error())
 }
 
 // writeVerdict writes report, then the check's verdict: for a pass this

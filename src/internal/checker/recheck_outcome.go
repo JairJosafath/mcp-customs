@@ -48,19 +48,28 @@ func (r *run) afterFailedRecheck(ctx durable.Context) error {
 	if !re.Retry {
 		return r.askRetry(ctx)
 	}
-	if _, err := durable.Step(ctx, "recheck-failed-twice", func(sc durable.StepContext) (bool, error) {
+	return r.markFailedForGood(ctx, "recheck-failed-twice", "recheck-failed", FailedTwiceLog, fmt.Sprintf(
+		"The retry of the re-check failed too: check %s, which approved %s, says so, and an alarm goes off.", re.CheckID, re.Ref))
+}
+
+// markFailedForGood, for a re-check that ends failed and is not started
+// again, marks the approved check with it and logs msg with
+// FailedTwiceKey, in step name, which raises the alarm; then the page's
+// step page says summary.
+func (r *run) markFailedForGood(ctx durable.Context, name, page, msg, summary string) error {
+	re := r.in.Recheck
+	if _, err := durable.Step(ctx, name, func(sc durable.StepContext) (bool, error) {
 		err := r.deps.Store.UpdateCheck(sc, re.CheckID, store.CheckUpdate{RecheckFailed: r.in.CheckID})
 		if err := ignore(err, store.ErrNoCheck); err != nil {
 			return false, err
 		}
-		sc.Logger().ErrorContext(sc, FailedTwiceLog, FailedTwiceKey, 1,
+		sc.Logger().ErrorContext(sc, msg, FailedTwiceKey, 1,
 			"checkId", r.in.CheckID, "recheckOf", re.CheckID, "ref", r.in.Submission.Ref)
 		return true, nil
 	}); err != nil {
-		return fmt.Errorf("record on check %s that its re-check failed twice: %w", re.CheckID, err)
+		return fmt.Errorf("record on check %s that its re-check failed for good: %w", re.CheckID, err)
 	}
-	return r.record(ctx, "recheck-failed", outcome{Summary: fmt.Sprintf(
-		"The retry of the re-check failed too: check %s, which approved %s, says so, and an alarm goes off.", re.CheckID, re.Ref)})
+	return r.record(ctx, page, outcome{Summary: summary})
 }
 
 // askRetry marks the package's APPROVED item for the poller to start the

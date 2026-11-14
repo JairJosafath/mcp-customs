@@ -110,34 +110,16 @@ func TestOnlyTheNewestPolledVersionsRecheckSupersedesWhicheverEndsLast(t *testin
 }
 
 func TestARetryThatPassesLiftsTheMarkTheFailedRecheckLeft(t *testing.T) {
-	// The reviewer's repro: code says review, so c0 is marked; a person
-	// approves; writing the verdict fails, so the re-check fails and asks
-	// for its retry; the retry passes and must lift recheck-1's mark.
+	// A first re-check that code gave review marked c0, then failed before
+	// a person decided, so the poller starts its retry; the retry passes
+	// and must lift the first re-check's mark.
 	w := reviewedRecheck()
 	w.rec.newestPolled = "1.0.1"
-	w.reports.reportErr = errors.New("the bucket is unavailable")
 	first := newVersion(false)
 	first.CheckID = poller.RecheckID("npm", "weather-mcp", "1.0.1")
-	runner := durabletest.NewLocalRunner(Handler(w.deps()))
-	if _, err := runner.RunUntilComplete(first); err != nil {
-		t.Fatal(err)
-	}
-	if err := runner.SendCallbackSuccess(runner.OpenCallbacks()[0].CallbackID, HumanAnswer{Decision: DecisionApprove}); err != nil {
-		t.Fatal(err)
-	}
-	result, err := runner.RunUntilComplete(first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Status != durabletest.Failed || len(w.rec.retries) != 1 {
-		t.Fatalf("status %s, retries %v; want the re-check failed and its retry asked", result.Status, w.rec.retries)
-	}
-	if c0, _, _ := w.rec.GetCheck(t.Context(), "c0"); c0.SupersededBy != first.CheckID {
-		t.Fatalf("approved check %+v, want it still superseded by the failed re-check", c0)
-	}
+	w.rec.checks[0].SupersededBy = first.CheckID
 
 	// The poller starts the retry; this time it passes by code.
-	w.reports.reportErr = nil
 	w.judge = cleanJudge()
 	retry := newVersion(true)
 	retry.CheckID = poller.RetryID("npm", "weather-mcp", "1.0.1")

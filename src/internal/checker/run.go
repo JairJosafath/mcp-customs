@@ -127,6 +127,16 @@ type run struct {
 	// unsettled says a re-check that did not pass may be done but has not
 	// superseded the approved check: its failure is still retried.
 	unsettled bool
+	// passed says a re-check's decided verdict is pass: should it fail
+	// once done, it still lifts the mark (liftAfterPass).
+	passed bool
+	// report is the verdict's report, once finish made it: a person's
+	// verdict is written again from it (reapplyVerdict).
+	report *Report
+	// verdictStep is the verdict's page step, once finish made it, and
+	// verdictRecorded says it was written (rerecordVerdict).
+	verdictStep     *outcome
+	verdictRecorded bool
 	// ownAPI says allow refused the stack's own API host: the judge
 	// investigates nothing after it.
 	ownAPI bool
@@ -236,9 +246,11 @@ func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
 	if err := r.endSandbox(ctx); err != nil {
 		return "", err
 	}
-	if err := r.do(ctx, ActAskHuman, nil); err != nil {
+	if err := r.do(ctx, ActAskHuman, nil); err != nil && (r.human == "" || isSuspend(err)) {
 		return "", err
 	}
+	// A person who decided is heeded even when the page step saying so
+	// could not be written: finish writes their verdict and its own step.
 	in.Human = r.human
 	by := map[string]string{verdict.HumanApprove: "a person approved", verdict.HumanBlock: "a person blocked"}[r.human]
 	if by == "" {
@@ -265,7 +277,7 @@ func (r *run) judge(ctx durable.Context) (verdict.Input, error) {
 			err = fmt.Errorf("%w: the judgement is over %d KB", ErrBadAnswer, maxStepResult>>10)
 		}
 		return got, err
-	}, noRetry)
+	}, judgeRetry)
 	var stepErr *durable.StepError
 	if err != nil && !errors.As(err, &stepErr) {
 		return verdict.Input{}, err
@@ -344,23 +356,44 @@ func (r *run) endSandbox(ctx durable.Context) error {
 // other error that ends one is a durable operation's, which matches
 // *durable.OperationError; the SDK's signal that the invocation is
 // suspending matches neither, and must pass through untouched.
-var terminal = []error{ErrUnknownAction, ErrBadArguments, ErrBadWait, ErrTooLarge}
+var terminal = []error{ErrUnknownAction, ErrBadArguments, ErrBadWait, ErrTooLarge, ErrNoTime, errNoReport}
 
 // fail closes a check that failed, unless err is the SDK suspending the
 // invocation: it ends the sandbox and sets the check's status to failed,
 // each in a step. A check already done keeps its verdict, its approval and
 // its page: nothing more is written, and no retry is asked, unless it is a
 // re-check that did not pass and hasn't superseded the approved check
-// (unsettled). Any other check
+// (unsettled); a re-check that passed still lifts the mark
+// (liftAfterPass). Any other check
 // gets a failed step saying which action failed, and a re-check is then
-// retried once, or its second failure recorded (afterFailedRecheck). It
+// retried once, or its second failure recorded (afterFailedRecheck). A
+// check a person decided is never retried: its verdict is written again
+// (reapplyVerdict), and if that fails too, a re-check is recorded as lost
+// for good (personsVerdictLost). It
 // answers err, with any failure of its own joined.
 func (r *run) fail(ctx durable.Context, err error) error {
-	var opErr *durable.OperationError
-	if !errors.As(err, &opErr) && !slices.ContainsFunc(terminal, func(t error) bool { return errors.Is(err, t) }) {
+	if isSuspend(err) {
 		return err
 	}
 	errs := []error{err, r.endSandbox(ctx)}
+	// A person's verdict is never followed by a retry: it is written again.
+	var reapplyErr error
+	if r.human != "" {
+		reapplyErr = r.reapplyVerdict(ctx)
+		if isSuspend(reapplyErr) {
+			return reapplyErr
+		}
+		if reapplyErr == nil {
+			// The person's verdict is written: the check is done.
+			if err := r.rerecordVerdict(ctx); err != nil {
+				return err
+			}
+			if err := r.liftAfterPass(ctx); err != nil {
+				return err
+			}
+			return errors.Join(errs...)
+		}
+	}
 	done, updateErr := durable.Step(ctx, "record-failure", func(sc durable.StepContext) (bool, error) {
 		failErr := r.deps.Store.FailCheck(sc, r.in.CheckID)
 		if errors.Is(failErr, store.ErrCheckDone) {
@@ -372,10 +405,27 @@ func (r *run) fail(ctx durable.Context, err error) error {
 		errs = append(errs, fmt.Errorf("record check %s as failed: %w", r.in.CheckID, updateErr))
 	}
 	if done && !r.unsettled {
+		if liftErr := r.liftAfterPass(ctx); liftErr != nil {
+			return liftErr
+		}
 		return errors.Join(errs...)
 	}
-	errs = append(errs, r.record(ctx, "failed", r.failedOutcome()), r.afterFailedRecheck(ctx))
-	return errors.Join(errs...)
+	errs = append(errs, reapplyErr, r.record(ctx, "failed", r.failedOutcome()))
+	if r.human != "" {
+		return errors.Join(append(errs, r.personsVerdictLost(ctx))...)
+	}
+	return errors.Join(append(errs, r.afterFailedRecheck(ctx))...)
+}
+
+// isSuspend says err is the SDK suspending the invocation, which must
+// pass through untouched: neither a durable operation's error nor one of
+// the Checker's own that end a check (terminal).
+func isSuspend(err error) bool {
+	if err == nil {
+		return false
+	}
+	var opErr *durable.OperationError
+	return !errors.As(err, &opErr) && !slices.ContainsFunc(terminal, func(t error) bool { return errors.Is(err, t) })
 }
 
 // failedOutcome is the failed step's outcome. Its summary names the

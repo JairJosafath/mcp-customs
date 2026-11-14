@@ -39,13 +39,20 @@ func approvalsOnlyOfDoneChecks(t *testing.T, w *world) {
 // logs to the answered buffer.
 func approvedRecheck(t *testing.T, w *world) (*durabletest.TestResult, *bytes.Buffer) {
 	t.Helper()
+	return decidedRecheck(t, w, DecisionApprove)
+}
+
+// decidedRecheck runs a re-check that code gives review and a person then
+// decides. It logs to the answered buffer.
+func decidedRecheck(t *testing.T, w *world, decision string) (*durabletest.TestResult, *bytes.Buffer) {
+	t.Helper()
 	logs := &bytes.Buffer{}
 	runner := durabletest.NewLocalRunner(Handler(w.deps()), durable.WithLogHandler(slog.NewJSONHandler(logs, nil)))
 	in := newVersion(false)
 	if _, err := runner.RunUntilComplete(in); err != nil {
 		t.Fatal(err)
 	}
-	if err := runner.SendCallbackSuccess(runner.OpenCallbacks()[0].CallbackID, HumanAnswer{Decision: DecisionApprove}); err != nil {
+	if err := runner.SendCallbackSuccess(runner.OpenCallbacks()[0].CallbackID, HumanAnswer{Decision: decision}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := runner.RunUntilComplete(in)

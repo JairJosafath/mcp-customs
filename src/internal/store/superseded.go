@@ -64,7 +64,9 @@ func (s *Store) MarkSuperseded(ctx context.Context, approvedID string, sup Super
 
 // LiftSuperseded removes approved check approvedID's supersededBy while it
 // names recheckID, as when a person approves the newer version after all,
-// and answers whether it did: a link a newer re-check set stays.
+// and answers whether it did: a link a newer re-check set stays. It keeps
+// recheckID as liftedBy, so a retry of a lift that committed but lost its
+// reply also answers true while no newer mark is set, and its event is sent.
 func (s *Store) LiftSuperseded(ctx context.Context, approvedID, recheckID string) (bool, error) {
 	pk, err := checkPK(approvedID)
 	if err != nil {
@@ -73,9 +75,9 @@ func (s *Store) LiftSuperseded(ctx context.Context, approvedID, recheckID string
 	_, err = s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:                 aws.String(s.table),
 		Key:                       row{"pk": str(pk), "sk": str(metaSK)},
-		UpdateExpression:          aws.String("REMOVE #supersededBy"),
-		ConditionExpression:       aws.String("#supersededBy = :recheck"),
-		ExpressionAttributeNames:  map[string]string{"#supersededBy": "supersededBy"},
+		UpdateExpression:          aws.String("REMOVE #supersededBy SET #liftedBy = :recheck"),
+		ConditionExpression:       aws.String(liftCondition),
+		ExpressionAttributeNames:  map[string]string{"#supersededBy": "supersededBy", "#liftedBy": "liftedBy"},
 		ExpressionAttributeValues: row{":recheck": str(recheckID)},
 	})
 	if failed := new(types.ConditionalCheckFailedException); errors.As(err, &failed) {
@@ -86,6 +88,10 @@ func (s *Store) LiftSuperseded(ctx context.Context, approvedID, recheckID string
 	}
 	return true, nil
 }
+
+// liftCondition holds while the mark names the re-check, or while no mark
+// is set and the re-check is the one that lifted the last.
+const liftCondition = "#supersededBy = :recheck OR (attribute_not_exists(#supersededBy) AND #liftedBy = :recheck)"
 
 // conditionsFailed reports whether a transaction was canceled only for
 // conditions that didn't hold, not a conflict or a throttle.

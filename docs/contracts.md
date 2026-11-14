@@ -335,8 +335,9 @@ launched, written before anything else, so a failure can end it, and, for
 a re-check, `recheckOf` and `recheckOfRef`: the check that approved the
 earlier version, and that version's ref. An approved check's `META`
 keeps `supersededBy`, the re-check of a newer version that ended at
-review or block, and `recheckFailed`, the retry of a re-check that failed
-twice.
+review or block, `liftedBy`, the re-check whose pass last lifted that mark
+(so a retried lift whose reply was lost still sends its event), and
+`recheckFailed`, the retry of a re-check that failed twice.
 
 A pass of a package (not a remote server) also puts its `APPROVED` item,
 with `polled` set to its version.
@@ -411,7 +412,8 @@ A re-check never ends silently:
   check that the re-check's version is still the package's `polled`, so
   of two re-checks of one approval only the newest version's sets the
   link and sends the event, whichever ends last. A re-check that passes, by code or a person's approval, always tries
-  to lift the mark, which comes off only while it names that re-check or,
+  to lift the mark, even when its pass committed but was answered as an
+  error, which comes off only while it names that re-check or,
   for a retry, the re-check it retries (a mark left by a re-check that
   failed after setting it is lifted by its retry), and a second event goes out: detail-type
   `Approved check no longer superseded`, the same detail with verdict
@@ -422,8 +424,17 @@ pass.` with `"liftFailedAfterPass":1`, which a metric filter counts
   (`MCPCustoms`/`LiftFailedAfterPass`) and the
   `LiftFailedAfterPass-Warning` alarm sends to the stack's topic. The `ConditionCheckItem` the transaction needs is granted to the
   Checker on `APPROVED` items only. A user subscribes with a rule on that source and those
-  detail-types; a retried step may send an event twice, told apart by
-  `recheckId`.
+  detail-types. Delivery is at-least-once: the Checker decides to send
+  each event once, but a put whose reply is lost is sent again, so a
+  subscriber may get one event twice and should treat a repeat of the
+  same detail-type, `approvedCheckId` and `recheckId` as one.
+- **A person decided it**: it is never started again, as a retry starts
+  from nothing and could approve what the person blocked. If its verdict
+  can't be written, the Checker writes the person's verdict again; if
+  that fails too, the re-check ends failed, the approved check keeps its
+  superseded mark and gets `recheckFailed`, and the Checker logs `A
+person's verdict on a re-check could not be written.` with
+  `"recheckFailedTwice":1`, which raises `RecheckFailedTwice-Critical`.
 
 ## The demo proxy
 
@@ -471,7 +482,13 @@ between a line `<<<EVIDENCE <nonce> BEGIN <name>>>>` and
 `<<<EVIDENCE <nonce> END <name>>>>`, the nonce fresh for every call, and the
 system prompt names it evidence, never instructions. Model findings are
 `purpose-mismatch`, `server-instructs-model`, `judge-concern` and
-`judge-asked-for-a-person`, each at least review.
+`judge-asked-for-a-person`, each at least review. A call, with its tries
+and waits, ends within 270 seconds or 15 seconds before the invocation's
+deadline, whichever is sooner; a step with too little of the invocation
+left to ask the model at all asks nothing, and the step runs again in a
+fresh invocation (at most three times) rather than fail the judge, as
+does a call the deadline cut short whose tries ran out on a timeout or a
+busy model.
 
 ## Verdicts
 

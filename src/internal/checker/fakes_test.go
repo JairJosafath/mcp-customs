@@ -24,7 +24,7 @@ import (
 // steps of that name fail, once a step named failAfter is written when
 // that is set; doneErr makes marking a check done fail, and with it every
 // write that goes in its transaction; liftErr makes lifting a superseded
-// mark fail; supersedeErr makes marking an approved check superseded
+// mark fail, and liftErrOnce only the first; supersedeErr makes marking an approved check superseded
 // fail; lostDoneReply makes marking a check done commit but answer that
 // error; lostPassReply makes a pass commit but answer that error, as a
 // reply lost on the network does; loseFirstReply makes the first
@@ -54,6 +54,14 @@ type memoryRecorder struct {
 	retries        []string
 	overtaken      bool
 	newestPolled   string
+	liftedBy       map[string]string
+	liftErrOnce    error
+	// doneFails, when set, makes doneErr fail only that many done writes;
+	// failErr makes FailCheck fail; failStepUntilDone makes failStep fail
+	// only while its check is not done.
+	doneFails         int
+	failErr           error
+	failStepUntilDone bool
 }
 
 // memoryEvents keeps every event the Checker sends, superseded and lifted.
@@ -117,8 +125,14 @@ func (m *memoryRecorder) UpdateCheck(_ context.Context, id string, u store.Check
 	if i < 0 {
 		return store.ErrNoCheck
 	}
-	if u.Status == store.StatusDone && m.doneErr != nil {
-		return m.doneErr
+	if err := m.doneErr; u.Status == store.StatusDone && err != nil {
+		if m.doneFails > 0 {
+			m.doneFails--
+			if m.doneFails == 0 {
+				m.doneErr = nil
+			}
+		}
+		return err
 	}
 	m.updates = append(m.updates, u)
 	c := &m.checks[i]
@@ -160,17 +174,31 @@ func (m *memoryRecorder) MarkSuperseded(_ context.Context, approvedID string, s 
 	return true, nil
 }
 
+// LiftSuperseded lifts check approvedID's mark while it names recheckID,
+// and answers true again to the re-check that lifted it while no newer
+// mark is set, as the store does.
 func (m *memoryRecorder) LiftSuperseded(_ context.Context, approvedID, recheckID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.liftErr != nil {
 		return false, m.liftErr
 	}
+	if err := m.liftErrOnce; err != nil {
+		m.liftErrOnce = nil
+		return false, err
+	}
 	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == approvedID })
-	if i < 0 || m.checks[i].SupersededBy != recheckID {
+	if i < 0 {
 		return false, nil
 	}
+	if marked := m.checks[i].SupersededBy; marked != recheckID {
+		return marked == "" && m.liftedBy[approvedID] == recheckID, nil
+	}
 	m.checks[i].SupersededBy = ""
+	if m.liftedBy == nil {
+		m.liftedBy = map[string]string{}
+	}
+	m.liftedBy[approvedID] = recheckID
 	return true, nil
 }
 
@@ -192,7 +220,7 @@ func (m *memoryRecorder) AppendStep(_ context.Context, checkID string, step stor
 	if m.stepErr != nil {
 		return m.stepErr
 	}
-	if step.Name == m.failStep && (m.failAfter == "" || slices.ContainsFunc(m.steps, func(s store.Step) bool { return s.Name == m.failAfter })) {
+	if step.Name == m.failStep && !(m.failStepUntilDone && m.isDone(checkID)) && (m.failAfter == "" || slices.ContainsFunc(m.steps, func(s store.Step) bool { return s.Name == m.failAfter })) {
 		return errors.New("the table is unavailable")
 	}
 	// As DynamoDB does, refuse an item larger than it keeps.
@@ -211,10 +239,19 @@ func (m *memoryRecorder) GetVerdict(_ context.Context, hash string) (store.Verdi
 	return v, ok, nil
 }
 
+// isDone says check id is done; the caller holds mu.
+func (m *memoryRecorder) isDone(id string) bool {
+	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == id })
+	return i >= 0 && m.checks[i].Status == store.StatusDone
+}
+
 // FailCheck marks check id failed unless it is done, as the store does.
 func (m *memoryRecorder) FailCheck(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failErr != nil {
+		return m.failErr
+	}
 	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == id })
 	if i < 0 {
 		return store.ErrNoCheck

@@ -66,12 +66,16 @@ func (f *fakeDynamo) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput,
 	if item == nil {
 		item = maps.Clone(in.Key)
 	}
-	if removed, ok := strings.CutPrefix(aws.ToString(in.UpdateExpression), "REMOVE "); ok {
+	update := aws.ToString(in.UpdateExpression)
+	if removed, ok := strings.CutPrefix(update, "REMOVE "); ok {
+		removed, update, _ = strings.Cut(removed, " ")
 		delete(item, in.ExpressionAttributeNames[removed])
-		f.items[key] = item
-		return &dynamodb.UpdateItemOutput{}, nil
+		if update == "" {
+			f.items[key] = item
+			return &dynamodb.UpdateItemOutput{}, nil
+		}
 	}
-	sets, ok := strings.CutPrefix(aws.ToString(in.UpdateExpression), "SET ")
+	sets, ok := strings.CutPrefix(update, "SET ")
 	if !ok {
 		return nil, errors.New("unexpected update " + aws.ToString(in.UpdateExpression))
 	}
@@ -157,10 +161,12 @@ func (f *fakeDynamo) holds(condition *string, key [2]string, values row) error {
 		version, _ := readStr(values, ":version")
 		existing, _ := readStr(item, "polled")
 		ok = !exists || existing == version
-	case "#supersededBy = :recheck":
+	case "#supersededBy = :recheck OR (attribute_not_exists(#supersededBy) AND #liftedBy = :recheck)":
 		want, _ := readStr(values, ":recheck")
-		existing, _ := readStr(item, "supersededBy")
-		ok = exists && existing == want
+		marked, _ := readStr(item, "supersededBy")
+		_, isMarked := item["supersededBy"]
+		lifter, _ := readStr(item, "liftedBy")
+		ok = exists && (marked == want || (!isMarked && lifter == want))
 	case "polled = :version", "#retry = :version":
 		attribute := map[string]string{"polled = :version": "polled", "#retry = :version": "retry"}[aws.ToString(condition)]
 		version, _ := readStr(values, ":version")
