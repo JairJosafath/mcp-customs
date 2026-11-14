@@ -7,7 +7,8 @@ package sandbox
 
 import (
 	"context"
-	"crypto/rand"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -43,7 +44,7 @@ type Launch struct {
 	// rather than start a second: the check's id and its attempt.
 	IdempotencyKey string
 	// Token is the run's bearer token, which the harness then requires on
-	// every call (NewRunToken).
+	// every call (DeriveRunToken).
 	Token string
 	// Canaries fill the fake developer home before anything is installed.
 	Canaries []Canary
@@ -114,13 +115,16 @@ func validRequest(req Request) bool {
 	return req.Method != "" && strings.HasPrefix(req.Path, "/")
 }
 
-// NewRunToken makes a fresh bearer token for one run: 32 random bytes,
-// base64url. Each MicroVM gets its own, so one sandbox's token opens no
-// other.
-func NewRunToken() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("read random bytes for a run token: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
+// derivationLabel keeps run tokens apart from anything else the key might
+// one day derive.
+const derivationLabel = "mcp-customs run token v1\x00"
+
+// DeriveRunToken is check checkID's run token: HMAC-SHA256 of the check's
+// id under key, base64url. The same key and id give the same token, so a
+// replayed execution derives it again instead of keeping it; a token
+// opens no other check's sandbox, and without the key none can be made.
+func DeriveRunToken(key []byte, checkID string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(derivationLabel + checkID))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }

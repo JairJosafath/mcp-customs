@@ -38,4 +38,9 @@ const (
 	RuleElicitation       = "unexplained-elicitation"
 	RuleJudgeError        = "judge-error"
 	RuleJudgeOutOfTurn    = "judge-out-of-turns"
+	// A listed tool the Checker could not probe: its JSON or its name.
+	RuleUnprobedTool = "unprobed-tool"
+	// An answer of the server too large for a check to keep: a padded tool
+	// list, result or flood of observations.
+	RuleOversized = "oversized"
 )

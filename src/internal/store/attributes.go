@@ -53,6 +53,7 @@ func checkRow(pk string, c Check) row {
 		"verdict":        str(c.Verdict),
 		"executionArn":   str(c.ExecutionARN),
 		"callbackId":     str(c.CallbackID),
+		"sandboxId":      str(c.SandboxID),
 	}
 }
 
@@ -69,6 +70,10 @@ func checkFrom(r row) (Check, error) {
 		"callbackId":     &c.CallbackID,
 	})
 	c.Status = Status(status)
+	// Checks made before the sandbox ID was kept have none.
+	if id, ok := r["sandboxId"].(*types.AttributeValueMemberS); ok {
+		c.SandboxID = id.Value
+	}
 	return c, err
 }
 
