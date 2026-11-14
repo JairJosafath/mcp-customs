@@ -30,20 +30,22 @@ per-run bearer token the Checker generates and passes at launch (see "The
 MicroVM" below for how). JSON in and out; every response carries
 `observations` since the last call.
 
-| Call                | Body                                                                                                     | Answers                                                |
-| ------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| `POST /install`     | `{"kind":"go"\|"npm"\|"pypi"\|"remote","ref":"name@version or URL","canaries":[...],"allowHosts":[...]}` | install log, resolved dependency set and its SHA-256   |
-| `POST /start`       | `{"command":[...]}` (empty: the kind's default)                                                          | the server's `initialize` result                       |
-| `POST /list`        | `{}`                                                                                                     | tools (whole schemas), resources, prompts, as raw JSON |
-| `POST /call`        | `{"tool":"name","arguments":{...}}`                                                                      | the raw result                                         |
-| `POST /allow`       | `{"hosts":[...]}`                                                                                        | the egress allowlist now in force                      |
-| `POST /clock`       | `{"offset":"720h"}`                                                                                      | the fake clock now in force                            |
-| `GET /observations` |                                                                                                          | all observations of the run                            |
+| Call                | Body                                                                                    | Answers                                                |
+| ------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `POST /install`     | `{"kind":"go"\|"npm"\|"pypi"\|"remote","ref":"name@version or URL","allowHosts":[...]}` | install log, resolved dependency set and its SHA-256   |
+| `POST /start`       | `{"command":[...]}` (empty: the kind's default)                                         | the server's `initialize` result                       |
+| `POST /list`        | `{}`                                                                                    | tools (whole schemas), resources, prompts, as raw JSON |
+| `POST /call`        | `{"tool":"name","arguments":{...}}`                                                     | the raw result                                         |
+| `POST /allow`       | `{"hosts":[...]}`                                                                       | the egress allowlist now in force                      |
+| `POST /clock`       | `{"offset":"720h"}`                                                                     | the fake clock now in force                            |
+| `GET /observations` |                                                                                         | all observations of the run                            |
 
 An observation is `{"at","kind","detail"}`, where `kind` is one of `dns`,
 `connect`, `http` (method, host, path, and the canaries found in it, with
 their encoding), `file` (path written), `sampling`, `elicitation`,
-`process`. Bodies are not returned, only what was found in them.
+`process`, `hook` (a lifecycle hook called after `/run`: method, path,
+caller, the status it got). Bodies are not returned, only what was found
+in them.
 
 ## The MicroVM
 
@@ -67,7 +69,8 @@ What Lambda MicroVMs (`sandbox/Dockerfile`, `infra/sandbox.ts`,
     `{"token":"<run token>","canaries":[{"kind","value"}...]}` as JSON, at
     most 16 KB. The harness keeps the token, plants the home from the
     canaries, then answers 200; Lambda forwards no request before that, and
-    gives the hook 30 seconds. The token and canaries are not repeated
+    gives the hook 30 seconds. Until then every Harness API call answers 503. A second `/run`, which only something inside the MicroVM can send,
+    is refused with 409 and observed as a `hook`. The token and canaries are not repeated
     anywhere else: `/install`'s `canaries` field is no longer needed.
 - **Headers.** Every request to the endpoint carries Lambda's
   `X-aws-proxy-auth` (a JWE token, an hour at most) and `X-aws-proxy-port`;

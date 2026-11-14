@@ -15,6 +15,9 @@ func TestAccountCommandsRunAsTheUnprivilegedUser(t *testing.T) {
 	if !cmd.SysProcAttr.Setpgid {
 		t.Error("the command is not its own process group, so it can't be killed whole")
 	}
+	if want := []string{"/usr/bin/setpriv", "--no-new-privs", "--", "/usr/bin/true"}; cmd.Path != want[0] || !slices.Equal(cmd.Args, want) {
+		t.Errorf("command = %s %q, want %q: the server starts with no_new_privs", cmd.Path, cmd.Args, want)
+	}
 	if cmd.Dir != "/home/dev/projects/server" {
 		t.Errorf("dir = %s", cmd.Dir)
 	}
@@ -31,5 +34,8 @@ func TestAccountWithoutSwitchRunsAsTheHarnessUser(t *testing.T) {
 	a := Account{Name: "dev", Home: t.TempDir()}
 	if cred := a.sysProcAttr().Credential; cred != nil {
 		t.Errorf("credential = %+v, want none", cred)
+	}
+	if cmd := a.command(t.Context(), a.Home, nil, []string{"/usr/bin/true"}); !slices.Equal(cmd.Args, []string{"/usr/bin/true"}) {
+		t.Errorf("command = %q, want it unwrapped", cmd.Args)
 	}
 }

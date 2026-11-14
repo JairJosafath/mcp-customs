@@ -21,14 +21,22 @@ type Account struct {
 	Switch bool
 }
 
+// setpriv is util-linux's setpriv, which the image ships (sandbox/Dockerfile).
+const setpriv = "/usr/bin/setpriv"
+
 // waitDelay is how long a stopped command's pipes may stay open before
 // they are closed for it.
 const waitDelay = 2 * time.Second
 
 // command is args run as the account in dir, with exactly env: nothing of
 // the harness's own environment reaches it. It is its own process group,
-// so cancelling ctx kills whatever it started.
+// so cancelling ctx kills whatever it started. Switched to the account, it
+// starts through setpriv --no-new-privs, so nothing it runs can gain
+// privileges, and setpriv finds args[0] on env's PATH, not the harness's.
 func (a Account) command(ctx context.Context, dir string, env, args []string) *exec.Cmd {
+	if a.Switch {
+		args = append([]string{setpriv, "--no-new-privs", "--"}, args...)
+	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // running the server under test, and its install, is the harness's job; it runs as the unprivileged account
 	cmd.Dir = dir
 	cmd.Env = env
