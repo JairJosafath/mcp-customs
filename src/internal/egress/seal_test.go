@@ -210,3 +210,46 @@ func TestARequestAllowedBeforeTheSealNeverReachesTheHostAfterSealReturns(t *test
 		t.Error("the request was not recorded, with its canary, by the time the seal answered")
 	}
 }
+
+func TestARequestAllowedBeforeTheSealIsRecordedByTheTimeSealReturns(t *testing.T) {
+	ca := newCA(t)
+	rec := newRecorded()
+	e := New(Config{CA: ca, Upstream: &fakeUpstream{}, Allow: []string{"api.weather.example"}})
+	e.Observe(rec.observe)
+	e.SetCanaries(testCanaries)
+	// The server slows the search of its request, as a large body does:
+	// it is allowed, and not yet recorded, when the seal comes.
+	admitted, release := make(chan struct{}), make(chan struct{})
+	e.afterAdmit = func() {
+		close(admitted)
+		<-release
+	}
+	proxy := httptest.NewServer(e.Proxy())
+	t.Cleanup(proxy.Close)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		resp, err := proxyClient(proxy.URL, ca).Post("http://api.weather.example/held", "text/plain", strings.NewReader(testCanaries.Get(canary.GitHubToken)))
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	within(t, admitted, "the request being allowed")
+	sealReturned := make(chan struct{})
+	go func() {
+		e.Seal()
+		close(sealReturned)
+	}()
+	within(t, e.sealed.Done(), "the seal starting")
+	close(release)
+	within(t, sealReturned, "the seal answering")
+	// Read once, right as Seal returns: the Checker's last read.
+	recorded := slices.ContainsFunc(rec.of(KindHTTP), func(o any) bool {
+		d, ok := o.(HTTPDetail)
+		return ok && d.Path == "/held" && len(d.Canaries) > 0
+	})
+	within(t, done, "the client's answer")
+	if !recorded {
+		t.Error("the request allowed before the seal was not recorded, with its canary, by the time Seal returned")
+	}
+}

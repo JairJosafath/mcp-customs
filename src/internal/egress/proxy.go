@@ -250,6 +250,9 @@ func (e *Egress) forward(w http.ResponseWriter, r *http.Request, scheme, hostpor
 		done, allowed = e.admit(host)
 	}
 	defer done()
+	if allowed && e.afterAdmit != nil {
+		e.afterAdmit()
+	}
 	e.record(KindHTTP, HTTPDetail{
 		Method:    r.Method,
 		Host:      host,

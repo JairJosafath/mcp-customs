@@ -149,6 +149,9 @@ type Egress struct {
 	// inflight counts the requests allowed and not yet done: Seal waits
 	// for them.
 	inflight sync.WaitGroup
+	// afterAdmit, when set, runs after a request is allowed and before it
+	// is searched and recorded: tests slow the proxy there.
+	afterAdmit func()
 	// beforePass, when set, runs after a request is recorded and before it
 	// is sent on: tests slow the proxy there.
 	beforePass func()
