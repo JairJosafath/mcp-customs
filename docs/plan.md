@@ -184,10 +184,14 @@ Rules for the weekend:
 
 ## Done when
 
-- Every row of the friction log has a theos issue number.
 - The entry is submitted, with its demo video and diagram.
-- `docs/results.md` says what theos built alone, what needed
-  a prompt, what needed a hand, and what that cost in time and tokens.
+- `docs/results.md` presents MCP Customs on its own: the problem, how it
+  works, the architecture, the security design, what the demo shows and what
+  only a deploy verifies. One short section says it was built with theos by
+  cloud sessions, with the numbers `hack/runs-stats` counts.
+- The friction log below is the build's internal record. It is not part of
+  the submission, and it gets no new rows until after it (the owner's word
+  of 2026-11-14).
 
 ## Friction log
 
