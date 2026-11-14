@@ -62,6 +62,15 @@ The investigation's calls (`/call` again, `/source`, `/download`, `/clock`)
 and `/allow` are best effort: an error answer is told to the judge, and the
 check goes on.
 
+The server under test never reaches the stack's own API. Before `allow`
+calls `/allow`, the Checker refuses an allowlist holding its API host
+(`API_HOST`), or a name that resolves to one of that host's addresses
+(or any name, when the API host doesn't resolve): no `/allow` is sent,
+the `allow` step records an `allow-own-api` code finding, at least
+review, and the judge investigates nothing more. The harness, given the
+same host as the image's `API_HOST`, answers `/allow`, and `/install`'s
+`allowHosts`, 403 when they name it.
+
 `/seal` ends egress for good: the allowlist (the registries' too) is
 emptied, every new CONNECT is refused (recorded as a refused `connect`,
 searched), and a request still being sent on to an allowed host is cut;

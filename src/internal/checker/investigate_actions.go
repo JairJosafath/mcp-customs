@@ -202,7 +202,9 @@ type allowArgs struct {
 }
 
 // allow sets the sandbox's egress allowlist to the hosts the judge expects
-// for the server's purpose.
+// for the server's purpose. It never allows the stack's own API host, or a
+// name that resolves to it: that refusal is a code finding, and ends the
+// investigation.
 func allow(ctx durable.Context, r *run, args json.RawMessage) (outcome, error) {
 	var a allowArgs
 	if err := decodeArgs(args, &a); err != nil {
@@ -213,6 +215,13 @@ func allow(ctx durable.Context, r *run, args json.RawMessage) (outcome, error) {
 	}
 	if len(a.Hosts) > maxHosts || slices.ContainsFunc(a.Hosts, func(h string) bool { return !allowedHost(h) }) {
 		return outcome{}, fmt.Errorf("%w: at most %d host names", ErrBadArguments, maxHosts)
+	}
+	refusal, err := r.ownAPIRefusal(ctx, a.Hosts)
+	if err != nil {
+		return outcome{}, err
+	}
+	if refusal != "" {
+		return r.refuseOwnAPI(refusal), nil
 	}
 	got, err := r.harnessStep(ctx, ActAllow, "/allow", map[string]any{"hosts": a.Hosts}, func(json.RawMessage) string { return "" })
 	if err != nil {

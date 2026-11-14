@@ -24,6 +24,12 @@ export const SANDBOX_MEMORY_MIB = 2048;
 /** The environment variable that names the Go proxies to the harness and the poller. */
 export const GO_PROXY_URL = 'GO_PROXY_URL';
 
+/**
+ * The stack's own API host, which the server under test may never reach:
+ * the Checker refuses it in an allowlist, and the harness refuses it again.
+ */
+export const API_HOST = 'API_HOST';
+
 /** The Lambda-managed base image the harness image is built on, and its pinned version. */
 export const BASE_IMAGE = 'al2023-1';
 export const BASE_IMAGE_VERSION = '3';
@@ -57,6 +63,8 @@ export interface SandboxProps {
   readonly logRetention: RetentionDays;
   /** The GOPROXY-style list Go installs resolve through, the harness's `GO_PROXY_URL`. */
   readonly goProxy: string;
+  /** The stack's own API host, the harness's `API_HOST`. */
+  readonly apiHost: string;
 }
 
 /**
@@ -135,8 +143,12 @@ export class Sandbox extends Construct {
       // the connectors each MicroVM gets.
       egressNetworkConnectors: [this.egressConnectorArn],
       // The same for every MicroVM, so nothing per run: the Go proxies
-      // installs resolve through, the stack's demo proxy first.
-      environmentVariables: [{ key: GO_PROXY_URL, value: props.goProxy }],
+      // installs resolve through, the stack's demo proxy first,
+      // and the stack's own API host, which no allowlist may hold.
+      environmentVariables: [
+        { key: GO_PROXY_URL, value: props.goProxy },
+        { key: API_HOST, value: props.apiHost },
+      ],
       // Lambda filters no hosts, so the harness enforces deny-by-default
       // itself with iptables rules on the server's user (src/internal/egress),
       // which need CAP_NET_ADMIN; Lambda grants that only with ALL.

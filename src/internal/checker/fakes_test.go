@@ -436,6 +436,9 @@ func (w *world) deps() Deps {
 		Judge:    w.judge,
 		Canaries: func() canary.Set { return fixedCanaries },
 		Token:    func(checkID string) string { return "run-token-" + checkID },
+		// Every test keeps the stack's own API out of the allowlist.
+		APIHost:    apiHost,
+		LookupHost: testDNS,
 	}
 }
 
