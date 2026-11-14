@@ -121,7 +121,9 @@ is the registered action that ran (`resolve`, `lookup`, `install`, `list`,
 `scan`, `probe`, `observe`, `ask_human`, `wait`), or `start`, `judge`,
 `verdict` or `failed`. A check that fails ends its sandbox, writes a
 `failed` step whose summary names the action that failed (never the
-harness's or the SDK's text), and turns `failed`. A `HASH#` item is written only when a check passes by code or a
+harness's or the SDK's text), and turns `failed`. A check writes its `verdict` step, then its report, its `HASH#` item
+and, last, `done`: a `verdict` step that can't be written fails the check
+with no `HASH#` item. A `HASH#` item is written only when a check passes by code or a
 person approves it; its `installSpec` is the JSON
 `{"kind","ref","dependencySha256","toolListSha256"}`.
 
@@ -135,11 +137,15 @@ or the observations larger than that are kept whole in the bucket as
 `call-<n>`, `observe`), and the check fails, with an `oversized` code
 finding on its `failed` step.
 
-No `STEP#` item is larger than DynamoDB's 400 KB: a step keeps at most 20
-findings of each rule and 200 in all, each rule cut to 64 bytes and its
-evidence to 512, and one finding per rule saying how many more it left
-off (`more-findings` counts those of rules it kept none of). The verdict
-is decided from every finding, and the report keeps them all. Findings
+No `STEP#` item is larger than DynamoDB's 400 KB, measured as the store
+encodes it (`store.StepSize`, after JSON writes a control character as six
+bytes): a step keeps at most 20 findings of each rule and 200 in all, each
+rule cut to 64 bytes and its evidence to 512, and fewer when those would
+take the item past 400 KB. It adds one finding per rule saying how many
+more of that rule it left off past its 20, and one `more-findings` finding
+counting the findings of any rule, kept or not, it left off once it had
+kept its most (200, or as many as fit). The verdict is decided from every
+finding, and the report keeps them all. Findings
 name a tool by its place in the listing (`tool 3`, `the result of tool
 3`), whichever step made them.
 

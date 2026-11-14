@@ -16,7 +16,8 @@ import (
 
 // memoryRecorder keeps every write the handler makes, in order, and
 // creates a check only once, as the store does. putErr and stepErr make
-// those writes fail, as an outage would; loseFirstReply makes the first
+// those writes fail, as an outage would, and failStep makes the write of
+// steps of that name fail; loseFirstReply makes the first
 // create succeed but answer an error, as a reply lost on the network does.
 type memoryRecorder struct {
 	mu             sync.Mutex
@@ -29,6 +30,7 @@ type memoryRecorder struct {
 	verdictPuts    int
 	putErr         error
 	stepErr        error
+	failStep       string
 	loseFirstReply bool
 	puts           int
 }
@@ -90,6 +92,9 @@ func (m *memoryRecorder) AppendStep(_ context.Context, checkID string, step stor
 	defer m.mu.Unlock()
 	if m.stepErr != nil {
 		return m.stepErr
+	}
+	if step.Name == m.failStep {
+		return errors.New("the table is unavailable")
 	}
 	// As DynamoDB does, refuse an item larger than it keeps.
 	if size, err := store.StepSize(checkID, step); err != nil || size > store.MaxItemSize {

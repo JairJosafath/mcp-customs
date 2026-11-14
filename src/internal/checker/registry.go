@@ -101,7 +101,7 @@ func (r *run) do(ctx durable.Context, a Action, args json.RawMessage) error {
 // its number.
 func (r *run) record(ctx durable.Context, name string, out outcome) error {
 	r.seq++
-	step := store.Step{Seq: r.seq, Name: name, Summary: out.Summary, Findings: storeFindings(boundFindings(out.Findings))}
+	step := boundStep(r.in.CheckID, store.Step{Seq: r.seq, Name: name, Summary: out.Summary}, out.Findings)
 	if _, err := durable.Step(ctx, fmt.Sprintf("step-%04d", r.seq), func(sc durable.StepContext) (bool, error) {
 		return true, r.deps.Store.AppendStep(sc, r.in.CheckID, step)
 	}); err != nil {
