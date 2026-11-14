@@ -26,8 +26,10 @@ pull request.
 ## Harness API
 
 The Checker calls the harness over the MicroVM's HTTPS URL, with a
-per-run bearer token the Checker generates and passes at launch (see "The
-MicroVM" below for how). JSON in and out; every response carries
+per-run bearer token the Checker passes at launch (see "The MicroVM" below
+for how). The token is HMAC-SHA256 of the check's id under a key in Secrets
+Manager (`RUN_TOKEN_SECRET_ARN`), so the Checker derives it again on every
+invocation and no execution history keeps it. JSON in and out; every response carries
 `observations` since the last call.
 
 | Call                | Body                                                                                    | Answers                                                |
@@ -113,8 +115,33 @@ One DynamoDB table (`DYNAMODB_TABLE_NAME`), keys `pk` and `sk`:
 | A step    | `CHECK#<id>`    | `STEP#<seq>` | what ran, its findings, a one-line summary (the web page's timeline) |
 | A verdict | `HASH#<sha256>` | `VERDICT`    | the approved check's ID, its tool-list hash, the install spec        |
 
+A check's `status` is `running`, `waiting` (for a person's Approve or
+Block, under its `callbackId`), `done` or `failed`. A `STEP#` item's `name`
+is the registered action that ran (`resolve`, `lookup`, `install`, `list`,
+`scan`, `probe`, `observe`, `ask_human`, `wait`), or `start`, `judge`,
+`verdict` or `failed`. A check that fails ends its sandbox, writes a
+`failed` step whose summary names the action that failed (never the
+harness's or the SDK's text), and turns `failed`. A `HASH#` item is written only when a check passes by code or a
+person approves it; its `installSpec` is the JSON
+`{"kind","ref","dependencySha256","toolListSha256"}`.
+
+A check's `META` also keeps `sandboxId`, the MicroVM its `resolve`
+launched, written before anything else, so a failure can end it.
+
+No step keeps more than 200 KB. A tool list, a probe's answer or the
+observations larger than that are kept whole in the bucket as
+`observations/<check-id>-<what>.json` (`list`, `call-<n>`, `observe`), and
+the check fails, with an `oversized` code finding on its `failed` step.
+
 Reports go to the bucket as `reports/<check-id>.json`. Raw observations as
 `observations/<check-id>.json`.
+
+## A person's answer
+
+The web function answers a `waiting` check by sending its `callbackId`
+(`SendDurableExecutionCallbackSuccess`) the JSON
+`{"decision":"approve"}` or `{"decision":"block"}`. Anything else, or no
+answer within 7 days, leaves the verdict code decided.
 
 ## Verdicts
 

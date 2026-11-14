@@ -12,9 +12,11 @@ import (
 // Status is where a check is.
 type Status string
 
-// The statuses of a check.
+// The statuses of a check. A waiting check waits for a person's Approve
+// or Block, under its callback ID.
 const (
 	StatusRunning Status = "running"
+	StatusWaiting Status = "waiting"
 	StatusDone    Status = "done"
 	StatusFailed  Status = "failed"
 )
@@ -34,6 +36,8 @@ type Check struct {
 	Verdict      string
 	ExecutionARN string
 	CallbackID   string
+	// SandboxID is the MicroVM the check launched, so a failure can end it.
+	SandboxID string
 }
 
 // Finding is one reason for a verdict: who found it (code or model), the

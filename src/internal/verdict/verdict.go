@@ -1,7 +1,7 @@
 // Package verdict decides pass, review or block from code and model
 // findings. Code findings set a floor no model finding can lower; the model
 // can only make the verdict stricter; a judge that fails or runs out of
-// turns gives at least review.
+// turns gives at least review; only a person's decision is final.
 package verdict
 
 import "github.com/JairJosafath/mcp-customs/src/internal/findings"
@@ -36,6 +36,8 @@ var codeFloors = map[string]Verdict{
 	findings.RuleSecretResend:      Review,
 	findings.RuleJudgeError:        Review,
 	findings.RuleJudgeOutOfTurn:    Review,
+	findings.RuleUnprobedTool:      Review,
+	findings.RuleOversized:         Review,
 }
 
 // Input is what a verdict is decided from.
@@ -51,7 +53,17 @@ type Input struct {
 	JudgeErr error
 	// OutOfTurns says the judge's investigation ran out of turns.
 	OutOfTurns bool
+	// Human is a person's decision, HumanApprove or HumanBlock, once code
+	// asked for one; anything else is no decision. A person alone may clear
+	// a code floor.
+	Human string
 }
+
+// The decisions a person may give.
+const (
+	HumanApprove = "approve"
+	HumanBlock   = "block"
+)
 
 // Result is a verdict and every finding behind it.
 type Result struct {
@@ -83,6 +95,12 @@ func Decide(in Input) Result {
 	}
 	if in.JudgeErr == nil && !in.OutOfTurns {
 		verdict = stricter(verdict, modelVerdict(in.ModelVerdict))
+	}
+	switch in.Human {
+	case HumanApprove:
+		verdict = Pass
+	case HumanBlock:
+		verdict = Block
 	}
 	return Result{Verdict: verdict, Findings: all}
 }

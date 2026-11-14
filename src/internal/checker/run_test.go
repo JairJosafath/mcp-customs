@@ -1,78 +1,23 @@
 package checker
 
 import (
-	"context"
 	"errors"
 	"reflect"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/aws/aws-durable-execution-sdk-go/durable"
 	"github.com/aws/aws-durable-execution-sdk-go/durable/durabletest"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/store"
+	"github.com/JairJosafath/mcp-customs/src/internal/verdict"
 )
-
-// memoryRecorder keeps every write the handler makes, in order, and
-// creates a check only once, as the store does. putErr and stepErr make
-// those writes fail, as an outage would; loseFirstReply makes the first
-// create succeed but answer an error, as a reply lost on the network does.
-type memoryRecorder struct {
-	mu             sync.Mutex
-	checks         []store.Check
-	steps          []store.Step
-	stepsOf        []string
-	putErr         error
-	stepErr        error
-	loseFirstReply bool
-	puts           int
-}
-
-func (m *memoryRecorder) PutCheck(_ context.Context, c store.Check) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.puts++
-	if m.putErr != nil {
-		return m.putErr
-	}
-	if slices.ContainsFunc(m.checks, func(made store.Check) bool { return made.ID == c.ID }) {
-		return store.ErrCheckExists
-	}
-	m.checks = append(m.checks, c)
-	if m.loseFirstReply && m.puts == 1 {
-		return errors.New("connection reset")
-	}
-	return nil
-}
-
-func (m *memoryRecorder) GetCheck(_ context.Context, id string) (store.Check, bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == id })
-	if i < 0 {
-		return store.Check{}, false, nil
-	}
-	return m.checks[i], true, nil
-}
-
-func (m *memoryRecorder) AppendStep(_ context.Context, checkID string, step store.Step) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.stepErr != nil {
-		return m.stepErr
-	}
-	m.steps = append(m.steps, step)
-	m.stepsOf = append(m.stepsOf, checkID)
-	return nil
-}
 
 var npm = store.Submission{Kind: "npm", Ref: "weather-mcp@1.0.0"}
 
-func TestHandlerRecordsTheCheckAsRunningAndItsFirstStep(t *testing.T) {
+func TestHandlerCreatesTheCheckAsRunningThenRecordsTheStartFirst(t *testing.T) {
 	rec := &memoryRecorder{}
-	result, err := durabletest.NewLocalRunner(Handler(rec)).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
+	result, err := durabletest.NewLocalRunner(Handler(depsWith(rec))).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,19 +25,19 @@ func TestHandlerRecordsTheCheckAsRunningAndItsFirstStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != (Output{CheckID: "c1", Status: store.StatusRunning}) {
+	if out != (Output{CheckID: "c1", Status: store.StatusDone, Verdict: verdict.Pass}) {
 		t.Errorf("output = %+v", out)
 	}
-	if len(rec.checks) != 1 {
-		t.Fatalf("recorded %d checks, want 1: %+v", len(rec.checks), rec.checks)
+	if len(rec.created) != 1 {
+		t.Fatalf("created %d checks, want 1: %+v", len(rec.created), rec.created)
 	}
-	check := rec.checks[0]
+	check := rec.created[0]
 	if check.ID != "c1" || check.Status != store.StatusRunning || check.Submission != npm || check.ExecutionARN == "" {
-		t.Errorf("recorded %+v, want c1 running with its submission and execution ARN", check)
+		t.Errorf("created %+v, want c1 running with its submission and execution ARN", check)
 	}
-	want := []store.Step{{Seq: 1, Name: "start", Summary: "The check started."}}
-	if !reflect.DeepEqual(rec.steps, want) || !reflect.DeepEqual(rec.stepsOf, []string{"c1"}) {
-		t.Errorf("recorded steps %+v of %v, want %+v of c1", rec.steps, rec.stepsOf, want)
+	first := store.Step{Seq: 1, Name: "start", Summary: "The check started.", Findings: []store.Finding{}}
+	if len(rec.steps) == 0 || !reflect.DeepEqual(rec.steps[0], first) || rec.stepsOf[0] != "c1" {
+		t.Errorf("first step %+v, want %+v of c1", rec.steps, first)
 	}
 	for _, name := range []string{"record-check", "step-0001"} {
 		op := result.Operation(name)
@@ -115,7 +60,7 @@ func TestHandlerRefusesABadEventBeforeRecordingAnything(t *testing.T) {
 		"a ref too long": {Input{CheckID: "c1", Submission: store.Submission{Kind: "npm", Ref: strings.Repeat("a", maxRefLength+1)}}, ErrBadSubmission},
 	} {
 		rec := &memoryRecorder{}
-		result, err := durabletest.NewLocalRunner(Handler(rec)).RunUntilComplete(tc.in)
+		result, err := durabletest.NewLocalRunner(Handler(depsWith(rec))).RunUntilComplete(tc.in)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -142,11 +87,11 @@ func TestHandlerFailsWithTheErrorWhenTheStoreFails(t *testing.T) {
 		},
 		"the first step can't be recorded": {
 			&memoryRecorder{stepErr: outage},
-			[]string{"record the first step of check c1", outage.Error()},
+			[]string{"record step 1 (start) of check c1", outage.Error()},
 			1,
 		},
 	} {
-		result, err := durabletest.NewLocalRunner(Handler(tc.rec)).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
+		result, err := durabletest.NewLocalRunner(Handler(depsWith(tc.rec))).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -169,22 +114,22 @@ func TestHandlerFailsWithTheErrorWhenTheStoreFails(t *testing.T) {
 
 func TestHandlerFinishesWhenARetriedStepFindsTheCheckItCreated(t *testing.T) {
 	rec := &memoryRecorder{loseFirstReply: true}
-	result, err := durabletest.NewLocalRunner(Handler(rec)).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
+	result, err := durabletest.NewLocalRunner(Handler(depsWith(rec))).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Status != durabletest.Succeeded {
 		t.Fatalf("status %s, error %+v; want succeeded", result.Status, result.Error)
 	}
-	if rec.puts != 2 || len(rec.checks) != 1 || len(rec.steps) != 1 {
-		t.Errorf("%d creates made %d checks and %d steps, want 2, 1 and 1", rec.puts, len(rec.checks), len(rec.steps))
+	if rec.puts != 2 || len(rec.checks) != 1 || rec.steps[0].Name != "start" {
+		t.Errorf("%d creates made %d checks, then steps %v; want 2, 1, and the start first", rec.puts, len(rec.checks), rec.stepNames())
 	}
 }
 
 func TestHandlerRefusesACheckAnotherExecutionCreated(t *testing.T) {
 	theirs := store.Check{ID: "c1", Submission: npm, Status: store.StatusDone, Verdict: "pass", ExecutionARN: "arn:another-execution"}
 	rec := &memoryRecorder{checks: []store.Check{theirs}}
-	result, err := durabletest.NewLocalRunner(Handler(rec)).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
+	result, err := durabletest.NewLocalRunner(Handler(depsWith(rec))).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,4 +142,11 @@ func TestHandlerRefusesACheckAnotherExecutionCreated(t *testing.T) {
 }
 
 // The handler is the SDK's handler type, which durable.Start takes.
-var _ durable.Handler[Input, Output] = Handler(&memoryRecorder{})
+var _ durable.Handler[Input, Output] = Handler(Deps{})
+
+// depsWith is a clean server's world, writing to rec.
+func depsWith(rec *memoryRecorder) Deps {
+	w := newWorld(cleanServer())
+	w.rec = rec
+	return w.deps()
+}
