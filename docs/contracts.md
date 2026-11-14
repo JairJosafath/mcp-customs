@@ -45,8 +45,8 @@ invocation and no execution history keeps it. JSON in and out; every response ca
 | `POST /call`        | `{"tool":"name","arguments":{...}}`                                                     | the raw result                                         |
 | `POST /allow`       | `{"hosts":[...]}`                                                                       | the egress allowlist now in force                      |
 | `POST /seal`        | `{}`                                                                                    | `{"hosts":[]}`: egress ended for good                  |
-| `POST /clock`       | `{"offset":"720h"}`                                                                     | the fake clock now in force                            |
-| `POST /source`      | `{"path":"dist/index.js"}`, relative to the installed package                           | `{"path","content"}`                                   |
+| `POST /clock`       | `{"offset":"720h"}`, a move forward                                                     | the fake clock now in force: `{"offset","now"}`        |
+| `POST /source`      | `{"path":"dist/index.js"}`, relative to the installed package                           | `{"path","content","truncated"}`, 64 KB at most        |
 | `POST /download`    | `{"path":"/home/dev/.cache/x"}`, a file the server wrote                                | `{"path","size","sha256","kind","excerpt"}`            |
 | `GET /observations` |                                                                                         | all observations of the run                            |
 
@@ -61,7 +61,28 @@ of the unprivileged account.
 
 The investigation's calls (`/call` again, `/source`, `/download`, `/clock`)
 and `/allow` are best effort: an error answer is told to the judge, and the
-check goes on.
+check goes on. `/clock`, `/source` and `/download` work after `/seal` and
+change nothing of egress.
+
+- **`/clock`** moves the server's clock forward with libfaketime, which
+  the server always runs preloaded with (its monotonic clock untouched),
+  reading the offset from a file in `/etc/mcp-customs` on every call for
+  the time, so a move applies to a running server. Moves add up: each is a
+  second to 366 days, all of them at most ten times that (400 past it);
+  409 when the harness has no fake clock. A Go server, which doesn't ask
+  libc for the time, doesn't see it.
+- **`/source`** reads under the installed package's directory: for npm
+  `node_modules/<name>`, for Go the main module in the module cache, for
+  PyPI the venv's `site-packages`. A path that isn't clean and relative,
+  or that leaves the package, a link out of it, a package directory
+  reached through a link, and anything but a regular file the
+  unprivileged account owns, are 400; a missing file is 404, and a call
+  before an install 409.
+- **`/download`** describes only a path seen as a `file` observation,
+  404 otherwise. The file is opened without following a last link (400),
+  must be a regular file the account owns, and is hashed whole up to 256
+  MB (413 past it); `kind` is its sniffed media type, `excerpt` its first
+  4 KB.
 
 The server under test never reaches the stack's own API directly. A host
 the server's author controls, or a CloudFront distribution in front of

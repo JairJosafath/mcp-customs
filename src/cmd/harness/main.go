@@ -127,6 +127,9 @@ func serve(log *slog.Logger) error {
 // harness's own PATH (root's, with /root/.local/bin).
 const serverPath = "/usr/local/bin:/usr/local/go/bin:/usr/local/node/bin:/usr/bin:/bin"
 
+// fakeTimeLib is libfaketime, which the image ships for /clock.
+const fakeTimeLib = "/usr/local/lib/faketime/libfaketime.so.1"
+
 // configFor is the harness's configuration for the account: nothing of it
 // per run, and the server's PATH its own, not the harness's.
 func configFor(account harness.Account) harness.Config {
@@ -137,6 +140,7 @@ func configFor(account harness.Account) harness.Config {
 		Path:           serverPath,
 		Installer:      harness.Toolchain{},
 		Now:            time.Now,
+		FakeTime:       harness.FakeTime{Lib: fakeTimeLib, File: filepath.Join(trustDir, "faketime")},
 		InstallTimeout: 10 * time.Minute,
 		CallTimeout:    time.Minute,
 	}

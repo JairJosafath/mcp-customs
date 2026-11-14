@@ -85,6 +85,9 @@ type Installed struct {
 	Resolved []byte
 	// Command starts the installed server, the start call's default.
 	Command []string
+	// Source is the installed package's own directory, which /source
+	// reads; empty when it isn't known.
+	Source string
 }
 
 // A Sandbox is where an Installer works: the server's working directory,
@@ -142,7 +145,8 @@ func installGo(ctx context.Context, p Package, sb Sandbox, log io.Writer) (Insta
 	if err := sb.Run(ctx, []string{"go", "version", "-m", bin}, &info); err != nil {
 		return Installed{}, fmt.Errorf("read the modules of %s: %w", bin, err)
 	}
-	return Installed{Resolved: goModules(info.String()), Command: []string{bin}}, nil
+	resolved := goModules(info.String())
+	return Installed{Resolved: resolved, Command: []string{bin}, Source: goModuleDir(sb.Workdir, resolved)}, nil
 }
 
 // goBinary is the name go install gives a package's binary: its last path
@@ -193,7 +197,11 @@ func installNPM(ctx context.Context, p Package, sb Sandbox, log io.Writer) (Inst
 	if err != nil {
 		return Installed{}, err
 	}
-	return Installed{Resolved: lock, Command: []string{filepath.Join(sb.Workdir, "node_modules", ".bin", bin)}}, nil
+	return Installed{
+		Resolved: lock,
+		Command:  []string{filepath.Join(sb.Workdir, "node_modules", ".bin", bin)},
+		Source:   filepath.Join(sb.Workdir, "node_modules", filepath.FromSlash(p.Name)),
+	}, nil
 }
 
 // npmBinary is the command a package's package.json names: its only bin,

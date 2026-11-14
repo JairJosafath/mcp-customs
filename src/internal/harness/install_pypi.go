@@ -55,7 +55,7 @@ func installPyPI(ctx context.Context, p Package, sb Sandbox, log io.Writer) (Ins
 		return Installed{}, err
 	}
 	noteClaims(log, before, after, set)
-	return Installed{Resolved: set, Command: []string{filepath.Join(venv, "bin", p.Name)}}, nil
+	return Installed{Resolved: set, Command: []string{filepath.Join(venv, "bin", p.Name)}, Source: sitePackages(venv)}, nil
 }
 
 // pipReport is the part of pip's installation report (format version 1)

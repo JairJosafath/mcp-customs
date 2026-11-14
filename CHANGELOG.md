@@ -8,6 +8,13 @@ Every user-visible change, newest first. The format follows
 
 ### Added
 
+- The harness answers the judge's investigation (#27): `POST /clock`
+  moves the server's clock forward with libfaketime, `POST /source` reads
+  a file of the installed package (64 KB at most, nothing outside it),
+  and `POST /download` describes a file the server was seen writing (size,
+  SHA-256, kind and an excerpt). All three work after the seal and reopen
+  no egress.
+
 - A re-check of an approved package never ends silently (#42). One that
   fails is started once more by the next poll, under a new check ID
   linked to the same approved check and version; a retry that fails too
