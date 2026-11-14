@@ -1,4 +1,4 @@
-import { AssetHashType, DockerImage, RemovalPolicy, Stack } from 'aws-cdk-lib';
+import { ArnFormat, AssetHashType, DockerImage, RemovalPolicy, Stack } from 'aws-cdk-lib';
 import { Policy, PolicyStatement, Role, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
 import { CfnMicrovmImage } from 'aws-cdk-lib/aws-lambda';
 import type { Function as LambdaFunction } from 'aws-cdk-lib/aws-lambda';
@@ -83,8 +83,22 @@ export class Sandbox extends Construct {
       retention: props.logRetention,
       removalPolicy: RemovalPolicy.DESTROY,
     });
+    // Only Lambda building this account's image may assume the build role.
+    // Lambda documents neither source key for it: the account is required,
+    // and the image's ARN is held to whenever Lambda names one.
+    const imageArn = stack.formatArn({
+      service: 'lambda',
+      resource: 'microvm-image',
+      resourceName: imageName,
+      arnFormat: ArnFormat.COLON_RESOURCE_NAME,
+    });
     const buildRole = new Role(this, 'BuildRole', {
-      assumedBy: new ServicePrincipal('lambda.amazonaws.com'),
+      assumedBy: new ServicePrincipal('lambda.amazonaws.com', {
+        conditions: {
+          StringEquals: { 'aws:SourceAccount': stack.account },
+          ArnLikeIfExists: { 'aws:SourceArn': [imageArn, `${imageArn}:*`] },
+        },
+      }),
       description: `Builds the ${imageName} MicroVM image: reads its code zip and writes its build logs.`,
     });
     buildRole.addToPolicy(
