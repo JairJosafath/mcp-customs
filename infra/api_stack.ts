@@ -37,6 +37,7 @@ import path from 'node:path';
 
 import { Alarms } from './alarms';
 import { Backups } from './backups';
+import { Sandbox } from './sandbox';
 import { TIER_RULES } from './standard';
 import type { Operations, Tier, TierRules } from './standard';
 
@@ -257,6 +258,8 @@ export class ApiStack extends Stack {
     // Only the calls the Checker makes: it records a check and its steps.
     table.grant(checker, 'dynamodb:PutItem');
     this.grantDurableExecution(checker);
+    // One MicroVM per check, from the harness image.
+    new Sandbox(this, 'Sandbox', { logRetention: rules.logRetention }).grantLaunch(checker);
     // Nothing invokes the Checker yet: the web function starts checks in a
     // later issue, and a durable execution keeps its own failures.
     Validations.of(checker).acknowledge({

@@ -26,8 +26,9 @@ pull request.
 ## Harness API
 
 The Checker calls the harness over the MicroVM's HTTPS URL, with a
-per-run bearer token the Checker generates and passes at launch. JSON in
-and out; every response carries `observations` since the last call.
+per-run bearer token the Checker generates and passes at launch (see "The
+MicroVM" below for how). JSON in and out; every response carries
+`observations` since the last call.
 
 | Call                | Body                                                                                                     | Answers                                                |
 | ------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
@@ -43,6 +44,53 @@ An observation is `{"at","kind","detail"}`, where `kind` is one of `dns`,
 `connect`, `http` (method, host, path, and the canaries found in it, with
 their encoding), `file` (path written), `sampling`, `elicitation`,
 `process`. Bodies are not returned, only what was found in them.
+
+## The MicroVM
+
+What Lambda MicroVMs (`sandbox/Dockerfile`, `infra/sandbox.ts`,
+`src/internal/checker/sandbox`) force on the harness:
+
+- **One snapshot for every run.** Lambda builds the image, starts the
+  harness once, and snapshots it; each check's MicroVM resumes from that
+  snapshot. Environment variables are the image's, the same for every
+  MicroVM, so the token can't come from `HARNESS_TOKEN`, and nothing
+  made before the snapshot (a key, a seed, a planted home) may be per-run.
+- **Two ports.** The Harness API listens on `PORT`, 8080, the endpoint's
+  default. Lambda's lifecycle hooks are served on `HOOKS_PORT`, 9000. The
+  Checker's endpoint tokens open 8080 only, so nobody holding one reaches
+  a hook. Lambda forwards by port, never by path.
+- **Hooks the harness serves on 9000**, under `/aws/lambda-microvms/runtime/v1/`:
+  - `POST .../ready` at image build: 200 once the API listens (503 to be
+    asked again). Lambda snapshots after it.
+  - `POST .../run` when a MicroVM starts, with
+    `{"microvmId":"mvm-...","runHookPayload":"<string>"}`. The payload is
+    `{"token":"<run token>","canaries":[{"kind","value"}...]}` as JSON, at
+    most 16 KB. The harness keeps the token, plants the home from the
+    canaries, then answers 200; Lambda forwards no request before that, and
+    gives the hook 30 seconds. The token and canaries are not repeated
+    anywhere else: `/install`'s `canaries` field is no longer needed.
+- **Headers.** Every request to the endpoint carries Lambda's
+  `X-aws-proxy-auth` (a JWE token, an hour at most) and `X-aws-proxy-port`;
+  Lambda removes `X-aws-proxy-*` before the harness sees the request, so
+  the harness authenticates the `Authorization: Bearer <run token>` header
+  only. A 403 or 502 without JSON is Lambda's, not the harness's.
+- **No AWS credentials inside.** MicroVMs run with no execution role, so the
+  server under test finds none, and Lambda keeps no runtime logs:
+  observations come back through the API only.
+- **Egress is all or nothing at Lambda's level.** A MicroVM gets the
+  internet (`INTERNET_EGRESS`) or a VPC through a network connector; Lambda
+  filters no host. Deny-by-default (the egress proxy, #5) is the harness's
+  job inside the VM, and stopping a server that ignores the proxy needs the
+  harness to own the network: iptables or a network namespace, which takes
+  the image's `additionalOsCapabilities: ["ALL"]` (granted to root only,
+  never to `dev`). The image asks for none until #5 needs them.
+- **Lifetime.** A MicroVM lives at most 2 hours, running and suspended
+  (Lambda allows 8). A check waiting days for a person must have
+  terminated its MicroVM first; suspend and resume are for pauses within
+  the run.
+- **Arm64.** The image is built for `ARM_64`, Lambda's default (x86_64
+  exists from base image version 3); the harness binary is built for
+  linux/arm64.
 
 ## Store
 
