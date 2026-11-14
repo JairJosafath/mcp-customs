@@ -8,6 +8,18 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- The dependency set a check reports and hashes is the resolver's, not what
+  the package says of itself (#23). For PyPI it is pip's `--dry-run`
+  report, taken in a clean venv before anything is installed, as pinned
+  requirements with each file's SHA-256, which pip then installs with
+  `--no-deps --require-hashes`; a wheel that plants `.dist-info` files can
+  no longer add, change or rename packages in it, and what the venv claims
+  beyond the set is noted in the install log. For npm the lockfile is
+  resolved with `--package-lock-only --ignore-scripts` and read before
+  `npm ci` runs any script. Every process of the unprivileged account is
+  killed after each install step. A PyPI submission seen before now takes
+  the "seen before" shortcut like any other.
+
 - Every character a person can't see is a code finding of a check, with its
   escaped form as evidence: besides ANSI escapes, tag, zero-width and bidi
   characters, now every default-ignorable code point
