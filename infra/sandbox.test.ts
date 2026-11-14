@@ -5,6 +5,7 @@ import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { ApiStack } from './api_stack';
+import { finalChecks } from './dockerfile';
 import {
   API_HOST,
   HOOKS_PORT,
@@ -20,6 +21,33 @@ const OPERATIONS: Operations = {
   recovery: { rpo: '1h', rto: '4h' },
   alerts: { email: '' },
 };
+
+/** What the harness refuses to start without, and the check that finds each. */
+const REQUIRED: [string, string][] = [
+  ['setpriv, for no_new_privs', 'test -x /usr/bin/setpriv'],
+  ['iptables on nf_tables', 'iptables --version | grep -q nf_tables'],
+  ['ip6tables on nf_tables', 'ip6tables --version | grep -q nf_tables'],
+  ['the NFLOG target', 'test -f /usr/lib64/xtables/libxt_NFLOG.so'],
+  ['libfaketime', 'test -f /usr/local/lib/faketime/libfaketime.so.1'],
+  [
+    'the pinned Python',
+    'test "$(python3 -c \'import platform; print(platform.python_version())\')" = "${PYTHON_VERSION}"',
+  ],
+  ['Go', 'go version'],
+  ['npm', 'npm --version'],
+];
+
+/** `dockerfile` without the last `check` in it, and the `&&` that joins it to its step. */
+function removeLast(dockerfile: string, check: string): string {
+  const at = dockerfile.lastIndexOf(check);
+  expect(at).toBeGreaterThan(-1);
+  const joiner = /\s*\\?\s*&&\s*$/;
+  const before = dockerfile.slice(0, at);
+  const after = dockerfile.slice(at + check.length);
+  return joiner.test(before)
+    ? before.replace(joiner, '') + after
+    : before + after.replace(/^\s*\\?\s*&&\s*/, '');
+}
 
 /** The logical ID of the one resource of `type` whose ID starts with `prefix`. */
 function idOf(template: Template, type: string, prefix: string): string {
@@ -163,15 +191,18 @@ describe('Sandbox', () => {
       expect(dockerfile).toContain('print(platform.python_version())\')" = "${PYTHON_VERSION}"');
     });
 
-    it.each([
-      ['setpriv, for no_new_privs', 'test -x /usr/bin/setpriv'],
-      ['iptables on nf_tables', 'iptables --version | grep -q nf_tables'],
-      ['ip6tables on nf_tables', 'ip6tables --version | grep -q nf_tables'],
-      ['the NFLOG target', 'test -f /usr/lib64/xtables/libxt_NFLOG.so'],
-      ['libfaketime', 'test -f /usr/local/lib/faketime/libfaketime.so.1'],
-      ['Go and npm', 'go version && npm --version'],
-    ])('fails its build without %s', (_, check) => {
-      expect(dockerfile).toContain(check);
+    // The final stage's last RUN, where the build fails without each one.
+    it.each(REQUIRED)('fails its build without %s, in the final stage’s checks', (_, check) => {
+      expect(finalChecks(dockerfile)).toContain(check);
+    });
+
+    // The check is found only there: not in an earlier stage, not in an
+    // earlier step of the final one.
+    it.each(REQUIRED)('misses %s when the final checks lack it', (_, check) => {
+      const without = removeLast(dockerfile, check);
+      expect(finalChecks(without)).not.toContain(check);
+      const builder = `FROM scratch AS builder\nRUN ${check}\n${without}`;
+      expect(finalChecks(builder)).not.toContain(check);
     });
 
     it('finds iptables, in /usr/sbin, on the harness’s PATH but not the server’s', () => {
