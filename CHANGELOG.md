@@ -8,6 +8,13 @@ Every user-visible change, newest first. The format follows
 
 ### Added
 
-- The function, scaffolded by theos: an HTTP API in Go that stores and
-  returns items (`PUT` and `GET /items/{id}`) in a DynamoDB table, with
-  alarms and a dashboard, and in production backups and tracing.
+- The Checker, a Lambda durable function (`src/cmd/checker`), which for now
+  records a check as `running` and its first step; the web function
+  (`src/cmd/web`), which serves `GET /` and `GET /api/health`, open to the
+  public; the shared store of checks, steps and verdicts
+  (`src/internal/store`); and a bucket for reports, in one stack.
+
+### Removed
+
+- The items API theos scaffolded (`PUT` and `GET /items/{id}`) and its
+  `Items` table.
