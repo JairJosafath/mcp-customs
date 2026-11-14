@@ -12,9 +12,11 @@ import (
 // Status is where a check is.
 type Status string
 
-// The statuses of a check.
+// The statuses of a check. A waiting check waits for a person's Approve
+// or Block, under its callback ID.
 const (
 	StatusRunning Status = "running"
+	StatusWaiting Status = "waiting"
 	StatusDone    Status = "done"
 	StatusFailed  Status = "failed"
 )
