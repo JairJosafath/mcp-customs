@@ -58,7 +58,11 @@ clean venv, as a requirements file with every file's SHA-256, which
 `pip install --no-deps --require-hashes` then installs; for Go, the modules
 of `go version -m`. A PyPI set must be all wheels: a dependency only an
 sdist ships is built with build dependencies no hash pins, so the install
-fails, at pip's resolve, before any of its build backend's code runs. After every install step the harness kills every process of the
+fails, at pip's resolve, before any of its build backend's code runs. Both
+pip calls name PyPI's index (`--index-url=https://pypi.org/simple/`), and
+pip refuses a package it got from PyPI that depends on a direct reference
+(`name @ url`), which `--only-binary` doesn't cover: such a dependency
+fails the resolve before it is fetched or built. After every install step the harness kills every process of the
 unprivileged account, and a harness not switched to that account fails
 the step: it can't kill them. A failed install answers 422 with its log,
 whose last line names what failed; the Checker ends the sandbox and the
@@ -373,7 +377,12 @@ A re-check never ends silently:
   for a retry, the re-check it retries (a mark left by a re-check that
   failed after setting it is lifted by its retry), and a second event goes out: detail-type
   `Approved check no longer superseded`, the same detail with verdict
-  `pass`. The `ConditionCheckItem` the transaction needs is granted to the
+  `pass`. A lift or that event that fails after the pass doesn't undo it:
+  the re-check stays done with its approval, the approved check may still
+  read superseded, and the Checker logs `Lift the superseded mark after a
+pass.` with `"liftFailedAfterPass":1`, which a metric filter counts
+  (`MCPCustoms`/`LiftFailedAfterPass`) and the
+  `LiftFailedAfterPass-Warning` alarm sends to the stack's topic. The `ConditionCheckItem` the transaction needs is granted to the
   Checker on `APPROVED` items only. A user subscribes with a rule on that source and those
   detail-types; a retried step may send an event twice, told apart by
   `recheckId`.

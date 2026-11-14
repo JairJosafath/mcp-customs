@@ -156,7 +156,9 @@ What isn't built yet:
   handlers.
 
 Dynamic analysis gives a lower bound: a trigger that waits long enough
-can be missed, though the model can move the sandbox's clock forward.
+can be missed, though the model can move the sandbox's clock forward
+for a server whose runtime sees the move (not a Go or static binary,
+which the demo servers are).
 
 Only a real account verifies the MicroVM's firewall and egress, the
 durable Checker's replay and week-long callback, the judge on real

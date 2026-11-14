@@ -23,19 +23,38 @@ export const FAILED_TWICE_KEY = 'recheckFailedTwice';
 /** The metric the filter puts. */
 export const FAILED_TWICE_METRIC = { namespace: 'MCPCustoms', name: 'RecheckFailedTwice' } as const;
 
+/**
+ * The attribute of the Checker's log entry that a re-check passed but its
+ * approved check's superseded mark, or the event saying so, could not be
+ * lifted (`LiftFailedKey` in `src/internal/checker`): the metric filter
+ * counts it.
+ */
+export const LIFT_FAILED_KEY = 'liftFailedAfterPass';
+
+/** The metric that filter puts. */
+export const LIFT_FAILED_METRIC = { namespace: 'MCPCustoms', name: 'LiftFailedAfterPass' } as const;
+
 /** What the outcomes of re-checks need: the Checker. */
 export interface RecheckOutcomesProps {
   readonly checker: LambdaFunction;
 }
 
+/** A log entry the Checker writes, counted for an alarm. */
+interface Counted {
+  readonly filter: MetricFilter;
+  readonly alarmName: string;
+  readonly description: string;
+}
+
 /**
  * How a re-check that doesn't end in a pass is surfaced (docs/contracts.md,
  * "Re-checks of new versions"): the Checker announces a superseded approval
- * on the default event bus, and a metric filter on its logs counts each
- * retry that failed again, for an alarm.
+ * on the default event bus, and metric filters on its logs count each
+ * retry that failed again, and each pass whose superseded mark could not
+ * be lifted, for an alarm.
  */
 export class RecheckOutcomes extends Construct {
-  private readonly filter: MetricFilter;
+  private readonly counted: readonly Counted[];
 
   constructor(scope: Construct, id: string, props: RecheckOutcomesProps) {
     super(scope, id);
@@ -45,27 +64,47 @@ export class RecheckOutcomes extends Construct {
     bus.grantPutEventsTo(checker);
     // A term, not a JSON selector: it matches the entry whether Lambda
     // keeps the function's JSON line as it is or wraps it.
-    this.filter = new MetricFilter(this, 'FailedTwice', {
-      logGroup: checker.logGroup,
-      filterPattern: FilterPattern.allTerms(FAILED_TWICE_KEY),
-      metricNamespace: FAILED_TWICE_METRIC.namespace,
-      metricName: FAILED_TWICE_METRIC.name,
-      metricValue: '1',
-    });
+    const count = (
+      id: string,
+      key: string,
+      metric: { namespace: string; name: string },
+    ): MetricFilter =>
+      new MetricFilter(this, id, {
+        logGroup: checker.logGroup,
+        filterPattern: FilterPattern.allTerms(key),
+        metricNamespace: metric.namespace,
+        metricName: metric.name,
+        metricValue: '1',
+      });
+    this.counted = [
+      {
+        filter: count('FailedTwice', FAILED_TWICE_KEY, FAILED_TWICE_METRIC),
+        alarmName: 'RecheckFailedTwice-Critical',
+        description:
+          'A re-check of a newer version of an approved package failed, and its one retry failed too: the newer version is not checked.',
+      },
+      {
+        filter: count('LiftFailed', LIFT_FAILED_KEY, LIFT_FAILED_METRIC),
+        alarmName: 'LiftFailedAfterPass-Warning',
+        description:
+          'A re-check of a newer version passed, but its approved check still reads superseded, or the event saying it no longer is was not sent: see docs/contracts.md, Re-checks of new versions.',
+      },
+    ];
   }
 
-  /** An alarm, to `alarms`' topic, on the first re-check that failed twice. */
+  /** An alarm, to `alarms`' topic, on the first entry of each counted log line. */
   addAlarms(alarms: Alarms): void {
-    new Alarm(this, 'FailedTwiceAlarm', {
-      alarmName: `${Stack.of(this).stackName}-RecheckFailedTwice-Critical`,
-      metric: this.filter.metric({ period: Duration.minutes(5), statistic: 'Sum' }),
-      threshold: 0,
-      comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
-      evaluationPeriods: 1,
-      datapointsToAlarm: 1,
-      treatMissingData: TreatMissingData.NOT_BREACHING,
-      alarmDescription:
-        'A re-check of a newer version of an approved package failed, and its one retry failed too: the newer version is not checked.',
-    }).addAlarmAction(new SnsAction(alarms.topic));
+    for (const { filter, alarmName, description } of this.counted) {
+      new Alarm(this, `${filter.node.id}Alarm`, {
+        alarmName: `${Stack.of(this).stackName}-${alarmName}`,
+        metric: filter.metric({ period: Duration.minutes(5), statistic: 'Sum' }),
+        threshold: 0,
+        comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+        evaluationPeriods: 1,
+        datapointsToAlarm: 1,
+        treatMissingData: TreatMissingData.NOT_BREACHING,
+        alarmDescription: description,
+      }).addAlarmAction(new SnsAction(alarms.topic));
+    }
   }
 }

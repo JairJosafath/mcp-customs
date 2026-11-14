@@ -135,12 +135,14 @@ func TestARecheckThatPassesOrAFreshCheckSupersedesNothing(t *testing.T) {
 	}
 }
 
-func TestTheStacksMetricFilterCountsTheKeyTheCheckerLogs(t *testing.T) {
+func TestTheStacksMetricFiltersCountTheKeysTheCheckerLogs(t *testing.T) {
 	stack, err := os.ReadFile(filepath.Join("..", "..", "..", "infra", "recheck_outcomes.ts"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "FAILED_TWICE_KEY = '" + FailedTwiceKey + "'"; !strings.Contains(string(stack), want) {
-		t.Errorf("infra/recheck_outcomes.ts lacks %q: the alarm would never see the log entry", want)
+	for _, want := range []string{"FAILED_TWICE_KEY = '" + FailedTwiceKey + "'", "LIFT_FAILED_KEY = '" + LiftFailedKey + "'"} {
+		if !strings.Contains(string(stack), want) {
+			t.Errorf("infra/recheck_outcomes.ts lacks %q: the alarm would never see the log entry", want)
+		}
 	}
 }

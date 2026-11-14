@@ -162,3 +162,45 @@ func TestTheDryRunResolvesWheelsOnlySoNoSdistsBuildBackendRuns(t *testing.T) {
 		}
 	}
 }
+
+// pipDirectReference is what pip writes when a package it got from PyPI
+// depends on a direct reference.
+const pipDirectReference = "ERROR: Packages installed from PyPI cannot depend on packages which are not also hosted on PyPI.\n" +
+	"weather-mcp depends on evil@ file:///tmp/evil\n"
+
+func TestBothPipCallsArePinnedToPyPISoADirectReferenceFailsTheResolve(t *testing.T) {
+	f := &fakeRun{outputs: map[string]string{"python3 -I": "pip==26.0\n", "cat --": pipReportJSON}}
+	if _, err := (Toolchain{}).Install(t.Context(), Package{EcosystemPyPI, "weather-mcp", "1.0.0"}, Sandbox{Workdir: "/w", Run: f.run}); err != nil {
+		t.Fatal(err)
+	}
+	pips := 0
+	for _, args := range f.ran {
+		if len(args) > 1 && args[0] == "/w/venv/bin/pip" {
+			pips++
+			if !slices.Contains(args, "--index-url=https://pypi.org/simple/") {
+				t.Errorf("ran %q, want it pinned to PyPI", args)
+			}
+		}
+	}
+	if pips != 2 {
+		t.Errorf("%d pip calls, want the dry run and the install", pips)
+	}
+
+	f = &fakeRun{outputs: map[string]string{"python3 -I": "pip==26.0\n", "cat --": pipReportJSON}}
+	run := func(ctx context.Context, args []string, out io.Writer) error {
+		if slices.Contains(args, "--dry-run") {
+			_, _ = io.WriteString(out, pipDirectReference)
+			return errors.New("exit status 1")
+		}
+		return f.run(ctx, args, out)
+	}
+	got, err := Toolchain{}.Install(t.Context(), Package{EcosystemPyPI, "weather-mcp", "1.0.0"}, Sandbox{Workdir: "/w", Run: run})
+	if err == nil || !strings.Contains(got.Log, "cannot depend on packages which are not also hosted on PyPI") {
+		t.Errorf("install %+v, error %v; want it failed, its log naming pip's refusal", got, err)
+	}
+	for _, args := range f.ran {
+		if slices.Contains(args, "--require-hashes") {
+			t.Errorf("ran %q after the resolve refused", args)
+		}
+	}
+}

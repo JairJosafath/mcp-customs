@@ -20,17 +20,15 @@ type Scan struct {
 // result, a resource or a prompt) for hidden characters and injection
 // patterns. Patterns are matched with the hidden characters removed and
 // every blank (a Unicode space, a line break or a lookalike such as U+2800)
-// read as a space, with any mark on it left out, so neither a zero-width
-// space, an odd space nor an accent on one can split them.
+// read as a space, and every combining or enclosing mark left out, so
+// neither a zero-width space, an odd space nor an accent on a blank or a
+// letter can split them. Escaped keeps the marks: only the matched text
+// drops them.
 func ScanText(text string) Scan {
 	var escaped, visible strings.Builder
 	seen := map[string][]string{}
 	var order []string
 	prev := rune(-1)
-	// onBlank holds while the last character seen was a blank, or a mark
-	// on one: a mark on a blank is left out of what the patterns see, so
-	// an accent can't split their words.
-	onBlank := false
 	for i, r := range text {
 		next := rune(-1)
 		// An invalid byte is one byte wide, though range answers U+FFFD.
@@ -42,11 +40,9 @@ func ScanText(text string) Scan {
 		switch {
 		case blank(r):
 			visible.WriteRune(' ')
-			onBlank = true
-		case onBlank && mark(r):
+		case mark(r):
 		case !hidden:
 			visible.WriteRune(r)
-			onBlank = false
 		}
 		if !hidden {
 			escaped.WriteRune(r)

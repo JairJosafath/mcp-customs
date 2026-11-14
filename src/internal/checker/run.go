@@ -124,6 +124,9 @@ type run struct {
 	sealing bool
 	// supersedeDone says a re-check's supersede ran.
 	supersedeDone bool
+	// unsettled says a re-check that did not pass may be done but has not
+	// superseded the approved check: its failure is still retried.
+	unsettled bool
 	// ownAPI says allow refused the stack's own API host: the judge
 	// investigates nothing after it.
 	ownAPI bool
@@ -344,35 +347,47 @@ func (r *run) endSandbox(ctx durable.Context) error {
 var terminal = []error{ErrUnknownAction, ErrBadArguments, ErrBadWait, ErrTooLarge}
 
 // fail closes a check that failed, unless err is the SDK suspending the
-// invocation: it ends the sandbox, records a failed step saying which
-// action failed, and sets the check's status to failed unless it is
-// already done, each in a step;
-// a re-check is then retried once, or its second failure recorded
-// (afterFailedRecheck). It answers err, with any failure of its own joined.
+// invocation: it ends the sandbox and sets the check's status to failed,
+// each in a step. A check already done keeps its verdict, its approval and
+// its page: nothing more is written, and no retry is asked, unless it is a
+// re-check that did not pass and hasn't superseded the approved check
+// (unsettled). Any other check
+// gets a failed step saying which action failed, and a re-check is then
+// retried once, or its second failure recorded (afterFailedRecheck). It
+// answers err, with any failure of its own joined.
 func (r *run) fail(ctx durable.Context, err error) error {
 	var opErr *durable.OperationError
 	if !errors.As(err, &opErr) && !slices.ContainsFunc(terminal, func(t error) bool { return errors.Is(err, t) }) {
 		return err
 	}
 	errs := []error{err, r.endSandbox(ctx)}
-	// The summary names the action, never the harness's or the SDK's text:
-	// the web page shows it.
-	failed := outcome{Summary: fmt.Sprintf("The check failed during %s.", r.current)}
+	done, updateErr := durable.Step(ctx, "record-failure", func(sc durable.StepContext) (bool, error) {
+		failErr := r.deps.Store.FailCheck(sc, r.in.CheckID)
+		if errors.Is(failErr, store.ErrCheckDone) {
+			return true, nil
+		}
+		return false, failErr
+	})
+	if updateErr != nil {
+		errs = append(errs, fmt.Errorf("record check %s as failed: %w", r.in.CheckID, updateErr))
+	}
+	if done && !r.unsettled {
+		return errors.Join(errs...)
+	}
+	errs = append(errs, r.record(ctx, "failed", r.failedOutcome()), r.afterFailedRecheck(ctx))
+	return errors.Join(errs...)
+}
+
+// failedOutcome is the failed step's outcome. Its summary names the
+// action, never the harness's or the SDK's text: the web page shows it.
+func (r *run) failedOutcome() outcome {
 	if r.oversized != nil {
-		failed = outcome{
+		return outcome{
 			Summary:  fmt.Sprintf("The check failed during %s: the server's answer was larger than a step can keep.", r.current),
 			Findings: []findings.Finding{*r.oversized},
 		}
 	}
-	errs = append(errs, r.record(ctx, "failed", failed))
-	if _, updateErr := durable.Step(ctx, "record-failure", func(sc durable.StepContext) (bool, error) {
-		// A check already done keeps its verdict and approval.
-		return true, ignore(r.deps.Store.FailCheck(sc, r.in.CheckID), store.ErrCheckDone)
-	}); updateErr != nil {
-		errs = append(errs, fmt.Errorf("record check %s as failed: %w", r.in.CheckID, updateErr))
-	}
-	errs = append(errs, r.afterFailedRecheck(ctx))
-	return errors.Join(errs...)
+	return outcome{Summary: fmt.Sprintf("The check failed during %s.", r.current)}
 }
 
 // recordCheck creates check's META. A step retried after its first attempt

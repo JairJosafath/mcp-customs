@@ -14,6 +14,17 @@ import (
 	"strings"
 )
 
+// pypiIndex pins both of pip's calls to PyPI, whatever a pip
+// configuration names. It relies on pip's own rule (in
+// install_req_from_req_string): a package pip downloaded from
+// files.pythonhosted.org may not depend on a direct reference (name @ url),
+// and pip refuses one while it reads the requirement, before it fetches or
+// builds anything. --only-binary=:all: alone doesn't stop pip building a
+// file:// or https:// direct reference with its build backend. The rule
+// keys on that download host: a PyPI mirror or a proxy that rewrites its
+// URLs turns it off, and with it this refusal.
+const pypiIndex = "--index-url=https://pypi.org/simple/"
+
 // installPyPI asks pip's resolver for the dependency set before anything is
 // installed, in a clean venv, and reads its report itself; pip then installs
 // exactly that set, each file checked against the hash the resolver saw.
@@ -32,7 +43,7 @@ func installPyPI(ctx context.Context, p Package, sb Sandbox, log io.Writer) (Ins
 	}
 	pip := filepath.Join(venv, "bin", "pip")
 	report := filepath.Join(sb.Workdir, "pip-report.json")
-	if err := step(ctx, sb, log, pip, "install", "--disable-pip-version-check", "--dry-run", "--ignore-installed",
+	if err := step(ctx, sb, log, pip, "install", "--disable-pip-version-check", pypiIndex, "--dry-run", "--ignore-installed",
 		"--only-binary=:all:", "--report", report, p.Name+"=="+p.Version); err != nil {
 		return Installed{}, err
 	}
@@ -48,7 +59,7 @@ func installPyPI(ctx context.Context, p Package, sb Sandbox, log io.Writer) (Ins
 	if err := writeAsAccount(ctx, sb, requirements, set); err != nil {
 		return Installed{}, err
 	}
-	if err := step(ctx, sb, log, pip, "install", "--disable-pip-version-check", "--no-deps", "--require-hashes",
+	if err := step(ctx, sb, log, pip, "install", "--disable-pip-version-check", pypiIndex, "--no-deps", "--require-hashes",
 		"-r", requirements); err != nil {
 		return Installed{}, err
 	}

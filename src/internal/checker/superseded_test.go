@@ -2,6 +2,8 @@ package checker
 
 import (
 	"errors"
+	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -147,5 +149,30 @@ func TestARetryThatPassesLiftsTheMarkTheFailedRecheckLeft(t *testing.T) {
 	}
 	if len(w.events.lifted) != 1 || w.events.lifted[0].RecheckID != retry.CheckID {
 		t.Errorf("lifted events %+v, want one, from the retry", w.events.lifted)
+	}
+}
+
+func TestARecheckAtReviewThatCantSupersedeFailsAndIsRetried(t *testing.T) {
+	srv := cleanServer()
+	srv.fail = map[string]int{"/install": http.StatusUnprocessableEntity}
+	w := newWorld(srv)
+	w.rec.checks = []store.Check{{ID: "c0", Submission: npm, Status: store.StatusDone, Verdict: "pass"}}
+	w.rec.supersedeErr = errors.New("throttled")
+	runFailing(t, w, newVersion(false))
+	if !slices.Equal(w.rec.retries, []string{"npm#weather-mcp@1.0.1"}) {
+		t.Errorf("retries asked %v, want one: the approved check still stands", w.rec.retries)
+	}
+}
+
+func TestARecheckAtReviewWhoseVerdictCommittedButAnsweredAsFailedIsRetried(t *testing.T) {
+	srv := cleanServer()
+	srv.fail = map[string]int{"/install": http.StatusUnprocessableEntity}
+	w := newWorld(srv)
+	w.rec.checks = []store.Check{{ID: "c0", Submission: npm, Status: store.StatusDone, Verdict: "pass"}}
+	w.rec.lostDoneReply = errors.New("connection reset")
+	runFailing(t, w, newVersion(false))
+	c0, _, _ := w.rec.GetCheck(t.Context(), "c0")
+	if c0.SupersededBy == "" && len(w.rec.retries) == 0 {
+		t.Errorf("approved check %+v, retries %v, steps %v; want it superseded or the re-check retried", c0, w.rec.retries, w.rec.stepNames())
 	}
 }
