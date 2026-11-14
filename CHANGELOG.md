@@ -63,6 +63,11 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- A remote `https://` submission ends at review, decided by code, instead
+  of failing (#80). Remote servers aren't checked yet: the Checker launches
+  no sandbox for one and records a `remote-unsupported` code finding that
+  says so.
+
 - Follow-ups from the reviews of #66 and #70 (#74). A re-check whose pass
   committed but was answered as an error no longer asks for a retry or
   shows a failure; one that ended short of a pass and couldn't mark its

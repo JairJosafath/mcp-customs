@@ -70,6 +70,12 @@ check at review, decided by code, with an `install-failed` code finding
 holding the harness's message, and asks no person: nothing was installed
 to approve. Any other error answer to `/install` fails the check.
 
+A remote server (`"kind":"remote"`, an `https://` URL) isn't checked yet:
+the Checker launches no sandbox for it and sends no `/install`. Its
+`resolve` step ends the check at review, decided by code, with a
+`remote-unsupported` code finding that says remote servers aren't checked
+yet, and asks no person.
+
 The investigation's calls (`/call` again, `/source`, `/download`, `/clock`)
 and `/allow` are best effort: an error answer is told to the judge, and the
 check goes on. `/clock`, `/source` and `/download` work after `/seal` and
