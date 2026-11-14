@@ -1,6 +1,8 @@
 package main
 
 import (
+	"log/slog"
+	"net/netip"
 	"os/user"
 	"slices"
 	"strings"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/JairJosafath/mcp-customs/src/internal/egress"
 	"github.com/JairJosafath/mcp-customs/src/internal/harness"
+	"github.com/JairJosafath/mcp-customs/src/internal/ownapi"
 )
 
 var dev = &user.User{Username: "dev", Uid: "1000", Gid: "1000", HomeDir: "/home/dev"}
@@ -100,5 +103,36 @@ func TestAnInstallMayGetOnlyTheDemoProxyOfTheStacksAPI(t *testing.T) {
 		if err == nil && (!slices.Equal(allow.hosts, egress.RegistryHosts) || slices.Contains(allow.hosts, "abc.execute-api.us-east-1.amazonaws.com")) {
 			t.Errorf("%q: hosts %v, want the registries alone", c.list, allow.hosts)
 		}
+	}
+}
+
+func TestServeRefusesToStartWithoutTheStacksOwnAPIHost(t *testing.T) {
+	for _, host := range []string{"", "api.example.com"} {
+		t.Setenv("API_HOST", host)
+		// An unknown user would fail too; the API host must fail first.
+		t.Setenv("HARNESS_USER", "no-such-user-mcp-customs")
+		err := serve(slog.New(slog.DiscardHandler))
+		if err == nil || !strings.HasPrefix(err.Error(), "API_HOST: ") {
+			t.Errorf("API_HOST %q: serve = %v, want it refused for the API host", host, err)
+		}
+	}
+}
+
+func TestTheProxysGuardRefusesTheAPIsAddressesButForTheDemoProxy(t *testing.T) {
+	const apiHost = "abc.execute-api.eu-west-1.amazonaws.com"
+	api, err := ownapi.Parse(apiHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow, err := installAllowFor("https://" + apiHost + "/goproxy,https://proxy.golang.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := guardFor(api, apiHost, allow)
+	if !slices.Equal(g.Exempt, []string{apiHost}) || !slices.Equal(g.RefusedNames, []string{apiHost}) {
+		t.Errorf("exempt %v, refused names %v; want the demo proxy's host, and the API host", g.Exempt, g.RefusedNames)
+	}
+	if g.Refused == nil || !g.Refused(netip.MustParseAddr("3.248.245.10")) || g.Refused(netip.MustParseAddr("198.51.100.7")) {
+		t.Error("the guard must refuse API Gateway's ranges for the API's region, and nothing else")
 	}
 }

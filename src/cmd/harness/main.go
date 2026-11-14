@@ -11,9 +11,10 @@
 // HOOKS_PORT (9000 by default), GO_PROXY_URL, the GOPROXY-style list
 // Go installs resolve through, whose hosts an install may reach (Go's own
 // default when unset), and API_HOST, the stack's own API host, which
-// /allow and /install never allow. It must run as root, and refuses to
-// start otherwise: it runs the server as the unprivileged user, never as
-// itself.
+// /allow and /install never allow and whose addresses the egress proxy
+// never connects to. It refuses to start without API_HOST, so the image
+// build fails at /ready. It must run as root, and refuses to start
+// otherwise: it runs the server as the unprivileged user, never as itself.
 //
 // Before it answers anything it starts the egress proxy, writes the proxy
 // CA's certificate (never its key) to /etc/mcp-customs, and puts up the
@@ -42,6 +43,7 @@ import (
 	"github.com/JairJosafath/mcp-customs/src/internal/demoproxy"
 	"github.com/JairJosafath/mcp-customs/src/internal/egress"
 	"github.com/JairJosafath/mcp-customs/src/internal/harness"
+	"github.com/JairJosafath/mcp-customs/src/internal/ownapi"
 )
 
 func main() {
@@ -53,6 +55,11 @@ func main() {
 }
 
 func serve(log *slog.Logger) error {
+	apiHost := os.Getenv("API_HOST")
+	ownAPI, err := ownapi.Parse(apiHost)
+	if err != nil {
+		return fmt.Errorf("API_HOST: %w", err)
+	}
 	u, err := user.Lookup(envOr("HARNESS_USER", "dev"))
 	if err != nil {
 		return err
@@ -66,14 +73,14 @@ func serve(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	eg, stopEgress, err := startEgress(context.Background(), account, log, allow)
+	eg, stopEgress, err := startEgress(context.Background(), account, log, allow, guardFor(ownAPI, apiHost, allow))
 	if err != nil {
 		return err
 	}
 	defer stopEgress()
 	cfg := configFor(account)
 	cfg.GoProxy = goProxy
-	cfg.APIHost = os.Getenv("API_HOST")
+	cfg.APIHost = apiHost
 	cfg.Egress = eg
 	h, err := harness.New(cfg, log)
 	if err != nil {
@@ -220,11 +227,34 @@ func installAllowFor(list string) (installAllow, error) {
 	return allow, nil
 }
 
+// guardFor is the egress proxy's dialer: it never connects to an address
+// API Gateway serves the API's region from, or the API host resolves to,
+// whatever name was asked for, but for the hosts of the install's GET-only
+// prefixes, such as the stack's demo Go proxy on the API itself, which the
+// proxy holds to GETs under them while an install runs.
+func guardFor(api ownapi.API, apiHost string, allow installAllow) egress.Guard {
+	var exempt []string
+	for _, prefix := range allow.gets {
+		if u, err := url.Parse(prefix); err == nil {
+			exempt = append(exempt, ownapi.NormalHost(u.Hostname()))
+		}
+	}
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	return egress.Guard{
+		Resolver:     net.DefaultResolver,
+		Refused:      api.Serves,
+		RefusedNames: []string{apiHost},
+		Exempt:       exempt,
+		Dial:         dialer.DialContext,
+	}
+}
+
 // startEgress starts the egress proxy and puts up the firewall for uid,
-// allowing allow while an install runs. The stop function takes both
+// allowing allow while an install runs, its upstream connections dialed
+// through guard. The stop function takes both
 // down. If the reader of refused packets stops early, the run's
 // observations say so, and so does log.
-func startEgress(ctx context.Context, account harness.Account, log *slog.Logger, allow installAllow) (*egress.Egress, func(), error) {
+func startEgress(ctx context.Context, account harness.Account, log *slog.Logger, allow installAllow, guard egress.Guard) (*egress.Egress, func(), error) {
 	if err := trustOutside(trustDir, account.Home); err != nil {
 		return nil, nil, err
 	}
@@ -249,7 +279,7 @@ func startEgress(ctx context.Context, account harness.Account, log *slog.Logger,
 	}
 	eg := egress.New(egress.Config{
 		CA:           ca,
-		Upstream:     &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second},
+		Upstream:     &http.Transport{Proxy: nil, DialContext: guard.DialContext, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second},
 		Resolver:     net.DefaultResolver,
 		InstallAllow: allow.hosts,
 		InstallGet:   allow.gets,
