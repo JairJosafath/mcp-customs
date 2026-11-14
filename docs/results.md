@@ -4,7 +4,8 @@ The write-up of MCP Customs for the AWS Builder Center weekend challenge
 "No Pipeline, No Problem". A skeleton until the stack is deployed: every
 place that needs deploy output says `TODO(deploy)`. Numbers come from the
 repository's files, as of commit `fc2b5cd` (2026-11-14, 17:19 UTC), and
-`hack/runs-stats` prints them again at any commit, in a full clone (it refuses a shallow one).
+`hack/runs-stats` prints them again at any commit, in a full clone (it
+refuses a shallow one).
 
 ## The problem
 
@@ -110,43 +111,52 @@ cloud sessions in implementer and reviewer roles. Each pull request was
 written by an implementer session and read by a separate reviewer
 session.
 
-| What                                          | Count                                                                                                                                  |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Pull requests merged (`git log` at `fc2b5cd`) | 24                                                                                                                                     |
-| Sessions ([runs.md](runs.md) at `fc2b5cd`)    | 68: 27 implementer, 41 reviewer                                                                                                        |
-| Review rounds of the 24 merged issues         | 1 round: 11; 1 round and fixes after it: 1 (#43); 2 rounds: 5; 3 rounds: 7                                                             |
-| Cost reported (runs.md at `fc2b5cd`)          | $112.46 from 34 of the 68 sessions ($63.74 implementers, $48.72 reviewers); 34 sessions reported none, so it's less than the full cost |
-| First session to the last row                 | 06:27 to 17:19 UTC, 2026-11-14                                                                                                         |
+| What                                                         | Count                                                                                                                                  |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Pull requests merged (`git log` at `fc2b5cd`)                | 24                                                                                                                                     |
+| Sessions ([runs.md](runs.md) at `fc2b5cd`)                   | 68: 27 implementer, 41 reviewer                                                                                                        |
+| Review rounds of the 24 merged issues (runs.md at `fc2b5cd`) | 1 round: 11; 1 round and fixes after it: 1 (#43); 2 rounds: 5; 3 rounds: 7                                                             |
+| Cost reported (runs.md at `fc2b5cd`)                         | $112.46 from 34 of the 68 sessions ($63.74 implementers, $48.72 reviewers); 34 sessions reported none, so it's less than the full cost |
+| First session to the last row (runs.md at `fc2b5cd`)         | 06:27 to 17:19 UTC, 2026-11-14                                                                                                         |
 
 `hack/runs-stats` counts these. A session is a distinct ID in runs.md. A
 merged pull request is a squash commit on main whose subject ends in its
 number. A session's cost is its last reported total when it has one, never
 that total plus its per-round figures.
 
-Seven pull requests merged with final commits no reviewer read. For #34,
-#37, #44 and #45, the orchestrator's comment says it ran their new tests
-and saw each fail with its fix removed
-([#34](https://github.com/JairJosafath/mcp-customs/pull/34#issuecomment-6878316223),
-[#37](https://github.com/JairJosafath/mcp-customs/pull/37#issuecomment-6878547918),
-[#44](https://github.com/JairJosafath/mcp-customs/pull/44#issuecomment-6880032402),
-[#45](https://github.com/JairJosafath/mcp-customs/pull/45#issuecomment-6879319000);
-#34's covers its re-check guard, not its approval-condition change). For #49 and
-#41 the squash commit's message on main is the record: #49's (`f62d00d`)
-says the orchestrator verified round 3, with
-`TestARetryThatPassesLiftsTheMarkTheFailedRecheckLeft` failing when a
-retry may lift only its own ID; #41's (`7e26428`) says the orchestrator
-read the post-approval `docs/results.md` changes. For #28, the
-orchestrator's
-[record](https://github.com/JairJosafath/mcp-customs/pull/28#issuecomment-6881578992),
-posted after the merge, says it read the round-3 diff of `submission.go`
-and `view.go` and saw the new test rows, did not revert the fixes itself
-(the implementer reported that check), and saw the check green on
-`7d11024`. #21, #22
-and #24 merged on the round limit with the last review still asking for
-changes. The orchestrator's
+Seven pull requests merged with final commits no reviewer read:
+
+- #34, #37, #44 and #45: the orchestrator's comment says it ran their new
+  tests and saw each fail with its fix removed
+  ([#34](https://github.com/JairJosafath/mcp-customs/pull/34#issuecomment-6878316223),
+  [#37](https://github.com/JairJosafath/mcp-customs/pull/37#issuecomment-6878547918),
+  [#44](https://github.com/JairJosafath/mcp-customs/pull/44#issuecomment-6880032402),
+  [#45](https://github.com/JairJosafath/mcp-customs/pull/45#issuecomment-6879319000)).
+  #34's covers its re-check guard, not its approval-condition change.
+- #49: the squash commit's message on main (`f62d00d`) says the
+  orchestrator verified round 3, with
+  `TestARetryThatPassesLiftsTheMarkTheFailedRecheckLeft` failing when a
+  retry may lift only its own ID. It says nothing of the conflicts
+  `d1c3ecd` resolved by hand in `run.go`, `cmd/checker/main.go`,
+  `fakes_test.go` and `api_stack.ts`.
+- #41: the squash commit's message (`7e26428`) says the orchestrator read
+  the post-approval `docs/results.md` changes. It says nothing of
+  `31121a1`'s `--scene` test.
+- #28: the orchestrator's
+  [record](https://github.com/JairJosafath/mcp-customs/pull/28#issuecomment-6881578992),
+  posted after the merge, says it read the round-3 diff of
+  `submission.go` and `view.go` from `77e8e8f` to `7d11024` and saw the
+  new test rows, did not revert the fixes itself (the implementer
+  reported that check), and saw the check green on `7d11024`. It doesn't
+  cover the conflicts the merge `77e8e8f` resolved by hand.
+
+#21, #22 and #24 merged on the round limit with the last review still
+asking for changes. The orchestrator's
 [note on #24](https://github.com/JairJosafath/mcp-customs/pull/24#issuecomment-6877384416)
 gives the call for all three, with their findings moved to #23, #25 and
-#36; #21 and #22 carry no note of their own.
+#36; #21 and #22 carry no note of their own. Ten pull requests changed
+only by merging main after their approval: #11, #13, #15, #16, #17, #31,
+#35, #47, #54 and #55, of which #17, #47 and #55 resolved conflicts.
 
 TODO(deploy): final rows, the cost of the sessions that reported none, and
 the deploy's own time and AWS cost.
