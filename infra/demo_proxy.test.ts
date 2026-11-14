@@ -1,12 +1,15 @@
 import { App } from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
-import { existsSync } from 'node:fs';
+import { Node } from 'constructs';
+import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { ApiStack, PUBLIC_GO_PROXY, WEB_ROUTES } from './api_stack';
-import { DEFAULT_DEMO_VERSION, GO_PROXY_PREFIX, demoVersionOf } from './demo_proxy';
+import { DEMO_VERSIONS_FILE, GO_PROXY_PREFIX, readDemoVersions } from './demo_proxy';
 import { GO_PROXY_URL } from './sandbox';
+import { defineStacks } from './stacks';
 import type { Operations, Tier } from './standard';
 
 const OPERATIONS: Operations = {
@@ -79,12 +82,12 @@ function writes(action: string): boolean {
   return action === '*' || (action.startsWith('s3:') && !/^s3:(Get|List)/.test(action));
 }
 
-function build(tier: Tier, demoVersion?: string): { app: App; template: Template } {
+function build(tier: Tier, demoVersionsFile?: string): { app: App; template: Template } {
   const app = new App();
   const stack = new ApiStack(app, `test-${tier}`, {
     tier,
     operations: OPERATIONS,
-    ...(demoVersion === undefined ? {} : { demoVersion }),
+    ...(demoVersionsFile === undefined ? {} : { demoVersionsFile }),
   });
   return { app, template: Template.fromStack(stack) };
 }
@@ -160,32 +163,72 @@ describe('the demo Go module proxy', () => {
     });
   });
 
-  it('publishes demoVersion and every earlier version, v1.0.0 by default', () => {
-    const files = (version?: string): string => {
-      const { app, template } = build('development', version);
-      const keys = Object.values(template.findResources('Custom::CDKBucketDeployment')).map(
-        (r: unknown) => JSON.stringify(field(field(r, 'Properties'), 'SourceObjectKeys')),
-      );
-      const hash = /([0-9a-f]{64})\.zip/.exec(keys[0] ?? '')?.[1] ?? '';
-      return path.join(
-        app.outdir,
-        `asset.${hash}`,
-        'github.com/!jair!josafath/mcp-customs/demo/mail/@v',
-      );
-    };
-    expect(DEFAULT_DEMO_VERSION).toBe('v1.0.0');
-    expect(existsSync(path.join(files(), 'v1.0.0.zip'))).toBe(true);
-    expect(existsSync(path.join(files(), 'v1.0.1.zip'))).toBe(false);
-    const rugPull = files('v1.0.1');
-    expect(existsSync(path.join(rugPull, 'v1.0.0.zip'))).toBe(true);
-    expect(existsSync(path.join(rugPull, 'v1.0.1.zip'))).toBe(true);
+  it('publishes every version up to the one demo-versions.json names, under goproxy/', () => {
+    const file = path.join(
+      mkdtempSync(path.join(tmpdir(), 'demo-versions-')),
+      'demo-versions.json',
+    );
+    writeFileSync(file, JSON.stringify({ mail: 'v1.0.1', weather: 'v1.0.0' }));
+    const published = mailVersions(build('development', file));
+    expect(published).toEqual(['v1.0.0.zip', 'v1.0.1.zip']);
+    // The committed file: before the rug pull.
+    expect(readDemoVersions(DEMO_VERSIONS_FILE)).toEqual({ mail: 'v1.0.0', weather: 'v1.0.0' });
+    expect(mailVersions(build('development'))).toEqual(['v1.0.0.zip']);
   });
 
-  it('takes the version from the demoVersion context value, refusing anything but a version', () => {
-    expect(demoVersionOf(undefined)).toBe(DEFAULT_DEMO_VERSION);
-    expect(demoVersionOf('v1.0.1')).toBe('v1.0.1');
-    for (const bad of ['1.0.1', 'v1.0.1; rm -rf /', '', 101]) {
-      expect(() => demoVersionOf(bad), String(bad)).toThrow(/demoVersion/);
+  it('reads no context value but tier at synth: the versions come from the committed file alone', () => {
+    const read: string[] = [];
+    // The spy calls through, and keeps each key asked for.
+    const spy = vi.spyOn(Node.prototype, 'tryGetContext');
+    try {
+      const app = new App({ context: { demoVersion: 'v1.0.1', demoVersions: 'v1.0.0,v1.0.1' } });
+      const [stack] = defineStacks(app, 'development');
+      if (stack === undefined) {
+        throw new Error('no stack');
+      }
+      expect(mailVersions({ app, template: Template.fromStack(stack) })).toEqual(['v1.0.0.zip']);
+      read.push(...spy.mock.calls.map(([key]) => key));
+    } finally {
+      spy.mockRestore();
+    }
+    // CDK's own feature flags and settings aside, and the spy saw them.
+    expect(read.length).toBeGreaterThan(0);
+    expect(
+      read.filter((key) => key !== 'tier' && !/^(@aws-cdk|aws:cdk|aws-cdk|cdk-)/.test(key)),
+    ).toEqual([]);
+  });
+
+  it('refuses a versions file that is not one object of versions', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'demo-versions-'));
+    for (const [i, bad] of [
+      '[]',
+      'null',
+      '{"mail": 1}',
+      '{"mail": "1.0.1"}',
+      '{"mail": "v1.0.1; rm -rf /"}',
+    ].entries()) {
+      const file = path.join(dir, `${String(i)}.json`);
+      writeFileSync(file, bad);
+      expect(() => readDemoVersions(file), bad).toThrow(/demo names to versions/);
     }
   });
 });
+
+/** The mail demo's zips in the files a stack's deployment copies to goproxy/. */
+function mailVersions({ app, template }: { app: App; template: Template }): string[] {
+  const deployments = Object.values(template.findResources('Custom::CDKBucketDeployment'));
+  expect(deployments).toHaveLength(1);
+  const properties = field(deployments[0], 'Properties');
+  expect(field(properties, 'DestinationBucketKeyPrefix')).toBe(GO_PROXY_PREFIX);
+  const hash = /([0-9a-f]{64})\.zip/.exec(
+    JSON.stringify(field(properties, 'SourceObjectKeys')),
+  )?.[1];
+  const dir = path.join(
+    app.outdir,
+    `asset.${hash ?? ''}`,
+    'github.com/!jair!josafath/mcp-customs/demo/mail/@v',
+  );
+  return readdirSync(dir)
+    .filter((f) => f.endsWith('.zip'))
+    .sort();
+}

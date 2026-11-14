@@ -18,9 +18,11 @@ import (
 // srcRoot is the src module's directory, which holds the demos.
 var srcRoot = os.DirFS("../..")
 
+// files are the proxy's files with the mail demo at version and the
+// weather demo at v1.0.0.
 func files(t *testing.T, version string) map[string][]byte {
 	t.Helper()
-	f, err := Files(srcRoot, version)
+	f, err := Files(srcRoot, map[string]string{"mail": version, "weather": "v1.0.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,10 +151,47 @@ func TestPublishingAnEarlierVersionLeavesTheLaterOnesOff(t *testing.T) {
 	}
 }
 
-func TestAVersionNoDemoHasIsRefused(t *testing.T) {
-	for _, v := range []string{"v1.0.2", "1.0.1", "", "v0.9.0"} {
-		if _, err := Files(srcRoot, v); !errors.Is(err, ErrUnknownVersion) {
-			t.Errorf("%q: %v, want ErrUnknownVersion", v, err)
+func TestAVersionOrDemoThereIsNoneOfIsRefused(t *testing.T) {
+	cases := []struct {
+		versions map[string]string
+		want     error
+	}{
+		{map[string]string{"mail": "v1.0.2"}, ErrUnknownVersion},
+		{map[string]string{"mail": "1.0.1"}, ErrUnknownVersion},
+		{map[string]string{"mail": ""}, ErrUnknownVersion},
+		{map[string]string{"weather": "v1.0.1"}, ErrUnknownVersion},
+		{map[string]string{"mail": "v1.0.0", "calendar": "v1.0.0"}, ErrUnknownDemo},
+	}
+	for _, c := range cases {
+		if _, err := Files(srcRoot, c.versions); !errors.Is(err, c.want) {
+			t.Errorf("%v: %v, want %v", c.versions, err, c.want)
+		}
+	}
+}
+
+func TestADemoNotNamedIsNotPublished(t *testing.T) {
+	got, err := Files(srcRoot, map[string]string{"weather": "v1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name := range got {
+		if strings.Contains(name, "/demo/mail/") {
+			t.Errorf("%s is published, though mail is not named", name)
+		}
+	}
+	if len(got) != 5 {
+		t.Errorf("%d files, want weather's five", len(got))
+	}
+}
+
+func TestTheVersionsAreOneJSONObjectOfStrings(t *testing.T) {
+	got, err := ParseVersions([]byte(`{"mail": "v1.0.1", "weather": "v1.0.0"}` + "\n"))
+	if err != nil || len(got) != 2 || got["mail"] != "v1.0.1" || got["weather"] != "v1.0.0" {
+		t.Errorf("%v, %v", got, err)
+	}
+	for _, bad := range []string{``, `null`, `[]`, `{"mail": 1}`, `{"mail": "v1.0.0"} {}`, `"v1.0.1"`} {
+		if _, err := ParseVersions([]byte(bad)); !errors.Is(err, ErrBadVersions) {
+			t.Errorf("%q: %v, want ErrBadVersions", bad, err)
 		}
 	}
 }

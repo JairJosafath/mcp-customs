@@ -249,8 +249,9 @@ anything else. The demos are the modules
 `.../demo/weather` (v1.0.0): each version's module holds the demo's
 package built for that version, its build line taken off, and
 `src/demo/mcp` as `internal/mcp`, so `go install module@version` builds
-that version with no tag. A deploy publishes the `demoVersion` context
-value (`v1.0.0` without it) and every earlier version: synth runs
+that version with no tag. A deploy publishes the version
+`infra/demo-versions.json`, a committed file, names for each demo, and
+every earlier version: synth runs
 `src/cmd/demopublish`, and a `BucketDeployment`, whose role alone may
 write `goproxy/`, copies the files and prunes the rest. The web function
 may list `goproxy/` too, so S3 answers a missing file 404; a read S3 still

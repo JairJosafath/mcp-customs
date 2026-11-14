@@ -15,6 +15,7 @@ import { Asset } from 'aws-cdk-lib/aws-s3-assets';
 import { BucketDeployment, Source } from 'aws-cdk-lib/aws-s3-deployment';
 import { Construct } from 'constructs';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { TierRules } from './standard';
@@ -28,35 +29,40 @@ const SRC = path.join(import.meta.dirname, '..', 'src');
  */
 export const GO_PROXY_PREFIX = 'goproxy/';
 
-/** The context value that names the newest demo version a deploy publishes. */
-export const DEMO_VERSION_CONTEXT = 'demoVersion';
-
-/** The demo version a deploy publishes when it names none: before the rug pull. */
-export const DEFAULT_DEMO_VERSION = 'v1.0.0';
+/**
+ * The demo versions a deploy publishes, by demo: `{"mail": "v1.0.0", ...}`,
+ * each with every earlier version. A committed file, so publishing the rug
+ * pull is a one-line commit, merged and deployed.
+ */
+export const DEMO_VERSIONS_FILE = path.join(import.meta.dirname, 'demo-versions.json');
 
 /** A demo version as `src/internal/demoproxy` names one. */
 const DEMO_VERSION = /^v\d+\.\d+\.\d+$/;
 
 /**
- * The demo version a deploy publishes: the `demoVersion` context value
- * (`cdk deploy -c demoVersion=v1.0.1`), `DEFAULT_DEMO_VERSION` without it.
+ * The versions `file` names, by demo. `src/internal/demoproxy` checks each
+ * against the demo's releases when synth builds the files; this refuses
+ * what is not even an object of versions.
  */
-export function demoVersionOf(value: unknown): string {
-  if (value === undefined) {
-    return DEFAULT_DEMO_VERSION;
+export function readDemoVersions(file: string): Record<string, string> {
+  const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'));
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    !Object.values(parsed).every((v) => typeof v === 'string' && DEMO_VERSION.test(v))
+  ) {
+    throw new Error(`${file} must be one object of demo names to versions such as v1.0.1.`);
   }
-  if (typeof value !== 'string' || !DEMO_VERSION.test(value)) {
-    throw new Error(`${DEMO_VERSION_CONTEXT} must be a demo version such as v1.0.1.`);
-  }
-  return value;
+  return parsed as Record<string, string>;
 }
 
 /** What the demo proxy is made from. */
 export interface DemoProxyProps {
   /** The bucket that holds the proxy's files under `GO_PROXY_PREFIX`. */
   readonly bucket: Bucket;
-  /** The newest demo version it publishes; every earlier one comes too. */
-  readonly version: string;
+  /** The file of the versions it publishes, by demo: `DEMO_VERSIONS_FILE`. */
+  readonly versionsFile: string;
   readonly rules: TierRules;
 }
 
@@ -64,7 +70,8 @@ export interface DemoProxyProps {
  * The demo Go module proxy's files (docs/contracts.md, "The demo proxy"),
  * written by `go run ./cmd/demopublish` at synth and copied to the bucket's
  * `GO_PROXY_PREFIX` on deploy, the earlier files there pruned: a deploy
- * with another `demoVersion` publishes, or takes back, the rug pull.
+ * with another version in `DEMO_VERSIONS_FILE` publishes, or takes back,
+ * the rug pull.
  *
  * CDK's copying function is held to what the stack's own functions keep:
  * its own log group, kept for the tier's time; X-Ray where the tier traces;
@@ -77,8 +84,8 @@ export class DemoProxy extends Construct {
 
   constructor(scope: Construct, id: string, props: DemoProxyProps) {
     super(scope, id);
-    const { bucket, version, rules } = props;
-    const files = demoProxyFiles(this, version);
+    const { bucket, versionsFile, rules } = props;
+    const files = demoProxyFiles(this, versionsFile);
     const logGroup = new LogGroup(this, 'Logs', {
       retention: rules.logRetention,
       removalPolicy: RemovalPolicy.DESTROY,
@@ -180,14 +187,14 @@ function singletonOf(stack: Stack, deployment: BucketDeployment): CfnFunction {
 }
 
 /**
- * The proxy's files for `version`, written by `go run ./cmd/demopublish`
- * with the installed Go. Never Docker, which CI doesn't have: a failed
- * build fails synth.
+ * The proxy's files for the versions `versionsFile` names, written by
+ * `go run ./cmd/demopublish` with the installed Go. Never Docker, which CI
+ * doesn't have: a failed build fails synth.
  */
-function demoProxyFiles(scope: Construct, version: string): Asset {
+function demoProxyFiles(scope: Construct, versionsFile: string): Asset {
   // In the bundling options too: CDK keys an asset's staging on them, so
-  // two versions get two assets.
-  const environment = { DEMO_VERSION: version };
+  // two sets of versions get two assets.
+  const environment = { DEMO_VERSIONS: JSON.stringify(readDemoVersions(versionsFile)) };
   return new Asset(scope, 'Files', {
     path: path.join(SRC, 'demo'),
     // The hash of the files written, the same from one build to the next.
@@ -198,11 +205,22 @@ function demoProxyFiles(scope: Construct, version: string): Asset {
       environment,
       local: {
         tryBundle(outputDir: string): boolean {
-          execFileSync('go', ['run', './cmd/demopublish', '-version', version, '-out', outputDir], {
-            cwd: SRC,
-            env: { ...process.env, ...environment },
-            stdio: ['ignore', 'inherit', 'inherit'],
-          });
+          execFileSync(
+            'go',
+            [
+              'run',
+              './cmd/demopublish',
+              '-versions-file',
+              path.resolve(versionsFile),
+              '-out',
+              outputDir,
+            ],
+            {
+              cwd: SRC,
+              env: { ...process.env, ...environment },
+              stdio: ['ignore', 'inherit', 'inherit'],
+            },
+          );
           return true;
         },
       },

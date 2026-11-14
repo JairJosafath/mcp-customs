@@ -20,7 +20,7 @@ import type { Construct } from 'constructs';
 
 import { Alarms } from './alarms';
 import { Backups } from './backups';
-import { DEFAULT_DEMO_VERSION, DemoProxy, GO_PROXY_PREFIX } from './demo_proxy';
+import { DEMO_VERSIONS_FILE, DemoProxy, GO_PROXY_PREFIX } from './demo_proxy';
 import { goFunction } from './go_function';
 import { Recheck, POLLER_TIMEOUT } from './recheck';
 import { Sandbox } from './sandbox';
@@ -146,8 +146,8 @@ export interface ApiStackProps extends StackProps {
   readonly tier: Tier;
   /** What the Container promises whatever the tier: `OPERATIONS`. */
   readonly operations: Operations;
-  /** The newest demo version the demo Go module proxy serves; `DEFAULT_DEMO_VERSION` when unset. */
-  readonly demoVersion?: string;
+  /** The file of the demo versions the demo Go module proxy serves; `DEMO_VERSIONS_FILE` when unset. */
+  readonly demoVersionsFile?: string;
 }
 
 /**
@@ -253,7 +253,7 @@ export class ApiStack extends Stack {
     const recheck = new Recheck(this, 'Recheck', { table, checker, rules, goProxy });
     const demoProxy = new DemoProxy(this, 'DemoProxy', {
       bucket: reports,
-      version: props.demoVersion ?? DEFAULT_DEMO_VERSION,
+      versionsFile: props.demoVersionsFile ?? DEMO_VERSIONS_FILE,
       rules,
     });
 

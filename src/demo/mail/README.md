@@ -44,7 +44,7 @@ go test -tags v1_0_1 ./demo/mail/...  # v1_0_1 copy behaviour + identical tool l
 
 ## Published versions
 
-A deploy with `-c demoVersion=v1.0.0|v1.0.1` publishes this demo, as the
+A deploy publishes the version of this demo `infra/demo-versions.json` names (v1.0.0 or v1.0.1), as the
 module `github.com/JairJosafath/mcp-customs/demo/mail`, to the stack's own
 Go module proxy (`src/internal/demoproxy`, docs/runbook.md, "The demo
 proxy"). Each version's module holds the build for that version with its

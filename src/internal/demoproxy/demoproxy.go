@@ -11,11 +11,14 @@
 package demoproxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"net/url"
+	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -58,37 +61,66 @@ var Modules = []Module{
 	},
 }
 
-// ErrUnknownVersion says no demo has a release of that version.
-var ErrUnknownVersion = errors.New("no demo has a release of that version")
+// ErrUnknownVersion says a demo has no release of that version.
+var ErrUnknownVersion = errors.New("the demo has no release of that version")
 
-// Files are the proxy's files when version is published: for each demo,
-// every release up to and including version, as paths relative to the
-// proxy's root (`<module>/@v/list`, `.info`, `.mod`, `.zip` and
-// `<module>/@latest`). src is the src module's directory. Publishing an
-// earlier version again takes the later ones back off the list.
-func Files(src fs.FS, version string) (map[string][]byte, error) {
-	if !semver.IsValid(version) {
-		return nil, fmt.Errorf("%q: %w", version, ErrUnknownVersion)
+// ErrUnknownDemo says no demo has that name.
+var ErrUnknownDemo = errors.New("no demo has that name")
+
+// Name is a demo's name, the last element of its module path: mail, weather.
+func (m Module) Name() string { return path.Base(m.Path) }
+
+// Files are the proxy's files when versions are published, by demo name
+// (`{"mail": "v1.0.1", "weather": "v1.0.0"}`, infra/demo-versions.json):
+// for each demo named, every release up to and including its version, as
+// paths relative to the proxy's root (`<module>/@v/list`, `.info`, `.mod`,
+// `.zip` and `<module>/@latest`). A demo not named is not published. src
+// is the src module's directory. Naming an earlier version takes the later
+// ones back off the list.
+func Files(src fs.FS, versions map[string]string) (map[string][]byte, error) {
+	for name := range versions {
+		if !slices.ContainsFunc(Modules, func(m Module) bool { return m.Name() == name }) {
+			return nil, fmt.Errorf("%q: %w", name, ErrUnknownDemo)
+		}
 	}
 	files := map[string][]byte{}
-	known := false
 	for _, m := range Modules {
+		version, named := versions[m.Name()]
+		if !named {
+			continue
+		}
+		if !slices.ContainsFunc(m.Releases, func(r Release) bool { return r.Version == version }) {
+			return nil, fmt.Errorf("%s %q: %w", m.Name(), version, ErrUnknownVersion)
+		}
 		var published []Release
 		for _, r := range m.Releases {
 			if semver.Compare(r.Version, version) <= 0 {
 				published = append(published, r)
 			}
-			known = known || r.Version == version
 		}
 		if err := addModule(files, src, m, published); err != nil {
 			return nil, err
 		}
 	}
-	if !known {
-		return nil, fmt.Errorf("%q: %w", version, ErrUnknownVersion)
-	}
 	return files, nil
 }
+
+// ParseVersions reads the versions to publish, by demo name, from a JSON
+// object of strings such as infra/demo-versions.json; anything else is
+// refused.
+func ParseVersions(data []byte) (map[string]string, error) {
+	var versions map[string]string
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(&versions); err != nil || dec.More() || versions == nil {
+		return nil, fmt.Errorf("%w: %w", ErrBadVersions, errors.Join(err, errNotAnObject))
+	}
+	return versions, nil
+}
+
+// ErrBadVersions says the versions to publish are not a JSON object of strings.
+var ErrBadVersions = errors.New("the demo versions must be one JSON object of demo names to versions")
+
+var errNotAnObject = errors.New("not one JSON object of strings")
 
 // addModule adds the proxy files of m's releases to files.
 func addModule(files map[string][]byte, src fs.FS, m Module, releases []Release) error {
@@ -137,8 +169,8 @@ func infoOf(r Release) ([]byte, error) {
 }
 
 // goMod is a demo module's go.mod: the standard library is all it needs.
-func goMod(path string) []byte {
-	return []byte("module " + path + "\n\ngo 1.26\n")
+func goMod(modPath string) []byte {
+	return []byte("module " + modPath + "\n\ngo 1.26\n")
 }
 
 // ErrBadProxy says a GOPROXY list holds something other than https URLs.

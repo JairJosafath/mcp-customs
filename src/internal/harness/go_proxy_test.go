@@ -83,7 +83,7 @@ func TestAGoInstallOfADemoResolvesThroughTheDemoProxyAndBuildsThatVersion(t *tes
 	cache := t.TempDir()
 	for _, c := range cases {
 		t.Run(c.version, func(t *testing.T) {
-			files, err := demoproxy.Files(os.DirFS("../.."), c.version)
+			files, err := demoproxy.Files(os.DirFS("../.."), map[string]string{"mail": c.version})
 			if err != nil {
 				t.Fatal(err)
 			}

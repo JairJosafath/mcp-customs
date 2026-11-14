@@ -13,11 +13,11 @@ import (
 	"github.com/JairJosafath/mcp-customs/src/internal/store"
 )
 
-// demoProxy serves the demo proxy's files as a deploy with demoVersion=version
-// leaves them, under /goproxy/ as the stack does.
+// demoProxy serves the demo proxy's files as a deploy leaves them with the
+// mail demo at version, under /goproxy/ as the stack does.
 func demoProxy(t *testing.T, version string) *httptest.Server {
 	t.Helper()
-	files, err := demoproxy.Files(os.DirFS("../.."), version)
+	files, err := demoproxy.Files(os.DirFS("../.."), map[string]string{"mail": version, "weather": "v1.0.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
