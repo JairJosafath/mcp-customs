@@ -44,19 +44,22 @@ var hiddenTables = []struct {
 }
 
 // U+FE0E and U+FE0F pick text or emoji style. Each is no finding right
-// after a character Unicode gives that variation sequence; anywhere else,
-// after a letter or another selector, it carries no meaning and can carry
-// bits past a reader. The other variation selectors are always a finding.
+// after a character Unicode gives that variation sequence, and after an
+// ASCII one (a digit, # or *) only in a keycap, where U+20E3 follows;
+// anywhere else, after a letter, a bare digit or another selector, it
+// carries no meaning and can carry bits past a reader. The other
+// variation selectors are always a finding.
 const (
 	textStyle  = 0xFE0E
 	emojiStyle = 0xFE0F
+	keycap     = 0x20E3
 )
 
-// hiddenRule names the rule of r, the character after prev (-1 at the
-// start), and whether r is hidden at all. A \r is hidden unless a \n
-// follows it (beforeLF).
-func hiddenRule(prev, r rune, beforeLF bool) (string, bool) {
-	if r == '\r' && beforeLF {
+// hiddenRule names the rule of r, the character after prev and before
+// next (-1 at either end), and whether r is hidden at all. A \r is hidden
+// unless a \n follows it.
+func hiddenRule(prev, r, next rune) (string, bool) {
+	if r == '\r' && next == '\n' {
 		return "", false
 	}
 	for _, c := range hiddenClasses {
@@ -65,7 +68,7 @@ func hiddenRule(prev, r rune, beforeLF bool) (string, bool) {
 		}
 	}
 	if r == textStyle || r == emojiStyle {
-		if inRanges(emojiVariationBases, prev) {
+		if inRanges(emojiVariationBases, prev) && (prev > unicode.MaxASCII || next == keycap) {
 			return "", false
 		}
 		return RuleVariationSelector, true
@@ -82,15 +85,19 @@ func hiddenRule(prev, r rune, beforeLF bool) (string, bool) {
 }
 
 // blankLookalikes look like a space but aren't in Unicode's White_Space:
-// the braille blank and the Hangul fillers.
-var blankLookalikes = []runeRange{{0x115F, 0x1160}, {0x2800, 0x2800}, {0x3164, 0x3164}, {0xFFA0, 0xFFA0}}
+// the Hangul fillers, the braille blank and the musical null notehead.
+var blankLookalikes = []runeRange{{0x115F, 0x1160}, {0x2800, 0x2800}, {0x3164, 0x3164}, {0xFFA0, 0xFFA0}, {0x1D159, 0x1D159}}
 
 // blank reports whether r shows as a space, or as nothing between words:
-// every Unicode space and line break, and the blank lookalikes. The
-// injection patterns see each as one space.
+// every Unicode space and line break (each Zs is one), and the blank
+// lookalikes. The injection patterns see each as one space.
 func blank(r rune) bool {
-	return unicode.IsSpace(r) || unicode.Is(unicode.Zs, r) || inRanges(blankLookalikes, r)
+	return unicode.IsSpace(r) || inRanges(blankLookalikes, r)
 }
+
+// mark reports whether r is a combining or enclosing mark, which shows on
+// the character before it.
+func mark(r rune) bool { return unicode.In(r, unicode.Mn, unicode.Me) }
 
 // inRanges reports whether r is in rs, which are sorted and don't overlap.
 func inRanges(rs []runeRange, r rune) bool {

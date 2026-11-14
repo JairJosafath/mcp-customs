@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // A Scan is what ScanText found in one piece of server text.
@@ -19,24 +20,36 @@ type Scan struct {
 // result, a resource or a prompt) for hidden characters and injection
 // patterns. Patterns are matched with the hidden characters removed and
 // every blank (a Unicode space, a line break or a lookalike such as U+2800)
-// read as a space, so neither a zero-width space nor an odd space can
-// split them.
+// read as a space, with any mark on it left out, so neither a zero-width
+// space, an odd space nor an accent on one can split them.
 func ScanText(text string) Scan {
 	var escaped, visible strings.Builder
 	seen := map[string][]string{}
 	var order []string
 	prev := rune(-1)
+	// onBlank holds while the last character seen was a blank, or a mark
+	// on one: a mark on a blank is left out of what the patterns see, so
+	// an accent can't split their words.
+	onBlank := false
 	for i, r := range text {
-		if blank(r) {
-			visible.WriteRune(' ')
+		next := rune(-1)
+		// An invalid byte is one byte wide, though range answers U+FFFD.
+		if _, width := utf8.DecodeRuneInString(text[i:]); i+width < len(text) {
+			next, _ = utf8.DecodeRuneInString(text[i+width:])
 		}
-		rule, hidden := hiddenRule(prev, r, strings.HasPrefix(text[i+1:], "\n"))
+		rule, hidden := hiddenRule(prev, r, next)
 		prev = r
+		switch {
+		case blank(r):
+			visible.WriteRune(' ')
+			onBlank = true
+		case onBlank && mark(r):
+		case !hidden:
+			visible.WriteRune(r)
+			onBlank = false
+		}
 		if !hidden {
 			escaped.WriteRune(r)
-			if !blank(r) {
-				visible.WriteRune(r)
-			}
 			continue
 		}
 		e := escapeRune(r)
