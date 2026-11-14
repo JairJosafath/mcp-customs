@@ -254,13 +254,23 @@ A re-check never ends silently:
   `"recheckFailedTwice":1`, which a metric filter on its log group counts
   (`MCPCustoms`/`RecheckFailedTwice`) and the `RecheckFailedTwice-Critical`
   alarm watches.
-- **It ends at review or block**: the Checker sets `supersededBy` on the
-  approved check's `META`, which the approved check's page shows, and puts
-  an event on the account's default EventBridge bus (`EVENT_BUS_NAME`):
-  source `mcp-customs`, detail-type `Approved check superseded`, detail
-  `{"approvedCheckId","approvedRef","recheckId","kind","ref","verdict"}`.
-  A user subscribes with a rule on that source and detail-type; a retried
-  step may send it twice, told apart by `recheckId`.
+- **Code does not pass it** (review or block): as soon as code decides,
+  before the re-check waits for a person, the Checker sets
+  `supersededBy` on the approved check's `META`, which the approved
+  check's page shows, and puts an event on the account's default
+  EventBridge bus (`EVENT_BUS_NAME`): source `mcp-customs`, detail-type
+  `Approved check superseded`, detail
+  `{"approvedCheckId","approvedRef","recheckId","kind","ref","verdict"}`,
+  the verdict code's. The mark is written in one transaction with a
+  check that the re-check's version is still the package's `polled`, so
+  of two re-checks of one approval only the newest version's sets the
+  link and sends the event, whichever ends last. A person who then
+  approves the re-check lifts the mark, only while it names that
+  re-check, and a second event goes out: detail-type
+  `Approved check no longer superseded`, the same detail with verdict
+  `pass`. A user subscribes with a rule on that source and those
+  detail-types; a retried step may send an event twice, told apart by
+  `recheckId`.
 
 ## The demo proxy
 

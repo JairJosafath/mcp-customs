@@ -274,6 +274,7 @@ describe('ApiStack', () => {
     const role = idOf(development, 'AWS::IAM::Role', 'CheckerRole');
     expect(actionsOf(development, role)).toEqual(
       [
+        '"dynamodb:ConditionCheckItem"',
         '"dynamodb:GetItem"',
         '"dynamodb:PutItem"',
         '"dynamodb:UpdateItem"',

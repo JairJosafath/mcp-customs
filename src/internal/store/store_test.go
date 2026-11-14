@@ -88,6 +88,51 @@ func (f *fakeDynamo) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput,
 	return &dynamodb.UpdateItemOutput{}, nil
 }
 
+// TransactWriteItems checks every item's condition first, as DynamoDB
+// does, and cancels the whole transaction when one fails; it applies only
+// updates.
+func (f *fakeDynamo) TransactWriteItems(ctx context.Context, in *dynamodb.TransactWriteItemsInput, _ ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	reasons := make([]types.CancellationReason, len(in.TransactItems))
+	canceled := false
+	for i, item := range in.TransactItems {
+		reasons[i].Code = aws.String("None")
+		var cond *string
+		var key row
+		var values row
+		switch {
+		case item.ConditionCheck != nil:
+			cond, key, values = item.ConditionCheck.ConditionExpression, item.ConditionCheck.Key, item.ConditionCheck.ExpressionAttributeValues
+		case item.Update != nil:
+			cond, key, values = item.Update.ConditionExpression, item.Update.Key, item.Update.ExpressionAttributeValues
+		default:
+			return nil, errors.New("unexpected transaction item")
+		}
+		if err := f.holds(cond, keyOf(key), values); err != nil {
+			if failed := new(types.ConditionalCheckFailedException); !errors.As(err, &failed) {
+				return nil, err
+			}
+			reasons[i].Code, canceled = aws.String("ConditionalCheckFailed"), true
+		}
+	}
+	if canceled {
+		return nil, &types.TransactionCanceledException{Message: aws.String("Transaction cancelled"), CancellationReasons: reasons}
+	}
+	for _, item := range in.TransactItems {
+		if u := item.Update; u != nil {
+			if _, err := f.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+				TableName: u.TableName, Key: u.Key, UpdateExpression: u.UpdateExpression,
+				ExpressionAttributeNames: u.ExpressionAttributeNames, ExpressionAttributeValues: u.ExpressionAttributeValues,
+			}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return &dynamodb.TransactWriteItemsOutput{}, nil
+}
+
 // holds checks a write's condition on the item at key, failing as DynamoDB
 // does when it doesn't hold.
 func (f *fakeDynamo) holds(condition *string, key [2]string, values row) error {
@@ -103,6 +148,10 @@ func (f *fakeDynamo) holds(condition *string, key [2]string, values row) error {
 		version, _ := readStr(values, ":version")
 		existing, _ := readStr(item, "polled")
 		ok = !exists || existing == version
+	case "#supersededBy = :recheck":
+		want, _ := readStr(values, ":recheck")
+		existing, _ := readStr(item, "supersededBy")
+		ok = exists && existing == want
 	case "polled = :version", "#retry = :version":
 		attribute := map[string]string{"polled = :version": "polled", "#retry = :version": "retry"}[aws.ToString(condition)]
 		version, _ := readStr(values, ":version")
@@ -210,8 +259,8 @@ func TestStoreUpdatesOnlyTheFieldsItIsGiven(t *testing.T) {
 		"the status":      {CheckUpdate{Status: StatusDone}, func(c Check) Check { c.Status = StatusDone; return c }},
 		"the verdict":     {CheckUpdate{Verdict: "block"}, func(c Check) Check { c.Verdict = "block"; return c }},
 		"the callback ID": {CheckUpdate{CallbackID: "cb-1"}, func(c Check) Check { c.CallbackID = "cb-1"; return c }},
-		"a re-check's outcome": {CheckUpdate{SupersededBy: "recheck-1", RecheckFailed: "recheck-2"}, func(c Check) Check {
-			c.SupersededBy, c.RecheckFailed = "recheck-1", "recheck-2"
+		"a re-check's outcome": {CheckUpdate{RecheckFailed: "recheck-2"}, func(c Check) Check {
+			c.RecheckFailed = "recheck-2"
 			return c
 		}},
 		"all three": {CheckUpdate{Status: StatusFailed, Verdict: "review", CallbackID: "cb-2"}, func(c Check) Check {

@@ -38,9 +38,12 @@ describe('RecheckOutcomes', () => {
         JSON.stringify(policy).includes(`{"Ref":"${role}"}`),
       ),
     );
+    // One grant of one action on one bus: a second bus, in its own
+    // statement or the same one, or a wildcard fails.
+    expect(policies.split('"events:').length - 1).toBe(1);
     expect(policies).toContain('"Action":"events:PutEvents"');
-    expect(policies).toContain(`:event-bus/${EVENT_BUS}"`);
-    expect(policies).not.toContain('"events:*"');
+    expect(policies.split(':event-bus/').length - 1).toBe(1);
+    expect(policies).toContain(`:event-bus/${EVENT_BUS}"]]}`);
   });
 
   it('counts each re-check that failed twice from the Checker’s logs, and alarms on the first', () => {

@@ -30,6 +30,8 @@ type Recorder interface {
 	PutVerdict(ctx context.Context, v store.Verdict) error
 	PutApproved(ctx context.Context, a store.Approved, conditional bool) error
 	MarkRetry(ctx context.Context, kind, name, version string) (bool, error)
+	MarkSuperseded(ctx context.Context, approvedID string, s store.Superseding) (bool, error)
+	LiftSuperseded(ctx context.Context, approvedID, recheckID string) (bool, error)
 }
 
 // Reports is where a check's report and raw observations go: the bucket.
@@ -116,6 +118,10 @@ type run struct {
 	oversized *findings.Finding
 	// sealing says the sandbox's egress is being sealed for the last read.
 	sealing bool
+	// supersedeDone says a re-check's supersede ran, and superseded that it
+	// marked the approved check.
+	supersedeDone bool
+	superseded    bool
 }
 
 // Handler is the Checker's durable handler. Each write and each call is a
@@ -207,6 +213,10 @@ func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
 	decided := verdict.Decide(in)
 	if decided.Verdict == verdict.Pass {
 		return r.finish(ctx, decided, "code")
+	}
+	// Anyone using the approved version is told now, not once a person decides.
+	if err := r.supersede(ctx, decided.Verdict); err != nil {
+		return "", err
 	}
 	// A person may take days: the sandbox can't live that long.
 	if err := r.endSandbox(ctx); err != nil {

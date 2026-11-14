@@ -9,13 +9,13 @@ import (
 
 	"github.com/JairJosafath/mcp-customs/src/internal/events"
 	"github.com/JairJosafath/mcp-customs/src/internal/store"
-	"github.com/JairJosafath/mcp-customs/src/internal/verdict"
 )
 
 // Events is where the Checker sends what a user can subscribe to: the
 // event bus.
 type Events interface {
 	PutSuperseded(ctx context.Context, s events.Superseded) error
+	PutLifted(ctx context.Context, s events.Superseded) error
 }
 
 // FailedTwiceLog is the log entry's message, and FailedTwiceKey its
@@ -72,33 +72,6 @@ func (r *run) askRetry(ctx durable.Context) error {
 		summary = "The re-check failed, and is not started again: a newer version has been polled since, and is re-checked instead."
 	}
 	return r.record(ctx, "retry", outcome{Summary: summary})
-}
-
-// supersede, for a re-check that ended at review or block, marks the
-// approved check superseded by it and sends the event a user can
-// subscribe to, each in a step. An approved check no longer kept is not
-// marked; the event goes out all the same.
-func (r *run) supersede(ctx durable.Context, v verdict.Verdict) error {
-	re := r.in.Recheck
-	if re == nil || v == verdict.Pass {
-		return nil
-	}
-	if _, err := durable.Step(ctx, "supersede", func(sc durable.StepContext) (bool, error) {
-		err := r.deps.Store.UpdateCheck(sc, re.CheckID, store.CheckUpdate{SupersededBy: r.in.CheckID})
-		return true, ignore(err, store.ErrNoCheck)
-	}); err != nil {
-		return fmt.Errorf("mark check %s superseded: %w", re.CheckID, err)
-	}
-	event := events.Superseded{
-		ApprovedCheckID: re.CheckID, ApprovedRef: re.Ref, RecheckID: r.in.CheckID,
-		Kind: r.in.Submission.Kind, Ref: r.in.Submission.Ref, Verdict: string(v),
-	}
-	if _, err := durable.Step(ctx, "announce-superseded", func(sc durable.StepContext) (bool, error) {
-		return true, r.deps.Events.PutSuperseded(sc, event)
-	}); err != nil {
-		return fmt.Errorf("send that check %s is superseded: %w", re.CheckID, err)
-	}
-	return nil
 }
 
 // ignore is err, unless it is target.

@@ -1,6 +1,6 @@
 // Package events sends what a user can subscribe to on EventBridge: an
 // approved check superseded by a re-check of a newer version that did not
-// pass.
+// pass, and that mark lifted.
 package events
 
 import (
@@ -14,11 +14,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
 )
 
-// Source and SupersededType are the event's source and detail-type, which
-// a rule matches on.
+// Source, and SupersededType and LiftedType, are the events' source and
+// detail-types, which a rule matches on: an approved check superseded by a
+// re-check that code did not pass, and the mark lifted when a person
+// approves that re-check after all.
 const (
 	Source         = "mcp-customs"
 	SupersededType = "Approved check superseded"
+	LiftedType     = "Approved check no longer superseded"
 )
 
 // API is the part of EventBridge's client the bus calls, so a test passes
@@ -27,8 +30,9 @@ type API interface {
 	PutEvents(ctx context.Context, in *eventbridge.PutEventsInput, opts ...func(*eventbridge.Options)) (*eventbridge.PutEventsOutput, error)
 }
 
-// Superseded is the event's detail: the approved check and its version's
-// ref, and the re-check of a newer version that ended at review or block.
+// Superseded is either event's detail: the approved check and its
+// version's ref, and the re-check of a newer version with its verdict:
+// review or block when superseded, pass when lifted.
 type Superseded struct {
 	ApprovedCheckID string `json:"approvedCheckId"`
 	ApprovedRef     string `json:"approvedRef"`
@@ -52,28 +56,37 @@ func NewBus(client API, name string) *Bus {
 	return &Bus{client: client, name: name}
 }
 
-// PutSuperseded sends s. A retry may send it again: a subscriber tells
-// the two apart by RecheckID.
+// PutSuperseded sends that s's approved check is superseded. A retry may
+// send it again: a subscriber tells the two apart by RecheckID.
 func (b *Bus) PutSuperseded(ctx context.Context, s Superseded) error {
+	return b.put(ctx, SupersededType, s)
+}
+
+// PutLifted sends that s's approved check is no longer superseded.
+func (b *Bus) PutLifted(ctx context.Context, s Superseded) error {
+	return b.put(ctx, LiftedType, s)
+}
+
+func (b *Bus) put(ctx context.Context, detailType string, s Superseded) error {
 	detail, err := json.Marshal(s)
 	if err != nil {
-		return fmt.Errorf("encode the superseded event: %w", err)
+		return fmt.Errorf("encode the %q event: %w", detailType, err)
 	}
 	out, err := b.client.PutEvents(ctx, &eventbridge.PutEventsInput{Entries: []types.PutEventsRequestEntry{{
 		EventBusName: aws.String(b.name),
 		Source:       aws.String(Source),
-		DetailType:   aws.String(SupersededType),
+		DetailType:   aws.String(detailType),
 		Detail:       aws.String(string(detail)),
 	}}})
 	if err != nil {
-		return fmt.Errorf("put the superseded event of check %s on bus %s: %w", s.ApprovedCheckID, b.name, err)
+		return fmt.Errorf("put the %q event of check %s on bus %s: %w", detailType, s.ApprovedCheckID, b.name, err)
 	}
 	if out.FailedEntryCount > 0 {
 		code := ""
 		if len(out.Entries) > 0 {
 			code = aws.ToString(out.Entries[0].ErrorCode)
 		}
-		return fmt.Errorf("put the superseded event of check %s on bus %s (%s): %w", s.ApprovedCheckID, b.name, code, ErrNotPut)
+		return fmt.Errorf("put the %q event of check %s on bus %s (%s): %w", detailType, s.ApprovedCheckID, b.name, code, ErrNotPut)
 	}
 	return nil
 }

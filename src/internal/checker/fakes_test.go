@@ -41,12 +41,21 @@ type memoryRecorder struct {
 	puts           int
 	retries        []string
 	overtaken      bool
+	newestPolled   string
 }
 
-// memoryEvents keeps every event the Checker sends.
+// memoryEvents keeps every event the Checker sends, superseded and lifted.
 type memoryEvents struct {
 	mu         sync.Mutex
 	superseded []events.Superseded
+	lifted     []events.Superseded
+}
+
+func (m *memoryEvents) PutLifted(_ context.Context, s events.Superseded) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lifted = append(m.lifted, s)
+	return nil
 }
 
 func (m *memoryEvents) PutSuperseded(_ context.Context, s events.Superseded) error {
@@ -105,13 +114,35 @@ func (m *memoryRecorder) UpdateCheck(_ context.Context, id string, u store.Check
 	if u.SandboxID != "" {
 		c.SandboxID = u.SandboxID
 	}
-	if u.SupersededBy != "" {
-		c.SupersededBy = u.SupersededBy
-	}
 	if u.RecheckFailed != "" {
 		c.RecheckFailed = u.RecheckFailed
 	}
 	return nil
+}
+
+// MarkSuperseded marks check approvedID superseded by s's re-check while
+// s's version is the newest polled: newestPolled, when set, as the store
+// gates it on the APPROVED item.
+func (m *memoryRecorder) MarkSuperseded(_ context.Context, approvedID string, s store.Superseding) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == approvedID })
+	if i < 0 || (m.newestPolled != "" && m.newestPolled != s.Version) {
+		return false, nil
+	}
+	m.checks[i].SupersededBy = s.RecheckID
+	return true, nil
+}
+
+func (m *memoryRecorder) LiftSuperseded(_ context.Context, approvedID, recheckID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == approvedID })
+	if i < 0 || m.checks[i].SupersededBy != recheckID {
+		return false, nil
+	}
+	m.checks[i].SupersededBy = ""
+	return true, nil
 }
 
 // MarkRetry keeps each ask for a retry, and answers marked unless

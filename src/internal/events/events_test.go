@@ -32,21 +32,26 @@ func superseded() Superseded {
 	}
 }
 
-func TestTheSupersededEventGoesToTheBusWithItsSourceTypeAndDetail(t *testing.T) {
-	fake := &fakeEventBridge{}
-	if err := NewBus(fake, "default").PutSuperseded(t.Context(), superseded()); err != nil {
-		t.Fatal(err)
-	}
-	if len(fake.in) != 1 || len(fake.in[0].Entries) != 1 {
-		t.Fatalf("sent %+v, want one event", fake.in)
-	}
-	e := fake.in[0].Entries[0]
-	if aws.ToString(e.EventBusName) != "default" || aws.ToString(e.Source) != Source || aws.ToString(e.DetailType) != SupersededType {
-		t.Errorf("event %+v, want bus default, source %s, type %s", e, Source, SupersededType)
-	}
-	var got Superseded
-	if err := json.Unmarshal([]byte(aws.ToString(e.Detail)), &got); err != nil || got != superseded() {
-		t.Errorf("detail %s (%v), want %+v", aws.ToString(e.Detail), err, superseded())
+func TestEachEventGoesToTheBusWithItsSourceTypeAndDetail(t *testing.T) {
+	for detailType, put := range map[string]func(*Bus, context.Context, Superseded) error{
+		SupersededType: (*Bus).PutSuperseded,
+		LiftedType:     (*Bus).PutLifted,
+	} {
+		fake := &fakeEventBridge{}
+		if err := put(NewBus(fake, "default"), t.Context(), superseded()); err != nil {
+			t.Fatal(err)
+		}
+		if len(fake.in) != 1 || len(fake.in[0].Entries) != 1 {
+			t.Fatalf("%s: sent %+v, want one event", detailType, fake.in)
+		}
+		e := fake.in[0].Entries[0]
+		if aws.ToString(e.EventBusName) != "default" || aws.ToString(e.Source) != Source || aws.ToString(e.DetailType) != detailType {
+			t.Errorf("event %+v, want bus default, source %s, type %s", e, Source, detailType)
+		}
+		var got Superseded
+		if err := json.Unmarshal([]byte(aws.ToString(e.Detail)), &got); err != nil || got != superseded() {
+			t.Errorf("%s: detail %s (%v), want %+v", detailType, aws.ToString(e.Detail), err, superseded())
+		}
 	}
 }
 

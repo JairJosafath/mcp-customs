@@ -220,7 +220,15 @@ export class ApiStack extends Stack {
     // earlier verdict, writes a verdict and a package's approval, updates
     // the check's status, marks an approved check a re-check superseded or
     // failed twice, and asks the poller for a re-check's retry.
-    table.grant(checker, 'dynamodb:PutItem', 'dynamodb:GetItem', 'dynamodb:UpdateItem');
+    // ConditionCheckItem: a superseded mark is written in a transaction
+    // with a check of the package's newest polled version.
+    table.grant(
+      checker,
+      'dynamodb:PutItem',
+      'dynamodb:GetItem',
+      'dynamodb:UpdateItem',
+      'dynamodb:ConditionCheckItem',
+    );
     this.grantReportWrites(checker, reports);
     this.grantRunTokenKey(checker, rules);
     this.grantDurableExecution(checker);

@@ -18,6 +18,7 @@ type DynamoAPI interface {
 	PutItem(ctx context.Context, in *dynamodb.PutItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
 	Query(ctx context.Context, in *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 	UpdateItem(ctx context.Context, in *dynamodb.UpdateItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+	TransactWriteItems(ctx context.Context, in *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
 }
 
 // The errors of a check's META that can't be written as asked.
@@ -38,9 +39,8 @@ type CheckUpdate struct {
 	Verdict    string
 	CallbackID string
 	SandboxID  string
-	// SupersededBy and RecheckFailed mark an approved check with the
-	// re-check that didn't pass, or the retry that failed again.
-	SupersededBy  string
+	// RecheckFailed marks an approved check with the retry of its re-check
+	// that failed again. Its supersededBy is MarkSuperseded's.
 	RecheckFailed string
 }
 
@@ -96,7 +96,6 @@ func (s *Store) UpdateCheck(ctx context.Context, id string, u CheckUpdate) error
 		{"verdict", u.Verdict},
 		{"callbackId", u.CallbackID},
 		{"sandboxId", u.SandboxID},
-		{"supersededBy", u.SupersededBy},
 		{"recheckFailed", u.RecheckFailed},
 	} {
 		if field.value == "" {
