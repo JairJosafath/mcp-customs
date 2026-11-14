@@ -417,3 +417,23 @@ func TestStoreReadsACheckMadeBeforeItsSandboxIDWasKept(t *testing.T) {
 		t.Errorf("after the update: %+v, want sandbox mvm-1 and still running", got)
 	}
 }
+
+func TestStoreRefusesAStepLargerThanDynamoDBKeeps(t *testing.T) {
+	fake := newFakeDynamo()
+	store := New(fake, "customs")
+	big := Step{Seq: 1, Name: "scan", Findings: []Finding{{Source: "code", Rule: "injection-instruction", Evidence: strings.Repeat("x", MaxItemSize)}}}
+	if err := store.AppendStep(t.Context(), "c1", big); !errors.Is(err, ErrItemTooLarge) {
+		t.Errorf("AppendStep of a %d KB step = %v, want ErrItemTooLarge", MaxItemSize>>10, err)
+	}
+	if len(fake.items) != 0 {
+		t.Errorf("wrote %d item(s), want none", len(fake.items))
+	}
+	small := Step{Seq: 2, Name: "scan", Summary: "Scanned.", Findings: []Finding{{Source: "code", Rule: "injection-instruction", Evidence: "ignore previous"}}}
+	size, err := StepSize("c1", small)
+	if err != nil || size <= len("Scanned.") || size > 1<<10 {
+		t.Errorf("StepSize = %d, %v; want the item's few hundred bytes", size, err)
+	}
+	if err := store.AppendStep(t.Context(), "c1", small); err != nil {
+		t.Errorf("AppendStep of a small step = %v", err)
+	}
+}

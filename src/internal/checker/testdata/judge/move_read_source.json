@@ -1,0 +1,5 @@
+{
+  "action": "read_source",
+  "arguments": { "path": "dist/index.js" },
+  "reason": "Read the handler of get_forecast."
+}

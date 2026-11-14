@@ -56,18 +56,29 @@ func scan(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 	return outcome{Summary: fmt.Sprintf("Scanned %d piece(s) of server text; code flags %d.", len(pieces), len(found)), Findings: found}, nil
 }
 
-// probed is one tool's probe: the call's result or error, scanned.
+// probed is one tool's probe: the arguments sent, an excerpt of the
+// call's result or error for the judge, and its code findings.
 type probed struct {
 	Tool      string             `json:"tool"`
+	Arguments map[string]any     `json:"arguments"`
+	Excerpt   string             `json:"excerpt"`
 	Failed    string             `json:"failed,omitempty"`
 	Findings  []findings.Finding `json:"findings"`
 	Oversized int                `json:"oversized,omitempty"`
 }
 
-// probe calls every tool once with stub arguments, a Map over the tools,
-// each call one step, and scans each result: a result is server text too.
+// listedTool is a tool to probe and its index in the listing, which
+// findings name it by, as scan's do.
+type listedTool struct {
+	Tool  tool
+	Index int
+}
+
+// probe calls every tool once with the judge's arguments, or stub ones
+// where it wrote none, a Map over the tools, each call one step, and scans
+// each result: a result is server text too.
 func probe(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
-	tools := make([]tool, 0, len(r.listing.Tools))
+	tools := make([]listedTool, 0, len(r.listing.Tools))
 	var skipped []findings.Finding
 	for i, raw := range r.listing.Tools {
 		var t tool
@@ -78,23 +89,28 @@ func probe(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 			})
 			continue
 		}
-		tools = append(tools, t)
+		tools = append(tools, listedTool{Tool: t, Index: i})
 	}
-	res, err := durable.Map(ctx, string(ActProbe), tools, func(mc durable.Context, t tool, i int) (probed, error) {
+	res, err := durable.Map(ctx, string(ActProbe), tools, func(mc durable.Context, t listedTool, i int) (probed, error) {
+		args := stubArguments(t.Tool)
+		if written, ok := r.probeArgs[t.Index]; ok {
+			args = written
+		}
 		// Named by index: a tool's name is the server's to choose.
 		return durable.Step(mc, fmt.Sprintf("call-%d", i), func(sc durable.StepContext) (probed, error) {
 			var answer struct {
 				Result json.RawMessage `json:"result"`
 				Error  json.RawMessage `json:"error"`
 			}
-			body := map[string]any{"tool": t.Name, "arguments": stubArguments(t)}
+			body := map[string]any{"tool": t.Tool.Name, "arguments": args}
 			if _, err := callHarness(sc, r.deps.Sandbox, r.vm, http.MethodPost, "/call", body, &answer); err != nil {
 				return probed{}, err
 			}
-			p := probed{Tool: t.Name, Findings: scanJSON(fmt.Sprintf("the result of tool %d", i), answer.Result)}
+			p := probed{Tool: t.Tool.Name, Arguments: args, Excerpt: excerpt(jsonStrings(answer.Result)+jsonStrings(answer.Error), maxExcerpt)}
+			p.Findings = scanJSON(fmt.Sprintf("the result of tool %d", t.Index), answer.Result)
 			if len(answer.Error) > 0 {
 				p.Failed = string(answer.Error)
-				p.Findings = append(p.Findings, scanJSON(fmt.Sprintf("the error of tool %d", i), answer.Error)...)
+				p.Findings = append(p.Findings, scanJSON(fmt.Sprintf("the error of tool %d", t.Index), answer.Error)...)
 			}
 			if n := sizeOf(p); n > maxStepResult {
 				return probed{Oversized: n}, r.keepOversized(sc, fmt.Sprintf("call-%d", i), answer)
@@ -114,7 +130,7 @@ func probe(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 	}
 	r.probes = res.Results()
 	return outcome{
-		Summary:  fmt.Sprintf("Probed %d tool(s) with stub arguments, %d could not be; code flags %d.", len(tools), len(skipped), len(found)),
+		Summary:  fmt.Sprintf("Probed %d tool(s), %d with the judge's arguments, %d could not be; code flags %d.", len(tools), len(r.probeArgs), len(skipped), len(found)),
 		Findings: found,
 	}, nil
 }

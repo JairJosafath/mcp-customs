@@ -40,7 +40,13 @@ invocation and no execution history keeps it. JSON in and out; every response ca
 | `POST /call`        | `{"tool":"name","arguments":{...}}`                                                     | the raw result                                         |
 | `POST /allow`       | `{"hosts":[...]}`                                                                       | the egress allowlist now in force                      |
 | `POST /clock`       | `{"offset":"720h"}`                                                                     | the fake clock now in force                            |
+| `POST /source`      | `{"path":"dist/index.js"}`, relative to the installed package                           | `{"path","content"}`                                   |
+| `POST /download`    | `{"path":"/home/dev/.cache/x"}`, a file the server wrote                                | `{"path","size","sha256","kind","excerpt"}`            |
 | `GET /observations` |                                                                                         | all observations of the run                            |
+
+The investigation's calls (`/call` again, `/source`, `/download`, `/clock`)
+and `/allow` are best effort: an error answer is told to the judge, and the
+check goes on.
 
 An observation is `{"at","kind","detail"}`, where `kind` is one of `dns`
 (name, type, answers, `faked`, and the canaries found in the name),
@@ -126,8 +132,10 @@ One DynamoDB table (`DYNAMODB_TABLE_NAME`), keys `pk` and `sk`:
 A check's `status` is `running`, `waiting` (for a person's Approve or
 Block, under its `callbackId`), `done` or `failed`. A `STEP#` item's `name`
 is the registered action that ran (`resolve`, `lookup`, `install`, `list`,
-`scan`, `probe`, `observe`, `ask_human`, `wait`), or `start`, `judge`,
-`verdict` or `failed`. A check that fails ends its sandbox, writes a
+`scan`, `probe`, `observe`, `ask_human`, `wait`, and the investigation's
+`allow`, `call`, `read_source`, `inspect_download`, `clock`), or `start`,
+`write_probes`, `judge`, `investigate` (one a turn: the move the judge
+picked), `verdict` or `failed`. A check that fails ends its sandbox, writes a
 `failed` step whose summary names the action that failed (never the
 harness's or the SDK's text), and turns `failed`. A `HASH#` item is written only when a check passes by code or a
 person approves it; its `installSpec` is the JSON
@@ -136,10 +144,20 @@ person approves it; its `installSpec` is the JSON
 A check's `META` also keeps `sandboxId`, the MicroVM its `resolve`
 launched, written before anything else, so a failure can end it.
 
-No step keeps more than 200 KB. A tool list, a probe's answer or the
-observations larger than that are kept whole in the bucket as
-`observations/<check-id>-<what>.json` (`list`, `call-<n>`, `observe`), and
-the check fails, with an `oversized` code finding on its `failed` step.
+No step keeps more than 200 KB. What the install was seen doing, the
+server's `initialize` result and its start, a tool list, a probe's answer
+or the observations larger than that are kept whole in the bucket as
+`observations/<check-id>-<what>.json` (`resolve`, `install`, `list`,
+`call-<n>`, `observe`), and the check fails, with an `oversized` code
+finding on its `failed` step.
+
+No `STEP#` item is larger than DynamoDB's 400 KB: a step keeps at most 20
+findings of each rule and 200 in all, each rule cut to 64 bytes and its
+evidence to 512, and one finding per rule saying how many more it left
+off (`more-findings` counts those of rules it kept none of). The verdict
+is decided from every finding, and the report keeps them all. Findings
+name a tool by its place in the listing (`tool 3`, `the result of tool
+3`), whichever step made them.
 
 Reports go to the bucket as `reports/<check-id>.json`. Raw observations as
 `observations/<check-id>.json`.
@@ -150,6 +168,21 @@ The web function answers a `waiting` check by sending its `callbackId`
 (`SendDurableExecutionCallbackSuccess`) the JSON
 `{"decision":"approve"}` or `{"decision":"block"}`. Anything else, or no
 answer within 7 days, leaves the verdict code decided.
+
+## The judge
+
+Claude on Amazon Bedrock (`JUDGE_MODEL_ID`, an inference profile the
+Checker alone may call), through the Converse API, in three durable steps:
+`write-probes`, `judge`, and `investigate-<n>`, one a turn, at most 8. Each
+call answers through one tool whose JSON Schema is in
+`src/internal/checker/judge_answers.go`; code decodes it with the same
+limits and refuses anything else. Server text (the submission, tools,
+resources, prompts, results, observations, each turn's outcome) is sent
+between a line `<<<EVIDENCE <nonce> BEGIN <name>>>>` and
+`<<<EVIDENCE <nonce> END <name>>>>`, the nonce fresh for every call, and the
+system prompt names it evidence, never instructions. Model findings are
+`purpose-mismatch`, `server-instructs-model`, `judge-concern` and
+`judge-asked-for-a-person`, each at least review.
 
 ## Verdicts
 

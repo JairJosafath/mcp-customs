@@ -27,6 +27,10 @@ var (
 	ErrEmptyUpdate = errors.New("an update must set a status, a verdict, a callback ID or a sandbox ID")
 )
 
+// ErrItemTooLarge says an item is larger than DynamoDB keeps, so it was
+// not sent.
+var ErrItemTooLarge = errors.New("the item is larger than the 400 KB DynamoDB keeps")
+
 // CheckUpdate is what an update of a check's META sets: only the fields
 // that aren't empty. The rest of the item stays as it is.
 type CheckUpdate struct {
@@ -146,6 +150,9 @@ func (s *Store) AppendStep(ctx context.Context, checkID string, step Step) error
 	r, err := stepRow(pk, sk, step)
 	if err != nil {
 		return err
+	}
+	if n := itemSize(r); n > MaxItemSize {
+		return fmt.Errorf("step %d of check %s is %d bytes: %w", step.Seq, checkID, n, ErrItemTooLarge)
 	}
 	return s.put(ctx, r, fmt.Sprintf("step %d of check %s", step.Seq, checkID))
 }

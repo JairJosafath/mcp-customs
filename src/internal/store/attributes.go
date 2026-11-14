@@ -96,6 +96,43 @@ func stepRow(pk, sk string, s Step) (row, error) {
 	}, nil
 }
 
+// MaxItemSize is the most DynamoDB keeps in one item.
+const MaxItemSize = 400 << 10
+
+// StepSize is the size of step as check checkID's STEP# item, as DynamoDB
+// counts it.
+func StepSize(checkID string, step Step) (int, error) {
+	pk, err := checkPK(checkID)
+	if err != nil {
+		return 0, err
+	}
+	sk, err := stepSK(step.Seq)
+	if err != nil {
+		return 0, err
+	}
+	r, err := stepRow(pk, sk, step)
+	if err != nil {
+		return 0, err
+	}
+	return itemSize(r), nil
+}
+
+// itemSize is r's size as DynamoDB counts it: each attribute's name and
+// value in bytes, a number at most its digits and one byte more.
+func itemSize(r row) int {
+	n := 0
+	for name, value := range r {
+		n += len(name)
+		switch v := value.(type) {
+		case *types.AttributeValueMemberS:
+			n += len(v.Value)
+		case *types.AttributeValueMemberN:
+			n += len(v.Value) + 1
+		}
+	}
+	return n
+}
+
 func stepFrom(r row) (Step, error) {
 	var s Step
 	var findings string

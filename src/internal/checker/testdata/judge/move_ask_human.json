@@ -1,0 +1,5 @@
+{
+  "action": "ask_human",
+  "arguments": {},
+  "reason": "The tool asks for a key a person should decide about."
+}

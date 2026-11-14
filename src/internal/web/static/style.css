@@ -1,0 +1,112 @@
+:root {
+  color-scheme: light dark;
+  --ink: #1d2433;
+  --paper: #fbfbfa;
+  --muted: #5b6474;
+  --line: #d9dce2;
+  --pass: #1f7a44;
+  --review: #9a6200;
+  --block: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e7e9ee;
+    --paper: #15181e;
+    --muted: #a3aab8;
+    --line: #333a46;
+    --pass: #5cc98a;
+    --review: #e6b04a;
+    --block: #f08077;
+  }
+}
+
+body {
+  margin: 0 auto;
+  max-width: 52rem;
+  padding: 1.5rem 1rem 4rem;
+  background: var(--paper);
+  color: var(--ink);
+  font:
+    16px/1.5 system-ui,
+    sans-serif;
+}
+
+a {
+  color: inherit;
+}
+
+code,
+pre {
+  font:
+    0.9em ui-monospace,
+    monospace;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+pre {
+  border: 1px solid var(--line);
+  padding: 0.75rem;
+}
+
+label {
+  display: block;
+  margin: 0.75rem 0 0.25rem;
+}
+
+input,
+select,
+button {
+  font: inherit;
+  padding: 0.4rem 0.6rem;
+}
+
+input[type='text'],
+input[type='password'] {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+button {
+  margin-top: 0.75rem;
+  cursor: pointer;
+}
+
+.message {
+  border-left: 4px solid var(--block);
+  padding-left: 0.75rem;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.steps li {
+  margin-bottom: 0.5rem;
+}
+
+.verdict-pass {
+  color: var(--pass);
+}
+
+.verdict-review {
+  color: var(--review);
+}
+
+.verdict-block {
+  color: var(--block);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--line);
+  padding: 0.4rem;
+  text-align: left;
+  vertical-align: top;
+}

@@ -5,6 +5,7 @@ package checker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -63,7 +64,10 @@ type Output struct {
 }
 
 // The kinds of server a check takes, as docs/contracts.md's harness API names them.
-var kinds = []string{"go", "npm", "pypi", "remote"}
+var kinds = []string{"go", "npm", kindPyPI, "remote"}
+
+// kindPyPI is a PyPI submission's kind.
+const kindPyPI = "pypi"
 
 // maxRefLength bounds a submission's reference.
 const maxRefLength = 512
@@ -91,6 +95,17 @@ type run struct {
 	probes   []probed
 	code     []findings.Finding
 	human    string
+	// seen are the hosts and files observe found.
+	seen seen
+	// probeArgs are the judge's arguments for each tool, by its index.
+	probeArgs map[int]map[string]any
+	// judgeErrs are the judge's failures; any gives review.
+	judgeErrs []error
+	// turn is the investigation's turn, turns those finished, and outcome
+	// the server text the turn's action brought back.
+	turn    int
+	turns   []Turn
+	outcome string
 	// current is the action or phase running, for a failure's summary.
 	current string
 	// oversized is the finding of an answer too large to keep, if any.
@@ -132,15 +147,17 @@ func Handler(deps Deps) durable.Handler[Input, Output] {
 
 // check runs the fixed checks and answers the verdict. A dependency set
 // and tool list an earlier check approved pass after resolve, lookup and
-// list; anything else is installed, listed, scanned, probed, observed and
-// judged, and a verdict short of pass waits for a person.
+// list, except a PyPI one, whose reported set the package can still shape
+// (#23); anything else is installed, listed, scanned, probed with the
+// judge's arguments, observed, judged and investigated, and a verdict
+// short of pass waits for a person.
 func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
 	for _, a := range []Action{ActResolve, ActLookup} {
 		if err := r.do(ctx, a, nil); err != nil {
 			return "", err
 		}
 	}
-	if r.approved != nil {
+	if r.approved != nil && r.in.Submission.Kind != kindPyPI {
 		if err := r.do(ctx, ActList, nil); err != nil {
 			return "", err
 		}
@@ -148,11 +165,19 @@ func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
 			return r.finish(ctx, verdict.Result{Verdict: verdict.Pass, Findings: []findings.Finding{}}, "seen before")
 		}
 	}
-	steps := []Action{ActInstall, ActList, ActScan, ActProbe, ActObserve}
+	steps := []Action{ActInstall, ActList, ActScan}
 	if r.listed {
 		steps = slices.DeleteFunc(steps, func(a Action) bool { return a == ActList })
 	}
 	for _, a := range steps {
+		if err := r.do(ctx, a, nil); err != nil {
+			return "", err
+		}
+	}
+	if err := r.writeProbes(ctx); err != nil {
+		return "", err
+	}
+	for _, a := range []Action{ActProbe, ActObserve} {
 		if err := r.do(ctx, a, nil); err != nil {
 			return "", err
 		}
@@ -180,30 +205,53 @@ func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
 	return r.finish(ctx, verdict.Decide(in), by)
 }
 
-// judge asks the judge, in a step, and answers what the verdict is decided
-// from: the code findings and its judgement. A judge that fails gives
-// review.
+// judge asks the judge, in a step, sets the sandbox's egress allowlist to
+// the hosts it expects for the server's purpose, and lets it investigate.
+// It answers what the verdict is decided from: the code findings, and the
+// judge's findings and verdict, which only verdict.Decide weighs. A judge
+// that fails, or runs out of turns, gives review.
 func (r *run) judge(ctx durable.Context) (verdict.Input, error) {
 	r.current = "judge"
-	evidence := Evidence{
-		Submission: r.in.Submission,
-		Tools:      r.listing.Tools,
-		Resources:  r.listing.Resources,
-		Prompts:    r.listing.Prompts,
-		Code:       unique(r.code),
-	}
+	evidence := r.evidence()
 	j, err := durable.Step(ctx, "judge", func(sc durable.StepContext) (Judgement, error) {
-		return r.deps.Judge.Judge(sc, evidence)
-	})
+		got, err := r.deps.Judge.Judge(sc, evidence)
+		got.ExpectedHosts = slices.DeleteFunc(got.ExpectedHosts, func(h string) bool { return !allowedHost(h) })
+		if len(got.ExpectedHosts) > maxHosts {
+			got.ExpectedHosts = got.ExpectedHosts[:maxHosts]
+		}
+		if err == nil && sizeOf(got) > maxStepResult {
+			err = fmt.Errorf("%w: the judgement is over %d KB", ErrBadAnswer, maxStepResult>>10)
+		}
+		return got, err
+	}, noRetry)
 	var stepErr *durable.StepError
 	if err != nil && !errors.As(err, &stepErr) {
 		return verdict.Input{}, err
 	}
-	in := verdict.Input{Code: evidence.Code, Model: j.Findings, ModelVerdict: j.Verdict, JudgeErr: err}
-	summary := fmt.Sprintf("The judge gave %d finding(s); code decides %s.", len(j.Findings), verdict.Decide(in).Verdict)
+	in := verdict.Input{Model: j.Findings, ModelVerdict: j.Verdict}
+	if err != nil {
+		r.judgeErrs = append(r.judgeErrs, err)
+	}
+	in.Code, in.JudgeErr = evidence.Code, errors.Join(r.judgeErrs...)
+	summary := fmt.Sprintf("The judge gave %d finding(s) and expects %d host(s); code decides %s so far.", len(j.Findings), len(j.ExpectedHosts), verdict.Decide(in).Verdict)
 	if err := r.record(ctx, "judge", outcome{Summary: summary}); err != nil {
 		return verdict.Input{}, err
 	}
+	// A judge that failed has nothing to investigate with.
+	if len(r.judgeErrs) > 0 {
+		return in, nil
+	}
+	hosts, err := json.Marshal(allowArgs{Hosts: j.ExpectedHosts})
+	if err != nil {
+		return verdict.Input{}, fmt.Errorf("encode the allowlist: %w", err)
+	}
+	if err := r.do(ctx, ActAllow, hosts); err != nil {
+		return verdict.Input{}, err
+	}
+	if err := r.investigate(ctx, &in, evidence, j); err != nil {
+		return verdict.Input{}, err
+	}
+	in.Code, in.JudgeErr = unique(r.code), errors.Join(r.judgeErrs...)
 	return in, nil
 }
 
