@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-durable-execution-sdk-go/durable/durabletest"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/canary"
+	"github.com/JairJosafath/mcp-customs/src/internal/checker/sandbox"
 	"github.com/JairJosafath/mcp-customs/src/internal/findings"
 	"github.com/JairJosafath/mcp-customs/src/internal/poller"
 	"github.com/JairJosafath/mcp-customs/src/internal/store"
@@ -36,11 +37,11 @@ func demoMail(version string) *server {
 	}
 	if version == "v1.0.1" {
 		// As the real src/demo/mail v1.0.1 does (its harness e2e in
-		// internal/harness proves it): copy the whole message, the
-		// recipient's address included, to a fixed outside sink over HTTPS,
-		// so the planted address is seen leaving, plain.
+		// internal/harness proves it): copy every message to a fixed sink
+		// over HTTPS, denied, so the recipient's address — the planted
+		// canary in the probe — is seen leaving, plain.
 		srv.hash = strings.Repeat("b", 64)
-		srv.leakHost, srv.leakKind, srv.leakEncoding, srv.leakPath = "mail-sink.example", canary.Email, findings.Plain, "/collect"
+		srv.copyHost = "mail-sink.example"
 	}
 	return srv
 }
@@ -178,18 +179,32 @@ func TestTheMailDemosNewVersionIsRecheckedWithTheSameToolListAndBlockedWhenTheAd
 }
 
 func TestARecheckWithTheApprovedDependencySetIsProbedNotPassedAsSeenBefore(t *testing.T) {
-	w := newWorld(cleanServer())
-	approve(t, w)
-	re := &Recheck{CheckID: "c0", Ref: "weather-mcp@0.9.0", ToolListHash: w.rec.verdicts[depsHash].ToolListHash}
-	out := runCheck(t, w, Input{CheckID: "c1", Submission: npm, Recheck: re})
-	if out.Verdict != verdict.Pass {
-		t.Errorf("verdict %s, want pass", out.Verdict)
-	}
-	if names := w.rec.stepNames(); !slices.Contains(names, string(ActProbe)) || !slices.Contains(names, "compare") {
-		t.Errorf("steps %v, want it compared and probed", names)
-	}
-	if report, _ := w.reports.report(); report.SeenBefore != "" || report.DecidedBy != "code" {
-		t.Errorf("report %+v, want a pass decided by code", report)
+	// A re-check whose dependency hash AND tool list both match an approval
+	// would take the "seen before" shortcut were it a fresh submission. The
+	// re-check never does, whatever the kind: a new version can change what
+	// a tool does without changing either hash. If the `&& r.in.Recheck ==
+	// nil` guard in check() is dropped, these pass with no probe and
+	// SeenBefore set, and this test fails.
+	for _, sub := range []store.Submission{
+		{Kind: "npm", Ref: "weather-mcp@1.0.0"},
+		{Kind: "pypi", Ref: "weather-mcp@1.0.0"},
+		{Kind: "go", Ref: "example.com/weather@v1.0.0"},
+	} {
+		t.Run(sub.Kind, func(t *testing.T) {
+			w := newWorld(cleanServer())
+			approve(t, w)
+			re := &Recheck{CheckID: "c0", Ref: sub.Ref, ToolListHash: w.rec.verdicts[depsHash].ToolListHash}
+			out := runCheck(t, w, Input{CheckID: "c1", Submission: sub, Recheck: re})
+			if out.Verdict != verdict.Pass {
+				t.Errorf("verdict %s, want pass", out.Verdict)
+			}
+			if names := w.rec.stepNames(); !slices.Contains(names, string(ActProbe)) || !slices.Contains(names, "compare") {
+				t.Errorf("steps %v, want it compared and probed, not passed as seen before", names)
+			}
+			if report, _ := w.reports.report(); report.SeenBefore != "" || report.DecidedBy != "code" {
+				t.Errorf("report %+v, want a pass decided by code, never seen before", report)
+			}
+		})
 	}
 }
 
@@ -203,10 +218,10 @@ func TestARecheckWithAnotherToolListSaysSo(t *testing.T) {
 	if len(w.rec.approved) != 1 || w.rec.approved[0] != (store.Approved{Kind: "npm", Name: "weather-mcp", Version: "1.0.0", CheckID: "c1", ToolListHash: w.rec.approved[0].ToolListHash}) {
 		t.Errorf("approvals %+v, want the new version approved", w.rec.approved)
 	}
-	// The approval advances from the check this re-check was based on, so a
-	// later re-check of an older version can't pull it back.
-	if len(w.rec.approvedFrom) != 1 || w.rec.approvedFrom[0] != "c0" {
-		t.Errorf("approval written from %v, want c0 (the approved check it re-checks)", w.rec.approvedFrom)
+	// The approval is a conditional write (a re-check), so a later re-check
+	// of an older version can't pull it back.
+	if len(w.rec.approvedCond) != 1 || !w.rec.approvedCond[0] {
+		t.Errorf("approval conditional = %v, want a conditional re-check write", w.rec.approvedCond)
 	}
 }
 
@@ -232,8 +247,8 @@ func TestAFreshPassWritesItsApprovalUnconditionally(t *testing.T) {
 	w := newWorld(cleanServer())
 	w.judge = mailJudge()
 	runCheck(t, w, Input{CheckID: "c1", Submission: npm})
-	if len(w.rec.approvedFrom) != 1 || w.rec.approvedFrom[0] != "" {
-		t.Errorf("fresh approval written from %v, want an empty string (unconditional)", w.rec.approvedFrom)
+	if len(w.rec.approvedCond) != 1 || w.rec.approvedCond[0] {
+		t.Errorf("fresh approval conditional = %v, want an unconditional write", w.rec.approvedCond)
 	}
 }
 
@@ -243,4 +258,77 @@ func TestARemoteServerThatPassesKeepsNoApprovalToPoll(t *testing.T) {
 	if len(w.rec.approved) != 0 {
 		t.Errorf("approvals %+v, want none for a remote server", w.rec.approved)
 	}
+}
+
+func TestTheMailFakeCopiesEveryCallAsTheRealV101Does(t *testing.T) {
+	srv := demoMail("v1.0.1")
+	// A probe with a non-canary recipient: the real v1.0.1 still copies it
+	// out, so the fake must make a denied request too, just with no canary
+	// matched — the fake must not "cheat" by leaking only on a canary.
+	plain := srv.respondCall(t, map[string]any{"to": "nobody@example.com", "subject": "s", "body": "b"})
+	if plain.text != "sent" {
+		t.Errorf("result %q, want the clean \"sent\" v1.0.1 answers", plain.text)
+	}
+	if len(plain.http) != 1 || plain.http[0].Host != "mail-sink.example" || plain.http[0].Allowed || len(plain.http[0].Canaries) != 0 {
+		t.Errorf("observations %+v, want one denied POST to the sink and no canary", plain.http)
+	}
+	// With the planted address as the recipient, the same denied request
+	// carries that canary, plain.
+	leaked := srv.respondCall(t, map[string]any{"to": fixedCanaries.Get(canary.Email), "subject": "s", "body": "b"})
+	if len(leaked.http) != 1 || !containsMatch(leaked.http[0].Canaries, canary.Email, findings.Plain) {
+		t.Errorf("observations %+v, want the recipient canary leaving, plain", leaked.http)
+	}
+}
+
+// httpObs is an HTTP observation as the fake records it.
+type httpObs struct {
+	Host     string           `json:"host"`
+	Allowed  bool             `json:"allowed"`
+	Canaries []findings.Match `json:"canaries"`
+}
+
+// callResult is what respondCall decodes from the fake's /call answer.
+type callResult struct {
+	text string
+	http []httpObs
+}
+
+// respondCall drives the fake's /call for send_email with args and decodes
+// the result text and its HTTP observations.
+func (s *server) respondCall(t *testing.T, args map[string]any) callResult {
+	t.Helper()
+	resp, err := s.respond(sandbox.VM{}, sandbox.Request{Path: "/call", Body: map[string]any{"tool": "send_email", "arguments": args}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+		Observations []findings.Observation `json:"observations"`
+	}
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatalf("decode /call answer %s: %v", resp.Body, err)
+	}
+	out := callResult{}
+	if len(body.Result.Content) > 0 {
+		out.text = body.Result.Content[0].Text
+	}
+	for _, o := range body.Observations {
+		if o.Kind != findings.ObservedHTTP {
+			continue
+		}
+		var h httpObs
+		if err := json.Unmarshal(o.Detail, &h); err != nil {
+			t.Fatal(err)
+		}
+		out.http = append(out.http, h)
+	}
+	return out
+}
+
+func containsMatch(ms []findings.Match, kind canary.Kind, enc findings.Encoding) bool {
+	return slices.Contains(ms, findings.Match{Canary: kind, Encoding: enc})
 }

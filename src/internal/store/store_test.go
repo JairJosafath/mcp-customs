@@ -94,10 +94,10 @@ func (f *fakeDynamo) holds(condition *string, key [2]string, values row) error {
 		ok = !exists
 	case "attribute_exists(pk)":
 		ok = exists
-	case "attribute_not_exists(pk) OR checkId = :from":
-		from, _ := readStr(values, ":from")
-		existing, _ := readStr(item, "checkId")
-		ok = !exists || existing == from
+	case "attribute_not_exists(pk) OR polled = :version":
+		version, _ := readStr(values, ":version")
+		existing, _ := readStr(item, "polled")
+		ok = !exists || existing == version
 	default:
 		return errors.New("unexpected condition " + aws.ToString(condition))
 	}

@@ -14,7 +14,7 @@ func TestStoreKeepsOneApprovalAPackageAndListsThemAll(t *testing.T) {
 		{Kind: "npm", Name: "@acme/weather-mcp", Version: "1.0.0", CheckID: "c1", ToolListHash: "t1"},
 		{Kind: "go", Name: "example.com/mail", Version: "v1.0.1", CheckID: "c2", ToolListHash: "t0"},
 	} {
-		if err := store.PutApproved(t.Context(), a, ""); err != nil {
+		if err := store.PutApproved(t.Context(), a, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -43,7 +43,7 @@ func TestStoreMarksAPackagePolledOnlyWhenItWasApproved(t *testing.T) {
 	if len(fake.items) != 0 {
 		t.Errorf("made %v", fake.items)
 	}
-	if err := store.PutApproved(t.Context(), Approved{Kind: "go", Name: "example.com/mail", Version: "v1.0.0", CheckID: "c0"}, ""); err != nil {
+	if err := store.PutApproved(t.Context(), Approved{Kind: "go", Name: "example.com/mail", Version: "v1.0.0", CheckID: "c0"}, false); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
@@ -65,39 +65,58 @@ func TestStoreRefusesAPackageItCantKey(t *testing.T) {
 		"no version":   {Kind: "npm", Name: "mail"},
 		"a # the kind": {Kind: "npm#x", Name: "mail", Version: "1"},
 	} {
-		if err := store.PutApproved(t.Context(), a, ""); !errors.Is(err, ErrBadPackage) {
+		if err := store.PutApproved(t.Context(), a, false); !errors.Is(err, ErrBadPackage) {
 			t.Errorf("%s: PutApproved = %v, want %v", name, err, ErrBadPackage)
 		}
 	}
 }
 
-func TestARechecksApprovalDoesNotPullBackANewerOneAlreadyApproved(t *testing.T) {
-	fake := newFakeDynamo()
-	store := New(fake, "customs")
+func TestTheNewestPolledVersionWinsWhateverOrderTheRechecksFinishIn(t *testing.T) {
 	mail := func(version, checkID string) Approved {
 		return Approved{Kind: "go", Name: "example.com/mail", Version: version, CheckID: checkID, ToolListHash: "t"}
 	}
-	// v1.0.0 is approved (c0), then v1.0.2's re-check of c0 advances it.
-	if err := store.PutApproved(t.Context(), mail("v1.0.0", "c0"), ""); err != nil {
+	// Two re-checks race from one approval (v1.0.0), of v1.0.1 and v1.0.2.
+	// Whichever finishes first, the newer version — the one the poller
+	// polled last — must end up approved, and the older one must be a no-op.
+	for _, order := range [][]string{{"v1.0.1", "v1.0.2"}, {"v1.0.2", "v1.0.1"}} {
+		fake := newFakeDynamo()
+		store := New(fake, "customs")
+		if err := store.PutApproved(t.Context(), mail("v1.0.0", "c0"), false); err != nil {
+			t.Fatal(err)
+		}
+		// The poller starts the re-checks of v1.0.1 then v1.0.2; each start
+		// advances the newest polled version. v1.0.2 is newest.
+		for _, v := range []string{"v1.0.1", "v1.0.2"} {
+			if err := store.MarkPolled(t.Context(), "go", "example.com/mail", v); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// The re-checks finish in this round's order.
+		for _, v := range order {
+			if err := store.PutApproved(t.Context(), mail(v, "check-"+v), true); err != nil {
+				t.Errorf("order %v: PutApproved(%s) = %v, want a silent no-op at worst", order, v, err)
+			}
+		}
+		got, err := store.ListApproved(t.Context())
+		if err != nil || len(got) != 1 || got[0].Version != "v1.0.2" || got[0].CheckID != "check-v1.0.2" {
+			t.Errorf("order %v: ListApproved = %+v, %v; want v1.0.2 approved whatever the order", order, got, err)
+		}
+	}
+}
+
+func TestAFreshApprovalReplacesWhateverIsThere(t *testing.T) {
+	store := New(newFakeDynamo(), "customs")
+	mail := func(version, checkID string) Approved {
+		return Approved{Kind: "go", Name: "example.com/mail", Version: version, CheckID: checkID, ToolListHash: "t"}
+	}
+	if err := store.PutApproved(t.Context(), mail("v1.0.0", "c0"), false); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutApproved(t.Context(), mail("v1.0.2", "c2"), "c0"); err != nil {
+	// A fresh (unconditional) approval replaces it, polled and all.
+	if err := store.PutApproved(t.Context(), mail("v2.0.0", "c9"), false); err != nil {
 		t.Fatal(err)
 	}
-	// v1.0.1's re-check, also based on c0, finishes late: its approval is a
-	// no-op (no error), and the newer v1.0.2 stays approved.
-	if err := store.PutApproved(t.Context(), mail("v1.0.1", "c1"), "c0"); err != nil {
-		t.Errorf("a superseded re-check's approval = %v, want a silent no-op", err)
-	}
-	got, err := store.ListApproved(t.Context())
-	if err != nil || len(got) != 1 || got[0].Version != "v1.0.2" || got[0].CheckID != "c2" {
-		t.Errorf("ListApproved = %+v, %v; want v1.0.2 (c2) kept", got, err)
-	}
-	// A fresh approval (no fromCheckID) still replaces whatever is there.
-	if err := store.PutApproved(t.Context(), mail("v2.0.0", "c9"), ""); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := store.ListApproved(t.Context()); got[0].Version != "v2.0.0" {
+	if got, _ := store.ListApproved(t.Context()); len(got) != 1 || got[0].Version != "v2.0.0" || got[0].Polled != "v2.0.0" {
 		t.Errorf("a fresh approval did not replace: %+v", got)
 	}
 }
