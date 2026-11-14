@@ -165,6 +165,17 @@ seconds is recorded as read so far, `unscanned`), `file` (path written), `sampli
 caller, the status it got). Bodies are not returned, only what was found
 in them.
 
+What a run records is capped, so a server can't exhaust the harness:
+10,000 observations of a kind, 100 of `sampling` and of `elicitation`,
+and 32 MiB of a kind's details; 64 of the server's requests answered at
+once (more are dropped unanswered), and 200,000 files in a look of the
+file watch. Each is far above what a real server does. Reaching one
+stops recording that kind (`file` for the watch), with one `truncated`
+observation: `{"kind","why"}`, the kind no longer recorded and why. Each
+is an `observations-truncated` code finding, at least review. When the
+run ends, every process of the unprivileged account is killed, those
+that left the server's process group or session included.
+
 ## The MicroVM
 
 What Lambda MicroVMs (`sandbox/Dockerfile`, `infra/sandbox.ts`,

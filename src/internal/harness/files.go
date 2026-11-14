@@ -10,7 +10,10 @@ import (
 )
 
 // maxWatchedFiles bounds one snapshot, so a server that makes millions of
-// files can't stall the harness. Files past it go unseen.
+// files can't stall the harness. Files past it go unseen, which the watch
+// says. The planted home holds a few dozen files and the demo servers
+// write a handful outside their working directory, whose caches the watch
+// skips.
 const maxWatchedFiles = 200_000
 
 var errEnough = errors.New("enough files")
@@ -28,10 +31,14 @@ type watcher struct {
 	roots []string
 	skip  string
 	last  map[string]fileState
+	// max is the most files a snapshot holds: maxWatchedFiles.
+	max int
+	// truncated says a snapshot stopped at max.
+	truncated bool
 }
 
 func newWatcher(roots []string, skip string) *watcher {
-	w := &watcher{roots: roots, skip: filepath.Clean(skip)}
+	w := &watcher{roots: roots, skip: filepath.Clean(skip), max: maxWatchedFiles}
 	w.last = w.snapshot()
 	return w
 }
@@ -54,7 +61,8 @@ func (w *watcher) snapshot() map[string]fileState {
 				return nil //nolint:nilerr // the file went away during the walk
 			}
 			seen[path] = fileState{mod: info.ModTime(), size: info.Size(), mode: info.Mode()}
-			if len(seen) >= maxWatchedFiles {
+			if len(seen) >= w.max {
+				w.truncated = true
 				return errEnough
 			}
 			return nil
