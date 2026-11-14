@@ -11,7 +11,7 @@ func TestARetryIsAskedOnlyForTheNewestPolledVersionAndClearedOnce(t *testing.T) 
 	if marked, err := store.MarkRetry(t.Context(), "go", "example.com/mail", "v1.0.1"); err != nil || marked {
 		t.Errorf("a package never approved: MarkRetry = %v, %v; want false, nil", marked, err)
 	}
-	if err := store.PutApproved(t.Context(), Approved{Kind: "go", Name: "example.com/mail", Version: "v1.0.0", CheckID: "c0"}, false); err != nil {
+	if err := approve(t.Context(), store, Approved{Kind: "go", Name: "example.com/mail", Version: "v1.0.0", CheckID: "c0"}, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, v := range []string{"v1.0.1", "v1.0.2"} {

@@ -56,8 +56,15 @@ lockfile of `npm install --package-lock-only --ignore-scripts`, read before
 `npm ci` installs exactly it; for PyPI, pip's `--dry-run --report` in a clean
 venv, as a requirements file with every file's SHA-256, which
 `pip install --no-deps --require-hashes` then installs; for Go, the modules
-of `go version -m`. After every install step the harness kills every process
-of the unprivileged account.
+of `go version -m`. A PyPI set must be all wheels: a dependency only an
+sdist ships is built with build dependencies no hash pins, so the install
+fails. After every install step the harness kills every process of the
+unprivileged account, and a harness not switched to that account fails
+the step: it can't kill them. A failed install answers 422 with its log,
+whose last line names what failed; the Checker ends the sandbox and the
+check at review, decided by code, with an `install-failed` code finding
+holding the harness's message, and asks no person: nothing was installed
+to approve. Any other error answer to `/install` fails the check.
 
 The investigation's calls (`/call` again, `/source`, `/download`, `/clock`)
 and `/allow` are best effort: an error answer is told to the judge, and the
@@ -279,9 +286,10 @@ or the observations larger than that are kept whole in the bucket as
 finding on its `failed` step.
 
 No `STEP#` item is larger than DynamoDB's 400 KB, measured as the store
-encodes it (`store.StepSize`, after JSON writes a control character as six
-bytes): a step keeps at most 20 findings of each rule and 200 in all, each
-rule cut to 64 bytes and its evidence to 512, and fewer when those would
+encodes it (`store.StepSize`, after JSON writes each control character,
+`<`, `>`, `&`, U+2028, U+2029 and invalid byte as six bytes): a step keeps
+at most 20 findings of each rule and 200 in all, each rule cut to 64 bytes
+and its evidence to 512, and fewer when those would
 take the item past 400 KB. It adds one finding per rule saying how many
 more of that rule it left off past its 20, and one `more-findings` finding
 counting the findings of any rule, kept or not, it left off once it had

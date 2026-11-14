@@ -132,6 +132,9 @@ func (Toolchain) Install(ctx context.Context, p Package, sb Sandbox) (Installed,
 	default:
 		err = fmt.Errorf("unknown ecosystem %q", p.Ecosystem)
 	}
+	if err != nil {
+		fmt.Fprintf(&log, "the install failed: %v\n", err)
+	}
 	out.Log = log.String()
 	return out, err
 }

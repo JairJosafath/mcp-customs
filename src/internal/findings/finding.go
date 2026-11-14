@@ -28,10 +28,14 @@ const (
 	RuleZeroWidth         = "hidden-zero-width"
 	RuleBidiControl       = "hidden-bidi-control"
 	RuleVariationSelector = "hidden-variation-selector"
-	RuleInstruction       = "injection-instruction"
-	RuleSensitivePath     = "injection-sensitive-path"
-	RuleSecretResend      = "injection-secret-resend"
-	RuleCanaryLeft        = "canary-left"
+	// Control characters other than the ANSI escapes, \n, \t and the \r of
+	// a \r\n, such as a \r that moves back over the line, a backspace or
+	// NUL.
+	RuleControlCharacter = "hidden-control-character"
+	RuleInstruction      = "injection-instruction"
+	RuleSensitivePath    = "injection-sensitive-path"
+	RuleSecretResend     = "injection-secret-resend"
+	RuleCanaryLeft       = "canary-left"
 	// Traffic the egress proxy couldn't read: TLS a client wouldn't let it
 	// intercept, to a host not allowed, and a request or direct connection
 	// it couldn't search whole.
@@ -65,6 +69,9 @@ const (
 	// cap, or its file watch stopped at its limit. What the server did
 	// after may be unseen.
 	RuleTruncated = "observations-truncated"
+	// The harness could not install the server, so nothing else was
+	// checked: a dependency only an sdist ships, for one.
+	RuleInstallFailed = "install-failed"
 )
 
 // The rules of hidden characters Unicode's tables name, beyond those above.

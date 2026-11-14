@@ -45,6 +45,7 @@ var codeFloors = map[string]Verdict{
 	findings.RuleOwnAPIHost:        Review,
 	findings.RuleStepNotRecorded:   Review,
 	findings.RuleTruncated:         Review,
+	findings.RuleInstallFailed:     Review,
 }
 
 // Input is what a verdict is decided from.

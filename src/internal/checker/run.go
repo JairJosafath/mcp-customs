@@ -27,8 +27,8 @@ type Recorder interface {
 	UpdateCheck(ctx context.Context, id string, u store.CheckUpdate) error
 	AppendStep(ctx context.Context, checkID string, step store.Step) error
 	GetVerdict(ctx context.Context, hash string) (store.Verdict, bool, error)
-	PutVerdict(ctx context.Context, v store.Verdict) error
-	PutApproved(ctx context.Context, a store.Approved, conditional bool) error
+	PassCheck(ctx context.Context, p store.Pass) error
+	FailCheck(ctx context.Context, id string) error
 	MarkRetry(ctx context.Context, kind, name, version string) (bool, error)
 	MarkSuperseded(ctx context.Context, approvedID string, s store.Superseding) (bool, error)
 	LiftSuperseded(ctx context.Context, approvedID, recheckID string) (bool, error)
@@ -168,17 +168,23 @@ func Handler(deps Deps) durable.Handler[Input, Output] {
 	}
 }
 
-// check runs the fixed checks and answers the verdict. A dependency set
+// check runs the fixed checks and answers the verdict. A server the
+// sandbox can't install ends at review, decided by code. A dependency set
 // and tool list an earlier check approved pass after resolve, lookup and
 // list, except a re-check, which is probed whatever it lists; anything
 // else is installed, listed, scanned, probed with the
 // judge's arguments, observed, judged and investigated, and a verdict
 // short of pass waits for a person.
 func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
-	for _, a := range []Action{ActResolve, ActLookup} {
-		if err := r.do(ctx, a, nil); err != nil {
-			return "", err
-		}
+	if err := r.do(ctx, ActResolve, nil); err != nil {
+		return "", err
+	}
+	// Nothing was installed, so there is nothing for a person to approve.
+	if r.resolved.InstallFailed {
+		return r.finish(ctx, verdict.Decide(verdict.Input{Code: r.resolved.Findings}), "code")
+	}
+	if err := r.do(ctx, ActLookup, nil); err != nil {
+		return "", err
 	}
 	if r.approved != nil && r.in.Recheck == nil {
 		if err := r.do(ctx, ActList, nil); err != nil {
@@ -339,7 +345,8 @@ var terminal = []error{ErrUnknownAction, ErrBadArguments, ErrBadWait, ErrTooLarg
 
 // fail closes a check that failed, unless err is the SDK suspending the
 // invocation: it ends the sandbox, records a failed step saying which
-// action failed, and sets the check's status to failed, each in a step;
+// action failed, and sets the check's status to failed unless it is
+// already done, each in a step;
 // a re-check is then retried once, or its second failure recorded
 // (afterFailedRecheck). It answers err, with any failure of its own joined.
 func (r *run) fail(ctx durable.Context, err error) error {
@@ -359,7 +366,8 @@ func (r *run) fail(ctx durable.Context, err error) error {
 	}
 	errs = append(errs, r.record(ctx, "failed", failed))
 	if _, updateErr := durable.Step(ctx, "record-failure", func(sc durable.StepContext) (bool, error) {
-		return true, r.deps.Store.UpdateCheck(sc, r.in.CheckID, store.CheckUpdate{Status: store.StatusFailed})
+		// A check already done keeps its verdict and approval.
+		return true, ignore(r.deps.Store.FailCheck(sc, r.in.CheckID), store.ErrCheckDone)
 	}); updateErr != nil {
 		errs = append(errs, fmt.Errorf("record check %s as failed: %w", r.in.CheckID, updateErr))
 	}
