@@ -84,7 +84,7 @@ describe('Sandbox', () => {
           'Fn::GetAtt': [idOf(template, 'AWS::IAM::Role', 'SandboxBuildRole'), 'Arn'],
         },
         Resources: [{ MinimumMemoryInMiB: SANDBOX_MEMORY_MIB }],
-        AdditionalOsCapabilities: [],
+        AdditionalOsCapabilities: ['ALL'],
         EgressNetworkConnectors: [connectorArn('INTERNET_EGRESS')],
       },
     });
