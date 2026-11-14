@@ -63,9 +63,11 @@ func (r *recorded) observe(kind string, detail any) {
 }
 
 // observeWithin is how long a test waits for an observation that another
-// goroutine records, so one that never comes fails the test in seconds,
-// not at go test's deadline.
-const observeWithin = 10 * time.Second
+// goroutine records, so one that never comes fails the test well before
+// go test's deadline. It guards against a hang, not a slow machine: the
+// burst of 600 large packets takes over 6 seconds alone under -race, and
+// more while other packages' tests build Go code beside it.
+const observeWithin = 60 * time.Second
 
 // waitFor waits until cond holds of what was observed, up to observeWithin.
 func (r *recorded) waitFor(t *testing.T, cond func() bool) {
