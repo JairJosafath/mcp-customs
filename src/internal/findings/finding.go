@@ -72,6 +72,9 @@ const (
 	// The harness could not install the server, so nothing else was
 	// checked: a dependency only an sdist ships, for one.
 	RuleInstallFailed = "install-failed"
+	// The submission is a remote server, which the sandbox doesn't connect
+	// to yet: nothing was checked.
+	RuleRemoteUnsupported = "remote-unsupported"
 )
 
 // The rules of hidden characters Unicode's tables name, beyond those above.

@@ -46,6 +46,7 @@ var codeFloors = map[string]Verdict{
 	findings.RuleStepNotRecorded:   Review,
 	findings.RuleTruncated:         Review,
 	findings.RuleInstallFailed:     Review,
+	findings.RuleRemoteUnsupported: Review,
 }
 
 // Input is what a verdict is decided from.

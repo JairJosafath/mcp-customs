@@ -123,7 +123,8 @@ review"](plan.md#security-review)):
   Approve or Block.
 
 Left for later: remote servers (the form takes an `https://` URL, but
-the harness refuses to install one, so such a check fails), a runtime
+such a check launches no sandbox and ends at review, decided by code,
+with a `remote-unsupported` code finding), a runtime
 gateway pinning the approved tool list, multi-identity checks of remote
 servers, argument fuzzing. Moving the clock shows nothing of a Go or
 static server, the demo servers included: `/clock` says so, and the judge
