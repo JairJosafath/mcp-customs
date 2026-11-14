@@ -2,7 +2,9 @@ package checker
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -13,24 +15,54 @@ import (
 	"github.com/JairJosafath/mcp-customs/src/internal/store"
 )
 
-// memoryRecorder keeps every write the handler makes, in order.
+// memoryRecorder keeps every write the handler makes, in order, and
+// creates a check only once, as the store does. putErr and stepErr make
+// those writes fail, as an outage would; loseFirstReply makes the first
+// create succeed but answer an error, as a reply lost on the network does.
 type memoryRecorder struct {
-	mu      sync.Mutex
-	checks  []store.Check
-	steps   []store.Step
-	stepsOf []string
+	mu             sync.Mutex
+	checks         []store.Check
+	steps          []store.Step
+	stepsOf        []string
+	putErr         error
+	stepErr        error
+	loseFirstReply bool
+	puts           int
 }
 
 func (m *memoryRecorder) PutCheck(_ context.Context, c store.Check) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.puts++
+	if m.putErr != nil {
+		return m.putErr
+	}
+	if slices.ContainsFunc(m.checks, func(made store.Check) bool { return made.ID == c.ID }) {
+		return store.ErrCheckExists
+	}
 	m.checks = append(m.checks, c)
+	if m.loseFirstReply && m.puts == 1 {
+		return errors.New("connection reset")
+	}
 	return nil
+}
+
+func (m *memoryRecorder) GetCheck(_ context.Context, id string) (store.Check, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == id })
+	if i < 0 {
+		return store.Check{}, false, nil
+	}
+	return m.checks[i], true, nil
 }
 
 func (m *memoryRecorder) AppendStep(_ context.Context, checkID string, step store.Step) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.stepErr != nil {
+		return m.stepErr
+	}
 	m.steps = append(m.steps, step)
 	m.stepsOf = append(m.stepsOf, checkID)
 	return nil
@@ -93,6 +125,74 @@ func TestHandlerRefusesABadEventBeforeRecordingAnything(t *testing.T) {
 		if len(rec.checks)+len(rec.steps) != 0 {
 			t.Errorf("%s: recorded %+v and %+v", name, rec.checks, rec.steps)
 		}
+	}
+}
+
+func TestHandlerFailsWithTheErrorWhenTheStoreFails(t *testing.T) {
+	outage := errors.New("put check into table customs: service unavailable")
+	for name, tc := range map[string]struct {
+		rec    *memoryRecorder
+		want   []string
+		checks int
+	}{
+		"the check can't be recorded": {
+			&memoryRecorder{putErr: outage},
+			[]string{"record check c1 as running", outage.Error()},
+			0,
+		},
+		"the first step can't be recorded": {
+			&memoryRecorder{stepErr: outage},
+			[]string{"record the first step of check c1", outage.Error()},
+			1,
+		},
+	} {
+		result, err := durabletest.NewLocalRunner(Handler(tc.rec)).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if result.Status != durabletest.Failed || result.Error == nil {
+			t.Fatalf("%s: status %s, error %+v; want failed", name, result.Status, result.Error)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(result.Error.Message, want) {
+				t.Errorf("%s: error %q, want it to say %q", name, result.Error.Message, want)
+			}
+		}
+		if len(tc.rec.steps) != 0 {
+			t.Errorf("%s: wrote STEP# items %+v", name, tc.rec.steps)
+		}
+		if len(tc.rec.checks) != tc.checks {
+			t.Errorf("%s: recorded checks %+v, want %d", name, tc.rec.checks, tc.checks)
+		}
+	}
+}
+
+func TestHandlerFinishesWhenARetriedStepFindsTheCheckItCreated(t *testing.T) {
+	rec := &memoryRecorder{loseFirstReply: true}
+	result, err := durabletest.NewLocalRunner(Handler(rec)).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != durabletest.Succeeded {
+		t.Fatalf("status %s, error %+v; want succeeded", result.Status, result.Error)
+	}
+	if rec.puts != 2 || len(rec.checks) != 1 || len(rec.steps) != 1 {
+		t.Errorf("%d creates made %d checks and %d steps, want 2, 1 and 1", rec.puts, len(rec.checks), len(rec.steps))
+	}
+}
+
+func TestHandlerRefusesACheckAnotherExecutionCreated(t *testing.T) {
+	theirs := store.Check{ID: "c1", Submission: npm, Status: store.StatusDone, Verdict: "pass", ExecutionARN: "arn:another-execution"}
+	rec := &memoryRecorder{checks: []store.Check{theirs}}
+	result, err := durabletest.NewLocalRunner(Handler(rec)).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != durabletest.Failed || result.Error == nil || !strings.Contains(result.Error.Message, store.ErrCheckExists.Error()) {
+		t.Errorf("status %s, error %+v; want failed with %v", result.Status, result.Error, store.ErrCheckExists)
+	}
+	if !reflect.DeepEqual(rec.checks, []store.Check{theirs}) || len(rec.steps) != 0 {
+		t.Errorf("recorded %+v and steps %+v, want the other execution's check alone", rec.checks, rec.steps)
 	}
 }
 

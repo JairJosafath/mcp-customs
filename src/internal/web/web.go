@@ -53,10 +53,24 @@ func route(req *events.APIGatewayV2HTTPRequest) (Response, error) {
 			Status string `json:"status"`
 		}{"ok"})
 	case strings.HasPrefix(path, "/api/"):
-		return problem(http.StatusNotFound, "No API route "+method+" "+path+"."), nil
+		return problem(http.StatusNotFound, "No API route "+method+" "+quotable(path)+"."), nil
 	default:
-		return problem(http.StatusNotFound, "No page "+method+" "+path+"."), nil
+		return problem(http.StatusNotFound, "No page "+method+" "+quotable(path)+"."), nil
 	}
+}
+
+// maxQuotedPath bounds how much of a request's path a message repeats, in
+// characters.
+const maxQuotedPath = 100
+
+// quotable is path as a message repeats it: at most maxQuotedPath
+// characters, the last of them an ellipsis when it was cut.
+func quotable(path string) string {
+	runes := []rune(path)
+	if len(runes) <= maxQuotedPath {
+		return path
+	}
+	return string(runes[:maxQuotedPath-1]) + "…"
 }
 
 // page renders the template name with data as an HTML page.

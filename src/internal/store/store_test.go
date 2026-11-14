@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -10,10 +11,12 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 // fakeDynamo keeps one table's items in memory, keyed by pk and sk. A query
-// answers one item a page, so the store must follow LastEvaluatedKey; err
+// answers one item a page, so the store must follow LastEvaluatedKey; a
+// write holds to the conditions the store sends, as DynamoDB does; err
 // makes every call fail, as an outage would.
 type fakeDynamo struct {
 	items  map[[2]string]row
@@ -42,8 +45,61 @@ func (f *fakeDynamo) PutItem(_ context.Context, in *dynamodb.PutItemInput, _ ...
 		return nil, f.err
 	}
 	f.tables = append(f.tables, aws.ToString(in.TableName))
+	if err := f.holds(in.ConditionExpression, keyOf(in.Item)); err != nil {
+		return nil, err
+	}
 	f.items[keyOf(in.Item)] = in.Item
 	return &dynamodb.PutItemOutput{}, nil
+}
+
+// UpdateItem applies an update of the form "SET #a = :a, #b = :b".
+func (f *fakeDynamo) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.tables = append(f.tables, aws.ToString(in.TableName))
+	key := keyOf(in.Key)
+	if err := f.holds(in.ConditionExpression, key); err != nil {
+		return nil, err
+	}
+	sets, ok := strings.CutPrefix(aws.ToString(in.UpdateExpression), "SET ")
+	if !ok {
+		return nil, errors.New("unexpected update " + aws.ToString(in.UpdateExpression))
+	}
+	item := maps.Clone(f.items[key])
+	if item == nil {
+		item = maps.Clone(in.Key)
+	}
+	for set := range strings.SplitSeq(sets, ", ") {
+		name, value, ok := strings.Cut(set, " = ")
+		attribute, named := in.ExpressionAttributeNames[name]
+		v, valued := in.ExpressionAttributeValues[value]
+		if !ok || !named || !valued {
+			return nil, errors.New("unexpected update " + set)
+		}
+		item[attribute] = v
+	}
+	f.items[key] = item
+	return &dynamodb.UpdateItemOutput{}, nil
+}
+
+// holds checks a write's condition on the item at key, failing as DynamoDB
+// does when it doesn't hold.
+func (f *fakeDynamo) holds(condition *string, key [2]string) error {
+	_, exists := f.items[key]
+	switch aws.ToString(condition) {
+	case "":
+		return nil
+	case "attribute_not_exists(pk)":
+		exists = !exists
+	case "attribute_exists(pk)":
+	default:
+		return errors.New("unexpected condition " + aws.ToString(condition))
+	}
+	if !exists {
+		return &types.ConditionalCheckFailedException{Message: aws.String("The conditional request failed")}
+	}
+	return nil
 }
 
 func (f *fakeDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
@@ -101,6 +157,79 @@ func TestStorePutsAndGetsACheck(t *testing.T) {
 		if !slices.Equal(fake.tables, []string{"customs", "customs"}) {
 			t.Errorf("%s: called tables %v, want customs", name, fake.tables)
 		}
+	}
+}
+
+func TestStoreCreatesACheckOnlyOnce(t *testing.T) {
+	fake := newFakeDynamo()
+	store := New(fake, "customs")
+	first := Check{ID: "c1", Submission: Submission{Kind: "npm", Ref: "weather-mcp@1.0.0"}, Status: StatusDone, Verdict: "pass", ExecutionARN: "arn:first"}
+	if err := store.PutCheck(t.Context(), first); err != nil {
+		t.Fatal(err)
+	}
+	second := Check{ID: "c1", Submission: Submission{Kind: "go", Ref: "example.com/mcp@v1"}, Status: StatusRunning, ExecutionARN: "arn:second"}
+	if err := store.PutCheck(t.Context(), second); !errors.Is(err, ErrCheckExists) {
+		t.Errorf("a second create = %v, want %v", err, ErrCheckExists)
+	}
+	got, _, err := store.GetCheck(t.Context(), "c1")
+	if err != nil || got != first {
+		t.Errorf("after a refused create, GetCheck = %+v, %v; want the first, %+v", got, err, first)
+	}
+}
+
+func TestStoreUpdatesOnlyTheFieldsItIsGiven(t *testing.T) {
+	created := Check{
+		ID: "c1", Submission: Submission{Kind: "npm", Ref: "mail-mcp@1.0.0"}, Status: StatusRunning,
+		Verdict: "review", ExecutionARN: "arn:aws:lambda:us-east-1:111122223333:function:checker:1/durable-execution/c1/x", CallbackID: "cb-0",
+	}
+	for name, tc := range map[string]struct {
+		update CheckUpdate
+		want   func(Check) Check
+	}{
+		"the status":      {CheckUpdate{Status: StatusDone}, func(c Check) Check { c.Status = StatusDone; return c }},
+		"the verdict":     {CheckUpdate{Verdict: "block"}, func(c Check) Check { c.Verdict = "block"; return c }},
+		"the callback ID": {CheckUpdate{CallbackID: "cb-1"}, func(c Check) Check { c.CallbackID = "cb-1"; return c }},
+		"all three": {CheckUpdate{Status: StatusFailed, Verdict: "review", CallbackID: "cb-2"}, func(c Check) Check {
+			c.Status, c.Verdict, c.CallbackID = StatusFailed, "review", "cb-2"
+			return c
+		}},
+	} {
+		fake := newFakeDynamo()
+		store := New(fake, "customs")
+		if err := store.PutCheck(t.Context(), created); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if err := store.UpdateCheck(t.Context(), "c1", tc.update); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		got, _, err := store.GetCheck(t.Context(), "c1")
+		if want := tc.want(created); err != nil || got != want {
+			t.Errorf("%s: GetCheck = %+v, %v; want %+v", name, got, err, want)
+		}
+		if !slices.Equal(fake.tables, []string{"customs", "customs", "customs"}) {
+			t.Errorf("%s: called tables %v, want customs", name, fake.tables)
+		}
+	}
+}
+
+func TestStoreRefusesToUpdateACheckThatDoesNotExist(t *testing.T) {
+	fake := newFakeDynamo()
+	store := New(fake, "customs")
+	if err := store.UpdateCheck(t.Context(), "c1", CheckUpdate{Status: StatusDone}); !errors.Is(err, ErrNoCheck) {
+		t.Errorf("UpdateCheck of a missing check = %v, want %v", err, ErrNoCheck)
+	}
+	if len(fake.items) != 0 {
+		t.Errorf("the update created %v", fake.items)
+	}
+}
+
+func TestStoreRefusesAnEmptyUpdateWithoutCallingDynamoDB(t *testing.T) {
+	fake := newFakeDynamo()
+	if err := New(fake, "customs").UpdateCheck(t.Context(), "c1", CheckUpdate{}); !errors.Is(err, ErrEmptyUpdate) {
+		t.Errorf("an empty update = %v, want %v", err, ErrEmptyUpdate)
+	}
+	if len(fake.tables) != 0 {
+		t.Errorf("DynamoDB was called %d times", len(fake.tables))
 	}
 }
 
@@ -190,8 +319,11 @@ func TestStoreRefusesBadKeysWithoutCallingDynamoDB(t *testing.T) {
 		call func() error
 		want error
 	}{
-		"put a check":   {func() error { return store.PutCheck(t.Context(), Check{ID: "a b"}) }, ErrBadCheckID},
-		"get a check":   {func() error { _, _, err := store.GetCheck(t.Context(), ""); return err }, ErrBadCheckID},
+		"put a check": {func() error { return store.PutCheck(t.Context(), Check{ID: "a b"}) }, ErrBadCheckID},
+		"get a check": {func() error { _, _, err := store.GetCheck(t.Context(), ""); return err }, ErrBadCheckID},
+		"update a check": {func() error {
+			return store.UpdateCheck(t.Context(), "c 1", CheckUpdate{Status: StatusDone})
+		}, ErrBadCheckID},
 		"append a step": {func() error { return store.AppendStep(t.Context(), "c1", Step{Seq: 0}) }, ErrBadSeq},
 		"step of no id": {func() error { return store.AppendStep(t.Context(), "", Step{Seq: 1}) }, ErrBadCheckID},
 		"list steps":    {func() error { _, err := store.ListSteps(t.Context(), "#"); return err }, ErrBadCheckID},
@@ -214,8 +346,11 @@ func TestStoreWrapsDynamoDBFailures(t *testing.T) {
 	store := New(fake, "customs")
 	hash := strings.Repeat("0", 64)
 	for name, call := range map[string]func() error{
-		"put a check":   func() error { return store.PutCheck(t.Context(), Check{ID: "c1"}) },
-		"get a check":   func() error { _, _, err := store.GetCheck(t.Context(), "c1"); return err },
+		"put a check": func() error { return store.PutCheck(t.Context(), Check{ID: "c1"}) },
+		"get a check": func() error { _, _, err := store.GetCheck(t.Context(), "c1"); return err },
+		"update a check": func() error {
+			return store.UpdateCheck(t.Context(), "c1", CheckUpdate{Status: StatusDone})
+		},
 		"append a step": func() error { return store.AppendStep(t.Context(), "c1", Step{Seq: 1}) },
 		"list steps":    func() error { _, err := store.ListSteps(t.Context(), "c1"); return err },
 		"put a verdict": func() error { return store.PutVerdict(t.Context(), Verdict{Hash: hash}) },

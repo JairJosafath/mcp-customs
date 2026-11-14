@@ -1,6 +1,7 @@
 import {
   AssetHashType,
   CfnOutput,
+  CfnResource,
   DockerImage,
   Duration,
   RemovalPolicy,
@@ -28,7 +29,7 @@ import {
   Runtime,
   Tracing,
 } from 'aws-cdk-lib/aws-lambda';
-import type { DurableConfig } from 'aws-cdk-lib/aws-lambda';
+import type { DurableConfig, IFunction } from 'aws-cdk-lib/aws-lambda';
 import { LogGroup } from 'aws-cdk-lib/aws-logs';
 import { BlockPublicAccess, Bucket, BucketEncryption } from 'aws-cdk-lib/aws-s3';
 import type { Construct } from 'constructs';
@@ -190,6 +191,12 @@ export function noncurrentVersionDays(operations: Operations): number {
   return Math.max(35, operations.backups.retentionDays);
 }
 
+/** The construct id CDK gives, once per stack, the provider that empties buckets with `autoDeleteObjects`. */
+export const AUTO_DELETE_PROVIDER_ID = 'Custom::S3AutoDeleteObjectsCustomResourceProvider';
+
+/** The time limit CDK sets on that provider's function: CloudFormation's own wait for a custom resource. */
+export const AUTO_DELETE_TIMEOUT = Duration.minutes(15);
+
 /** What the stack is built for. */
 export interface ApiStackProps extends StackProps {
   /** Where it runs, which decides what it keeps, backs up and traces. */
@@ -229,7 +236,8 @@ export class ApiStack extends Stack {
     });
 
     // Reports and raw observations, `reports/<check-id>.json`: data, kept
-    // with its earlier versions where the tier keeps data.
+    // with its earlier versions where the tier keeps data, emptied and
+    // deleted with the stack where it doesn't.
     const reports = new Bucket(this, 'Reports', {
       encryption: BucketEncryption.S3_MANAGED,
       blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
@@ -239,12 +247,18 @@ export class ApiStack extends Stack {
         { noncurrentVersionExpiration: Duration.days(noncurrentVersionDays(props.operations)) },
       ],
       removalPolicy: rules.keepData ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      // Where the tier keeps no data, the stack empties the bucket, every
+      // version, before deleting it: CloudFormation can't delete a bucket
+      // that holds objects.
+      autoDeleteObjects: !rules.keepData,
     });
     Validations.of(reports).acknowledge({
       id: 'AwsSolutions-S1',
       reason:
         'Only the stack’s own functions read and write the reports bucket, and their logs name each check they work on; server access logs would need a second bucket, itself unlogged, for no reader.',
     });
+
+    const emptier = rules.keepData ? undefined : this.conformAutoDeleteProvider(rules);
 
     const checker = goFunction(this, 'Checker', {
       pkg: './cmd/checker',
@@ -254,8 +268,9 @@ export class ApiStack extends Stack {
       durableConfig: CHECKER_DURABLE_CONFIG,
     });
     checker.addEnvironment(DYNAMODB_TABLE_NAME, table.tableName);
-    // Only the calls the Checker makes: it records a check and its steps.
-    table.grant(checker, 'dynamodb:PutItem');
+    // Only the calls the Checker makes: it records a check and its steps,
+    // and reads a check it finds already made when a step is retried.
+    table.grant(checker, 'dynamodb:PutItem', 'dynamodb:GetItem');
     this.grantDurableExecution(checker);
     // Nothing invokes the Checker yet: the web function starts checks in a
     // later issue, and a durable execution keeps its own failures.
@@ -278,6 +293,9 @@ export class ApiStack extends Stack {
     this.addAlarms(alerts.email, api, [
       ['Checker', checker, CHECKER_TIMEOUT],
       ['Web', web, WEB_TIMEOUT],
+      ...(emptier === undefined
+        ? []
+        : [['ReportsAutoDelete', emptier, AUTO_DELETE_TIMEOUT] as const]),
     ]).monitorDynamoTable({
       table: Table.fromTableName(this, 'MonitoredTable', table.tableName),
       alarmFriendlyName: 'Table',
@@ -298,6 +316,50 @@ export class ApiStack extends Stack {
     new CfnOutput(this, 'EntryPoint', {
       value: this.url,
       description: 'The URL of the HTTP API.',
+    });
+  }
+
+  /**
+   * Holds the function CDK adds to empty the reports bucket on delete to
+   * what every function of the stack keeps: logs to its own log group, kept
+   * for the tier's time, and a role allowed only that log group and the
+   * bucket, without the AWS managed policy CDK gives it, which may write to
+   * every log group in the account. Answers the function, for its alarms.
+   */
+  private conformAutoDeleteProvider(rules: TierRules): IFunction {
+    const provider = this.node.findChild(AUTO_DELETE_PROVIDER_ID);
+    const handler = provider.node.findChild('Handler');
+    const role = provider.node.findChild('Role');
+    if (!(handler instanceof CfnResource) || !(role instanceof CfnResource)) {
+      throw new Error(`${provider.node.path} has no Handler and Role to hold to the Standard.`);
+    }
+    const logGroup = new LogGroup(this, 'ReportsAutoDeleteLogs', {
+      retention: rules.logRetention,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+    handler.addPropertyOverride('LoggingConfig', {
+      LogFormat: 'JSON',
+      LogGroup: logGroup.logGroupName,
+    });
+    role.addPropertyDeletionOverride('ManagedPolicyArns');
+    const logs = new Policy(this, 'ReportsAutoDeleteLogsPolicy', {
+      statements: [
+        new PolicyStatement({
+          actions: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+          resources: [logGroup.logGroupArn],
+        }),
+      ],
+    });
+    logs.attachToRole(Role.fromRoleName(this, 'ReportsAutoDeleteRole', role.ref));
+    // The function logs from its first call, when the stack is deleted.
+    const logsPolicy = logs.node.defaultChild;
+    if (!(logsPolicy instanceof CfnResource)) {
+      throw new Error(`${logs.node.path} has no CfnPolicy for the function to depend on.`);
+    }
+    handler.addResourceDependency(logsPolicy);
+    return LambdaFunction.fromFunctionAttributes(this, 'ReportsAutoDeleteFunction', {
+      functionArn: handler.getAtt('Arn').toString(),
+      sameEnvironment: true,
     });
   }
 
@@ -381,7 +443,7 @@ export class ApiStack extends Stack {
   private addAlarms(
     email: string,
     api: HttpApi,
-    functions: readonly (readonly [string, LambdaFunction, Duration])[],
+    functions: readonly (readonly [string, IFunction, Duration])[],
   ): Alarms['monitoring'] {
     const alarms = new Alarms(this, 'Alarms', email);
     alarms.monitoring.monitorApiGatewayV2HttpApi({
