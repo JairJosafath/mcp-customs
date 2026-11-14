@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/mod/module"
 
@@ -144,5 +146,43 @@ func TestAGoInstallOfADemoResolvesThroughTheDemoProxyAndBuildsThatVersion(t *tes
 				t.Errorf("the server reached %v, want the copy to mail-sink.example %v", outside.asked(), c.copied)
 			}
 		})
+	}
+}
+
+// envOf is the value of name in env, and false when it is not set.
+func envOf(env []string, name string) (string, bool) {
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, name+"="); ok {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+func TestTheHarnessGivesAGoInstallTheDemoProxyItWasConfiguredWith(t *testing.T) {
+	list := "https://demo.example/goproxy,https://proxy.golang.org"
+	for _, tc := range []struct {
+		goProxy   string
+		proxy     string
+		noSumDB   string
+		configure bool
+	}{
+		{list, list, demoproxy.ModulePrefix, true},
+		{"", "", "", false},
+	} {
+		h, err := New(Config{
+			Account: Account{Name: "dev", Home: t.TempDir()}, Workdir: t.TempDir(),
+			Installer: Toolchain{}, Now: time.Now, GoProxy: tc.goProxy,
+		}, slog.New(slog.DiscardHandler))
+		if err != nil {
+			t.Fatal(err)
+		}
+		env := h.sandbox().Env
+		proxy, setProxy := envOf(env, "GOPROXY")
+		noSumDB, setNoSumDB := envOf(env, "GONOSUMDB")
+		if setProxy != tc.configure || setNoSumDB != tc.configure || proxy != tc.proxy || noSumDB != tc.noSumDB {
+			t.Errorf("GoProxy %q: GOPROXY %q (%v), GONOSUMDB %q (%v); want %q and %q, set %v",
+				tc.goProxy, proxy, setProxy, noSumDB, setNoSumDB, tc.proxy, tc.noSumDB, tc.configure)
+		}
 	}
 }
