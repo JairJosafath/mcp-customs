@@ -1,6 +1,6 @@
 {
   "name": "mcp-customs",
-  "description": "The mcp-customs function of shop.",
+  "description": "MCP Customs checks an MCP server before an AI agent may use it.",
   "version": "0.0.1",
   "private": true,
   "license": "UNLICENSED",
