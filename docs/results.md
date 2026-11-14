@@ -130,14 +130,18 @@ and saw each fail with its fix removed
 [#37](https://github.com/JairJosafath/mcp-customs/pull/37#issuecomment-6878547918),
 [#44](https://github.com/JairJosafath/mcp-customs/pull/44#issuecomment-6880032402),
 [#45](https://github.com/JairJosafath/mcp-customs/pull/45#issuecomment-6879319000);
-#34's covers its re-check guard, not its approval-condition change). For
-the other three, the squash commit's message on main is the record:
-#49's (`f62d00d`) says the orchestrator verified round 3, with
+#34's covers its re-check guard, not its approval-condition change). For #49 and
+#41 the squash commit's message on main is the record: #49's (`f62d00d`)
+says the orchestrator verified round 3, with
 `TestARetryThatPassesLiftsTheMarkTheFailedRecheckLeft` failing when a
 retry may lift only its own ID; #41's (`7e26428`) says the orchestrator
-read the post-approval `docs/results.md` changes; #28's (`4ae4677`) names
-round 3's fixes, each with tests, and a green check on `7d11024`, but not
-who read them. #21, #22
+read the post-approval `docs/results.md` changes. For #28, the
+orchestrator's
+[record](https://github.com/JairJosafath/mcp-customs/pull/28#issuecomment-6881578992),
+posted after the merge, says it read the round-3 diff of `submission.go`
+and `view.go` and saw the new test rows, did not revert the fixes itself
+(the implementer reported that check), and saw the check green on
+`7d11024`. #21, #22
 and #24 merged on the round limit with the last review still asking for
 changes. The orchestrator's
 [note on #24](https://github.com/JairJosafath/mcp-customs/pull/24#issuecomment-6877384416)
