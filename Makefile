@@ -20,7 +20,7 @@ CDK := CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true $(BIN)/cdk 
 
 .DEFAULT_GOAL := help
 .PHONY: help check check-light deps fmt fmt-check lint typecheck test synth cfn-lint dist clean
-.PHONY: go-deps tidy-check go-fmt-check vet go-lint go-test
+.PHONY: go-deps tidy-check go-fmt-check vet go-lint go-test demo-build
 
 help: ## List the targets.
 	@awk 'BEGIN {FS = ":.*## "} /^[a-z-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -91,3 +91,10 @@ dist: deps synth ## Write both tiers' cloud assemblies, flat, into dist/ for a r
 
 clean: ## Remove what synth and dist wrote.
 	rm -rf cdk.out dist
+
+# The demo Go module proxy's files, to look at: what the next deploy
+# publishes, from infra/demo-versions.json (docs/runbook.md, "The demo
+# proxy"). Nothing here calls AWS. It runs the CDK app's demo-build
+# script, and does nothing in an app without one.
+demo-build: ## Write the demo Go module proxy's files the next deploy publishes into cdk.out/demo-proxy.
+	npm run --if-present demo-build

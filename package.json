@@ -13,7 +13,8 @@
     "test": "vitest run",
     "lint": "eslint --max-warnings 0 .",
     "format": "prettier --write .",
-    "synth": "cdk synth --quiet"
+    "synth": "cdk synth --quiet",
+    "demo-build": "rm -rf cdk.out/demo-proxy && cd src && go run ./cmd/demopublish -versions-file ../infra/demo-versions.json -out ../cdk.out/demo-proxy"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

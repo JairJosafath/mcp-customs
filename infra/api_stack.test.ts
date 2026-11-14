@@ -62,7 +62,8 @@ function actionsOf(template: Template, roleId: string): string[] {
     .filter((policy: unknown) => JSON.stringify(policy).includes(`{"Ref":"${roleId}"}`))
     .flatMap((policy: unknown) => {
       const document = JSON.stringify(policy).split('"Roles"')[0] ?? '';
-      return document.match(/"[a-z0-9]+:[A-Za-z]+"/g) ?? [];
+      // Not a condition key, such as "s3:prefix", which is a JSON object's key.
+      return document.match(/"[a-z0-9]+:[A-Za-z]+"(?!:)/g) ?? [];
     })
     .sort();
 }
@@ -145,7 +146,8 @@ describe('ApiStack', () => {
 
   it('empties and deletes the reports bucket with the stack in development, never in production', () => {
     production.resourceCountIs('Custom::S3AutoDeleteObjects', 0);
-    production.resourceCountIs('AWS::Lambda::Function', 3);
+    // The Checker, the web function, the poller and the demo proxy's copy.
+    production.resourceCountIs('AWS::Lambda::Function', 4);
     const bucket = idOf(development, 'AWS::S3::Bucket', 'Reports');
     development.resourceCountIs('Custom::S3AutoDeleteObjects', 1);
     development.hasResource('Custom::S3AutoDeleteObjects', {
@@ -238,16 +240,15 @@ describe('ApiStack', () => {
     expect(
       production.findResources('AWS::Lambda::Function')[web]?.['Properties'],
     ).not.toHaveProperty('DurableConfig');
-    production.resourceCountIs('AWS::Lambda::Function', 3);
+    production.resourceCountIs('AWS::Lambda::Function', 4);
   });
 
   it('builds each function from its own package into one bootstrap binary for arm64 Linux', () => {
-    const key = new Capture();
-    production.allResourcesProperties('AWS::Lambda::Function', { Code: { S3Key: key } });
-    const keys = [key.asString()];
-    while (key.next()) {
-      keys.push(key.asString());
-    }
+    // The Go functions: CDK's own copy of the demo proxy runs its Python.
+    const keys = Object.values(production.findResources('AWS::Lambda::Function'))
+      .map((fn: unknown) => JSON.stringify(fn))
+      .filter((fn) => fn.includes('"provided.al2023"'))
+      .map((fn) => /"S3Key":"([0-9a-f]{64}\.zip)"/.exec(fn)?.[1] ?? '');
     // Three programs, so three different binaries.
     expect(new Set(keys).size).toBe(3);
     for (const key of keys) {
@@ -343,11 +344,12 @@ describe('ApiStack', () => {
     });
   });
 
-  it('lets the web function only read checks, steps and reports, start the Checker, answer its callbacks, read the reviewer key and write its logs', () => {
+  it('lets the web function only read checks, steps, reports and the demo proxy, start the Checker, answer its callbacks, read the reviewer key and write its logs', () => {
     const webActions = [
       '"dynamodb:GetItem"',
       '"dynamodb:Query"',
       '"s3:GetObject"',
+      '"s3:ListBucket"',
       '"lambda:InvokeFunction"',
       `"${CALLBACK_ACTION}"`,
       '"secretsmanager:GetSecretValue"',
@@ -370,7 +372,16 @@ describe('ApiStack', () => {
           {
             Action: 's3:GetObject',
             Effect: 'Allow',
-            Resource: { 'Fn::Join': ['', [{ 'Fn::GetAtt': [bucket, 'Arn'] }, '/reports/*']] },
+            Resource: [
+              { 'Fn::Join': ['', [{ 'Fn::GetAtt': [bucket, 'Arn'] }, '/reports/*']] },
+              { 'Fn::Join': ['', [{ 'Fn::GetAtt': [bucket, 'Arn'] }, '/goproxy/*']] },
+            ],
+          },
+          {
+            Action: 's3:ListBucket',
+            Effect: 'Allow',
+            Resource: { 'Fn::GetAtt': [bucket, 'Arn'] },
+            Condition: { StringLike: { 's3:prefix': ['goproxy/*'] } },
           },
           {
             Action: 'lambda:InvokeFunction',
@@ -417,7 +428,7 @@ describe('ApiStack', () => {
     }
   });
 
-  it('routes the pages, the form, Approve and Block and the JSON API to the web function, open to the public', () => {
+  it('routes the pages, the form, Approve and Block, the JSON API and the demo proxy to the web function, open to the public', () => {
     const web = idOf(production, 'AWS::Lambda::Function', 'Web');
     const routeKeys = WEB_ROUTES.map(([method, routePath]) => `${method} ${routePath}`);
     expect(routeKeys).toEqual([
@@ -428,6 +439,7 @@ describe('ApiStack', () => {
       'GET /static/{file}',
       'GET /api/{proxy+}',
       'POST /api/checks',
+      'GET /goproxy/{proxy+}',
     ]);
     for (const routeKey of routeKeys) {
       production.hasResourceProperties('AWS::ApiGatewayV2::Route', {
@@ -465,12 +477,12 @@ describe('ApiStack', () => {
   });
 
   it('alarms on the API, every function and the table, in either tier', () => {
-    // 5xx; errors, throttles and duration of each function (development's
-    // fourth empties the bucket); the table's read and write throttles and
+    // 5xx; errors, throttles and duration of each function (the fourth
+    // copies the demo proxy's files, and development's fifth empties the bucket); the table's read and write throttles and
     // system errors; the re-check's dead letters, and its schedule group's
     // dropped and undelivered polls.
-    production.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 3 * 3 + 3 + 3);
-    development.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 4 * 3 + 3 + 3);
+    production.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 4 * 3 + 3 + 3);
+    development.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 5 * 3 + 3 + 3);
     for (const template of [production, development]) {
       template.resourceCountIs('AWS::CloudWatch::Dashboard', 1);
       // The p99 duration alarms fire at 8 of the web function's 10 seconds

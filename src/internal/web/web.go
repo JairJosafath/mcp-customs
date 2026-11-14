@@ -1,5 +1,5 @@
-// Package web answers the HTTP API: the pages, from html/template, and the
-// JSON API under /api/.
+// Package web answers the HTTP API: the pages, from html/template, the
+// JSON API under /api/, and the demo Go module proxy under /goproxy/.
 package web
 
 import (
@@ -67,6 +67,8 @@ type Deps struct {
 	Checks  Checks
 	Reports Reports
 	Checker Checker
+	// Proxy reads the demo Go module proxy's files, served under /goproxy/.
+	Proxy GoProxy
 	// ReviewerKey is the secret a person enters to Approve or Block. Empty,
 	// no one can.
 	ReviewerKey []byte
@@ -142,6 +144,8 @@ func (h *Handler) route(ctx context.Context, req *events.APIGatewayV2HTTPRequest
 		return h.submitJSON(ctx, req)
 	case get && len(parts) == 3 && parts[0] == "api" && parts[1] == "checks":
 		return h.checkJSON(ctx, parts[2])
+	case get && strings.HasPrefix(path, "/goproxy/"):
+		return h.goProxyFile(ctx, strings.TrimPrefix(path, "/goproxy/"))
 	case strings.HasPrefix(path, "/api/"):
 		return problem(http.StatusNotFound, "No API route "+method+" "+quotable(path)+"."), nil
 	default:

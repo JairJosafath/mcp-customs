@@ -31,14 +31,14 @@ restore fits the RTO only a drill shows: see [Drills](#drills).
 
 ## What the stack keeps
 
-| Resource                | Holds                                                           | When the stack is deleted         |
-| ----------------------- | --------------------------------------------------------------- | --------------------------------- |
-| `Table` table           | checks, their steps and verdicts (`pk`, `sk`)                   | kept; deletion protection is on   |
-| `Reports` bucket        | reports and observations, with their earlier versions           | kept, with every object in it     |
-| backup vault and key    | the daily backups of the table                                  | kept, with every backup in it     |
-| log groups              | the Checker's and web function's logs and the API's access logs | deleted; kept one year until then |
-| alarm topic and its key | nothing                                                         | deleted                           |
-| `RecheckDeadLetters`    | polls the re-check schedule could not deliver, 14 days at most  | deleted                           |
+| Resource                | Holds                                                                                                                         | When the stack is deleted         |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| `Table` table           | checks, their steps and verdicts (`pk`, `sk`)                                                                                 | kept; deletion protection is on   |
+| `Reports` bucket        | reports and observations, with their earlier versions; the demo Go module proxy under `goproxy/`, which a deploy writes again | kept, with every object in it     |
+| backup vault and key    | the daily backups of the table                                                                                                | kept, with every backup in it     |
+| log groups              | the Checker's and web function's logs and the API's access logs                                                               | deleted; kept one year until then |
+| alarm topic and its key | nothing                                                                                                                       | deleted                           |
+| `RecheckDeadLetters`    | polls the re-check schedule could not deliver, 14 days at most                                                                | deleted                           |
 
 The physical names are in the stack:
 `aws cloudformation describe-stack-resources --stack-name mcp-customs`.
@@ -159,6 +159,44 @@ one is good. An alarm's name is the stack's, `mcp-customs-`, then the name below
 When an alarm fires, note the time, what you saw and what you did; when it
 has fired before for the same cause, that cause needs a fix, not another
 note.
+
+## The demo proxy
+
+The stack serves the demo servers' versions itself, as a Go module proxy:
+the files under the `Reports` bucket's `goproxy/` prefix, read by the web
+function at `<EntryPoint>/goproxy/` and by nothing else. The poller and
+the sandbox's `go install` ask it first and the public proxy after it
+(`GO_PROXY_URL`); the sandbox skips the checksum database for the demo
+modules, `github.com/JairJosafath/mcp-customs/demo/...`, alone, and may
+only GET under `/goproxy/` of the stack's API while an install runs. Only
+the deploy writes the prefix: the `DemoProxy` deployment copies the files
+synth built, and prunes the ones it no longer publishes. A missing file
+answers 404, which sends the go command on to the public proxy.
+
+What a deploy publishes is what `infra/demo-versions.json`, a committed
+file, names for each demo, with every earlier version: `mail` v1.0.0 and
+v1.0.1, `weather` v1.0.0, each a module whose default build is that
+version. Synth reads the file; no context value or variable changes it.
+`make demo-build` writes the same files into `cdk.out/demo-proxy` to look
+at, without AWS.
+
+The live rug pull:
+
+1. Deploy as usual (`cdk deploy -c tier=<tier>`). The committed file names
+   `"mail": "v1.0.0"`, so the proxy serves v1.0.0.
+2. Check it is served:
+   `curl '<EntryPoint>/goproxy/github.com/!jair!josafath/mcp-customs/demo/mail/@v/list'`
+   answers `v1.0.0`.
+3. Submit `github.com/JairJosafath/mcp-customs/demo/mail@v1.0.0` as a Go
+   module, and let it pass (or Approve it).
+4. Publish the rug pull: a one-line commit to `infra/demo-versions.json`,
+   `"mail": "v1.0.1"`, merged and deployed. Within five minutes
+   (`RECHECK_INTERVAL`) the poller sees v1.0.1 and starts its re-check,
+   linked to the v1.0.0 check, which ends in block.
+
+Setting the file back to `v1.0.0` and deploying takes v1.0.1 off the
+proxy. A re-check of v1.0.1 starts once per stack, since its ID comes from
+the version, so to show the rug pull again, use a fresh development stack.
 
 ## What the account provides
 

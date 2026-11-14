@@ -7,8 +7,10 @@
 // run's token and canaries when a MicroVM resumes (docs/contracts.md, "The
 // MicroVM"). It reads HARNESS_USER (the unprivileged user, "dev" by
 // default), HARNESS_WORKDIR (the server's working directory,
-// ~/projects/server by default), PORT (the Harness API's, 8080 by default)
-// and HOOKS_PORT (9000 by default). It must run as root, and refuses to
+// ~/projects/server by default), PORT (the Harness API's, 8080 by default),
+// HOOKS_PORT (9000 by default), and GO_PROXY_URL, the GOPROXY-style list
+// Go installs resolve through, whose hosts an install may reach (Go's own
+// default when unset). It must run as root, and refuses to
 // start otherwise: it runs the server as the unprivileged user, never as
 // itself.
 //
@@ -25,15 +27,18 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/JairJosafath/mcp-customs/src/internal/demoproxy"
 	"github.com/JairJosafath/mcp-customs/src/internal/egress"
 	"github.com/JairJosafath/mcp-customs/src/internal/harness"
 )
@@ -55,12 +60,18 @@ func serve(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	eg, stopEgress, err := startEgress(context.Background(), account, log)
+	goProxy := os.Getenv("GO_PROXY_URL")
+	allow, err := installAllowFor(goProxy)
+	if err != nil {
+		return err
+	}
+	eg, stopEgress, err := startEgress(context.Background(), account, log, allow)
 	if err != nil {
 		return err
 	}
 	defer stopEgress()
 	cfg := configFor(account)
+	cfg.GoProxy = goProxy
 	cfg.Egress = eg
 	h, err := harness.New(cfg, log)
 	if err != nil {
@@ -174,10 +185,44 @@ const firewallChain = "MCP_CUSTOMS"
 // nflogGroup is the NFLOG group the firewall logs refused packets to.
 const nflogGroup = 47
 
-// startEgress starts the egress proxy and puts up the firewall for uid. The
-// stop function takes both down. If the reader of refused packets stops
-// early, the run's observations say so, and so does log.
-func startEgress(ctx context.Context, account harness.Account, log *slog.Logger) (*egress.Egress, func(), error) {
+// installAllow is what an install may reach besides the run's allowlist:
+// whole hosts, and URL prefixes it may only GET.
+type installAllow struct {
+	hosts []string
+	gets  []string
+}
+
+// installAllowFor is what an install may reach with GO_PROXY_URL set to
+// list, the stack's demo proxy then the public one: the package
+// registries, whole, and each other proxy of the list for GET under its
+// own path alone, so an install can't call the rest of the stack's API.
+func installAllowFor(list string) (installAllow, error) {
+	allow := installAllow{hosts: slices.Clone(egress.RegistryHosts)}
+	if list == "" {
+		return allow, nil
+	}
+	urls, err := demoproxy.SplitProxyList(list)
+	if err != nil {
+		return installAllow{}, fmt.Errorf("GO_PROXY_URL: %w", err)
+	}
+	for _, u := range urls {
+		parsed, err := url.Parse(u)
+		if err != nil {
+			return installAllow{}, fmt.Errorf("GO_PROXY_URL: %w", err)
+		}
+		if slices.Contains(egress.RegistryHosts, parsed.Hostname()) {
+			continue
+		}
+		allow.gets = append(allow.gets, strings.TrimSuffix(u, "/")+"/")
+	}
+	return allow, nil
+}
+
+// startEgress starts the egress proxy and puts up the firewall for uid,
+// allowing allow while an install runs. The stop function takes both
+// down. If the reader of refused packets stops early, the run's
+// observations say so, and so does log.
+func startEgress(ctx context.Context, account harness.Account, log *slog.Logger, allow installAllow) (*egress.Egress, func(), error) {
 	if err := trustOutside(trustDir, account.Home); err != nil {
 		return nil, nil, err
 	}
@@ -204,7 +249,8 @@ func startEgress(ctx context.Context, account harness.Account, log *slog.Logger)
 		CA:           ca,
 		Upstream:     &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second},
 		Resolver:     net.DefaultResolver,
-		InstallAllow: egress.RegistryHosts,
+		InstallAllow: allow.hosts,
+		InstallGet:   allow.gets,
 		ServerEnv:    egress.Env(l.Proxy.Addr().String(), trust),
 	})
 	nflog, err := egress.OpenNFLog(nflogGroup)

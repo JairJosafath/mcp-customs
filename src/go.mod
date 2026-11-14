@@ -14,6 +14,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.10
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.51.0
 	github.com/aws/smithy-go v1.28.9
+	golang.org/x/mod v0.43.0
 	golang.org/x/net v0.62.0
 )
 

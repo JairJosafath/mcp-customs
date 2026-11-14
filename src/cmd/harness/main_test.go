@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/JairJosafath/mcp-customs/src/internal/egress"
 	"github.com/JairJosafath/mcp-customs/src/internal/harness"
 )
 
@@ -71,5 +72,33 @@ func TestTheProxysTrustDirectoryIsOutsideTheServersHome(t *testing.T) {
 	}
 	if err := trustOutside("/home/developer/trust", "/home/dev"); err != nil {
 		t.Errorf("a sibling of the home was refused: %v", err)
+	}
+}
+
+func TestAnInstallMayGetOnlyTheDemoProxyOfTheStacksAPI(t *testing.T) {
+	cases := []struct {
+		list string
+		gets []string
+		err  bool
+	}{
+		{"", nil, false},
+		{
+			"https://abc.execute-api.us-east-1.amazonaws.com/goproxy,https://proxy.golang.org",
+			[]string{"https://abc.execute-api.us-east-1.amazonaws.com/goproxy/"},
+			false,
+		},
+		{"https://demo.example:8443/goproxy/", []string{"https://demo.example:8443/goproxy/"}, false},
+		{"https://demo.example,direct", nil, true},
+		{"http://demo.example", nil, true},
+	}
+	for _, c := range cases {
+		allow, err := installAllowFor(c.list)
+		if (err != nil) != c.err || !slices.Equal(allow.gets, c.gets) {
+			t.Errorf("%q: gets %v, %v; want %v, error %v", c.list, allow.gets, err, c.gets, c.err)
+		}
+		// The registries stay allowed whole; the stack's API host never is.
+		if err == nil && (!slices.Equal(allow.hosts, egress.RegistryHosts) || slices.Contains(allow.hosts, "abc.execute-api.us-east-1.amazonaws.com")) {
+			t.Errorf("%q: hosts %v, want the registries alone", c.list, allow.hosts)
+		}
 	}
 }

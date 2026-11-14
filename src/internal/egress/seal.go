@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"net/url"
 )
 
 // Seal ends the run's egress for good: the allowlist is emptied, the
@@ -17,6 +18,7 @@ func (e *Egress) Seal() {
 	e.mu.Lock()
 	e.allowed = map[string]bool{}
 	e.install = map[string]bool{}
+	e.installGet = map[string][]string{}
 	e.installing = false
 	e.seal()
 	e.mu.Unlock()
@@ -30,13 +32,13 @@ func (e *Egress) isSealed() bool {
 	return e.sealed.Err() != nil
 }
 
-// admit decides, under the same lock Seal takes, whether a request to host
-// may be sent on. One that may is in flight until done is called, and
-// Seal waits for it.
-func (e *Egress) admit(host string) (done func(), ok bool) {
+// admit decides, under the same lock Seal takes, whether a request of
+// method for u on host may be sent on. One that may is in flight until done
+// is called, and Seal waits for it.
+func (e *Egress) admit(method, host string, u *url.URL) (done func(), ok bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if !e.allowedLocked(host) {
+	if !e.requestAllowedLocked(method, host, u) {
 		return func() {}, false
 	}
 	e.inflight.Add(1)

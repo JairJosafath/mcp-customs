@@ -81,7 +81,12 @@ func TestEachRegistryIsASettingWithAWorkingDefault(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("set: %+v, %v; want %+v", got, err, want)
 	}
-	for _, bad := range []string{"http://npm.example", "npm.example", "https://", "https://u:p@npm.example", "https://npm.example/?x=1", "https://npm.example/#x"} {
+	list := "https://demo.example/goproxy,https://proxy.golang.org"
+	got, err = RegistriesFrom(func(name string) string { return map[string]string{EnvGoProxy: list}[name] })
+	if err != nil || got.Go != list {
+		t.Errorf("a GOPROXY list: %+v, %v; want Go %q", got, err, list)
+	}
+	for _, bad := range []string{"https://demo.example,direct", "https://demo.example,", "http://npm.example", "npm.example", "https://", "https://u:p@npm.example", "https://npm.example/?x=1", "https://npm.example/#x"} {
 		if _, err := RegistriesFrom(func(name string) string {
 			if name == EnvGoProxy {
 				return bad
