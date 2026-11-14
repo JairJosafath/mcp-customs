@@ -146,8 +146,9 @@ data; development throws it away.
 What isn't built yet:
 
 - Remote servers. The form takes an `https://` URL, but the sandbox
-  doesn't connect to one yet, so such a check ends at review without
-  running. Checking a remote server from several identities comes after
+  doesn't connect to one yet, so such a check launches no sandbox and
+  ends at review, decided by code, with a `remote-unsupported` finding
+  that says why. Checking a remote server from several identities comes after
   that.
 - A runtime gateway that pins the approved tool-list hash on every
   session.

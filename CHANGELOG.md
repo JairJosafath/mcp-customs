@@ -55,6 +55,11 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- A remote `https://` submission ends at review, decided by code, instead
+  of failing (#80). Remote servers aren't checked yet: the Checker launches
+  no sandbox for one and records a `remote-unsupported` code finding that
+  says so.
+
 - Follow-ups from #64 and #65 (#67). The judge tries a call again after
   the transient errors the SDK used to retry (`InternalServerException`,
   `ModelTimeoutException`, a 5xx, a connection reset), so one of them no

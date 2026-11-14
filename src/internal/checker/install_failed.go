@@ -18,3 +18,13 @@ func installFailed(message string) findings.Finding {
 	}
 	return findings.Finding{Source: findings.Code, Rule: findings.RuleInstallFailed, Evidence: message}
 }
+
+// remoteUnsupported is the code finding of a remote server, which the
+// sandbox doesn't connect to yet, so nothing of it is checked.
+func remoteUnsupported(ref string) findings.Finding {
+	return findings.Finding{
+		Source:   findings.Code,
+		Rule:     findings.RuleRemoteUnsupported,
+		Evidence: "Remote servers aren't checked yet: no sandbox connected to " + ref + ".",
+	}
+}

@@ -33,8 +33,10 @@ type resolved struct {
 	Hash     string             `json:"hash"`
 	LogTail  string             `json:"logTail"`
 	Findings []findings.Finding `json:"findings"`
-	// InstallFailed says the harness could not install the server; the
-	// sandbox is ended already, and Findings holds an install-failed one.
+	// InstallFailed says nothing was installed: the harness could not
+	// install the server, and the sandbox is ended already, or the server
+	// is remote, and none was launched. Findings holds the finding that
+	// says which.
 	InstallFailed bool `json:"installFailed,omitempty"`
 	// Oversized is the answer's size when it was too large to keep.
 	Oversized int `json:"oversized,omitempty"`
@@ -57,8 +59,14 @@ type installAnswer struct {
 // resolve launches the check's sandbox with fresh canaries and a fresh run
 // token, and has the harness resolve and install the submission there:
 // the Checker never reaches a registry or a remote server itself. The
-// harness hashes the whole resolved dependency set.
+// harness hashes the whole resolved dependency set. A remote server isn't
+// checked yet: it launches nothing and ends at review, decided by code.
 func resolve(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
+	if r.in.Submission.Kind == "remote" {
+		r.resolved = resolved{InstallFailed: true, Findings: []findings.Finding{remoteUnsupported(r.in.Submission.Ref)}}
+		r.ended = true
+		return outcome{Summary: fmt.Sprintf("Remote servers aren't checked yet, so no sandbox was launched for %s.", r.in.Submission.Ref), Findings: r.resolved.Findings}, nil
+	}
 	res, err := durable.Step(ctx, string(ActResolve), func(sc durable.StepContext) (resolved, error) {
 		token := r.deps.Token(r.in.CheckID)
 		set := r.deps.Canaries()
