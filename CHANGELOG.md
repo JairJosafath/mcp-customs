@@ -6,6 +6,23 @@ Every user-visible change, newest first. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Every character a person can't see is a code finding of a check, with its
+  escaped form as evidence: besides ANSI escapes, tag, zero-width and bidi
+  characters, now every default-ignorable code point
+  (`hidden-default-ignorable`, and the Mongolian variation selectors as
+  `hidden-variation-selector`), every other format character such as the
+  interlinear annotation characters (`hidden-format-character`), the line
+  and paragraph separators (`hidden-line-separator`), private use
+  (`hidden-private-use`) and every unassigned code point
+  (`hidden-unassigned`). Each gives at least review.
+- A step's record is bounded by its size as stored, so findings whose text
+  JSON grows, such as control characters, still fit DynamoDB's 400 KB: the
+  step keeps as many as fit and counts the rest in `more-findings`.
+- A check writes its `verdict` step before it reads `done`: a verdict step
+  that can't be written fails the check, with no approval left behind.
+
 ### Added
 
 - The web page and API: submit a pinned package or an https URL from the

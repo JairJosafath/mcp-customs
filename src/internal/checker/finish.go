@@ -11,10 +11,12 @@ import (
 	"github.com/JairJosafath/mcp-customs/src/internal/verdict"
 )
 
-// finish ends the sandbox, then, in one step, writes the report to the
-// bucket, the approval of a pass this check decided to HASH#, and the
-// verdict to the check's META, last, so a check reads done only once its
-// report is there. Its STEP# item says who decided.
+// finish ends the sandbox and records the verdict's STEP# item, saying
+// who decided; then, in one step, it writes the report to the bucket, the
+// approval of a pass this check decided to HASH#, and the verdict to the
+// check's META, last, so a check reads done only once its report and its
+// verdict step are there. A verdict step that can't be written fails the
+// check before any approval is.
 func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (verdict.Verdict, error) {
 	r.current = "verdict"
 	if err := r.endSandbox(ctx); err != nil {
@@ -28,15 +30,15 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 	if r.approved != nil && by == "seen before" {
 		report.SeenBefore = r.approved.CheckID
 	}
+	summary := fmt.Sprintf("Verdict: %s, decided by %s, with %d finding(s).", decided.Verdict, by, len(decided.Findings))
+	if err := r.record(ctx, "verdict", outcome{Summary: summary, Findings: decided.Findings}); err != nil {
+		return "", err
+	}
 	if _, err := durable.Step(ctx, "verdict", func(sc durable.StepContext) (bool, error) {
 		report.DecidedAt = time.Now().UTC()
 		return true, r.writeVerdict(sc, report)
 	}); err != nil {
 		return "", fmt.Errorf("write the verdict of check %s: %w", r.in.CheckID, err)
-	}
-	summary := fmt.Sprintf("Verdict: %s, decided by %s, with %d finding(s).", decided.Verdict, by, len(decided.Findings))
-	if err := r.record(ctx, "verdict", outcome{Summary: summary, Findings: decided.Findings}); err != nil {
-		return "", err
 	}
 	return decided.Verdict, nil
 }

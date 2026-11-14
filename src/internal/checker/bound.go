@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/aws/aws-durable-execution-sdk-go/durable"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/findings"
+	"github.com/JairJosafath/mcp-customs/src/internal/store"
 )
 
 // maxStepResult bounds what a step may return: under the 256 KB the SDK
@@ -53,9 +55,9 @@ func (r *run) tooLarge(what string, size int) error {
 }
 
 // What a STEP# item keeps of its findings: under DynamoDB's 400 KB an item
-// may hold, however many findings the server's text and actions make. The
-// verdict is decided from every finding, and the report keeps them all;
-// only the step's record of them is cut.
+// may hold, as the store encodes it, however many findings the server's
+// text and actions make. The verdict is decided from every finding, and
+// the report keeps them all; only the step's record of them is cut.
 const (
 	maxFindingsPerRule = 20
 	maxStepFindings    = 200
@@ -68,11 +70,37 @@ const (
 // no verdict is decided from it.
 const ruleMore = "more-findings"
 
+// boundStep is step with fs as its STEP# item keeps them: bounded by
+// boundFindings, then cut to as many kept findings as let the item fit in
+// store.MaxItemSize as the store encodes it (store.StepSize), since JSON
+// can grow a control character sixfold. The rest are counted. A step the
+// store can't measure, such as one with a bad number, is left for its
+// write to refuse.
+func boundStep(checkID string, step store.Step, fs []findings.Finding) store.Step {
+	with := func(limit int) store.Step {
+		s := step
+		s.Findings = storeFindings(boundFindings(fs, limit))
+		return s
+	}
+	tooLarge := func(limit int) bool {
+		size, err := store.StepSize(checkID, with(limit))
+		return err == nil && size > store.MaxItemSize
+	}
+	if !tooLarge(maxStepFindings) {
+		return with(maxStepFindings)
+	}
+	// More kept findings make a larger item: the first limit too large is
+	// one past the most that fit.
+	return with(max(sort.Search(maxStepFindings, tooLarge)-1, 0))
+}
+
 // boundFindings is fs as a step keeps them: the first maxFindingsPerRule of
-// each rule, at most maxStepFindings in all, each rule and evidence cut to
-// its bound, and one finding per rule counting those left off.
-func boundFindings(fs []findings.Finding) []findings.Finding {
-	kept := make([]findings.Finding, 0, min(len(fs), maxStepFindings))
+// each rule, at most limit in all, each rule and evidence cut to its
+// bound, one finding per rule kept counting its findings left off, and one
+// ruleMore finding counting those left off, of any rule, once limit were
+// kept.
+func boundFindings(fs []findings.Finding, limit int) []findings.Finding {
+	kept := make([]findings.Finding, 0, min(len(fs), limit))
 	var rules []findings.Finding
 	perRule, dropped := map[string]int{}, map[string]int{}
 	others := 0
@@ -81,7 +109,7 @@ func boundFindings(fs []findings.Finding) []findings.Finding {
 		switch {
 		case perRule[f.Rule] >= maxFindingsPerRule:
 			dropped[f.Rule]++
-		case len(kept) >= maxStepFindings:
+		case len(kept) >= limit:
 			others++
 		default:
 			if perRule[f.Rule] == 0 {
@@ -102,7 +130,7 @@ func boundFindings(fs []findings.Finding) []findings.Finding {
 	if others > 0 {
 		kept = append(kept, findings.Finding{
 			Source: findings.Code, Rule: ruleMore,
-			Evidence: fmt.Sprintf("and %d more finding(s) of other rules, left off this step", others),
+			Evidence: fmt.Sprintf("and %d more finding(s), of any rule, left off once this step kept %d", others, limit),
 		})
 	}
 	return kept
