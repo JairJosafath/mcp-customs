@@ -37,6 +37,12 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- The sandbox's egress proxy refuses a connection to a name that resolves
+  to an address inside a network: loopback, link-local, private, shared or
+  the instance metadata, so a wildcard-DNS name such as
+  `169.254.169.254.nip.io` or `localtest.me` reaches none of them (#32).
+  The Checker's Bedrock client tries each call once, under the judge's own
+  retries, so a busy model is no longer tried up to twelve times.
 - An install's GET of the demo Go proxy must be `https` on port 443, as
   its `/goproxy/` prefix is (#61). A plain-http GET under the prefix, or
   one to any other port, is refused and recorded like any other request

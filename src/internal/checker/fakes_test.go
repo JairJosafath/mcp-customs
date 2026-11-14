@@ -553,9 +553,10 @@ type recordedJudge struct {
 	probes    string
 	judgement string
 	moves     []string
-	// judgeAnswer and probesAnswer, when set, are answered instead of a
-	// fixture.
+	// judgeAnswer, moveAnswer and probesAnswer, when set, are answered
+	// instead of a fixture, past the decoders.
 	judgeAnswer  *Judgement
+	moveAnswer   *Move
 	probesAnswer []ProbeArgs
 	requests     []ProbeRequest
 	evidence     []Evidence
@@ -598,6 +599,9 @@ func (j *recordedJudge) Next(_ context.Context, inv Investigation) (Move, error)
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.asked = append(j.asked, inv)
+	if j.moveAnswer != nil {
+		return *j.moveAnswer, nil
+	}
 	n := len(j.asked) - 1
 	if n >= len(j.moves) {
 		n = len(j.moves) - 1
