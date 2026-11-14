@@ -12,13 +12,15 @@ import (
 )
 
 // finish ends the sandbox and records the verdict's STEP# item, saying
-// who decided; then, in one step, it writes the report to the bucket, the
-// approval of a pass this check decided to HASH# and, for a
-// package, to APPROVED, and the verdict to the
-// check's META, last, so a check reads done only once its report and its
-// verdict step are there. A verdict step that can't be written fails the
-// check before any approval is. A re-check that a person approved after
-// code did not pass lifts its superseded mark (lift).
+// who decided; then, in one step, it writes the report to the bucket and,
+// last, the verdict to the check's META, with the approval of a pass this
+// check decided to HASH# and, for a package, to APPROVED in the same
+// transaction, so a check reads done only once its report and its verdict
+// step are there, and is approved only once it reads done. A verdict step
+// that can't be written fails the check before any approval is. A
+// re-check that a person approved after code did not pass lifts its
+// superseded mark (lift); a lift that fails then is logged, as the pass is
+// done.
 func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (verdict.Verdict, error) {
 	r.current = "verdict"
 	if err := r.endSandbox(ctx); err != nil {
@@ -43,13 +45,21 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 		return "", fmt.Errorf("write the verdict of check %s: %w", r.in.CheckID, err)
 	}
 	if err := r.settleSuperseded(ctx, decided.Verdict); err != nil {
-		return "", err
+		if decided.Verdict != verdict.Pass {
+			return "", err
+		}
+		// The pass is done and approved: a lift or its event that fails
+		// after it is logged, and the verdict stands.
+		ctx.Logger().ErrorContext(ctx, "lift the superseded mark after a pass",
+			"checkId", r.in.CheckID, "error", err.Error())
 	}
 	return decided.Verdict, nil
 }
 
-// writeVerdict writes report, the approval when this check approved the
-// server, and the check's verdict, each a whole write a retry repeats.
+// writeVerdict writes report, then the check's verdict: for a pass this
+// check decided, in one transaction with its approval (store.PassCheck),
+// so no approval is left of a check that could not be marked done. Each
+// is a whole write a retry repeats.
 func (r *run) writeVerdict(sc durable.StepContext, report Report) error {
 	raw, err := json.Marshal(report)
 	if err != nil {
@@ -58,23 +68,21 @@ func (r *run) writeVerdict(sc durable.StepContext, report Report) error {
 	if err := r.deps.Reports.PutReport(sc, r.in.CheckID, raw); err != nil {
 		return err
 	}
-	if report.Verdict == verdict.Pass && report.SeenBefore == "" {
-		spec, err := json.Marshal(report.InstallSpec)
-		if err != nil {
-			return fmt.Errorf("encode the install spec: %w", err)
-		}
-		if err := r.deps.Store.PutVerdict(sc, store.Verdict{
-			Hash: r.resolved.Hash, CheckID: r.in.CheckID, ToolListHash: r.listing.ToolHash, InstallSpec: string(spec),
-		}); err != nil {
-			return err
-		}
-		if a, conditional, ok := approval(report); ok {
-			if err := r.deps.Store.PutApproved(sc, a, conditional); err != nil {
-				return err
-			}
-		}
+	if report.Verdict != verdict.Pass || report.SeenBefore != "" {
+		return r.deps.Store.UpdateCheck(sc, r.in.CheckID, store.CheckUpdate{Status: store.StatusDone, Verdict: string(report.Verdict)})
 	}
-	return r.deps.Store.UpdateCheck(sc, r.in.CheckID, store.CheckUpdate{Status: store.StatusDone, Verdict: string(report.Verdict)})
+	spec, err := json.Marshal(report.InstallSpec)
+	if err != nil {
+		return fmt.Errorf("encode the install spec: %w", err)
+	}
+	pass := store.Pass{
+		Hash:    store.Verdict{Hash: r.resolved.Hash, CheckID: r.in.CheckID, ToolListHash: r.listing.ToolHash, InstallSpec: string(spec)},
+		Verdict: string(report.Verdict),
+	}
+	if a, conditional, ok := approval(report); ok {
+		pass.Approved, pass.Conditional = &a, conditional
+	}
+	return r.deps.Store.PassCheck(sc, pass)
 }
 
 // settleSuperseded, once a re-check's verdict is final, supersedes the

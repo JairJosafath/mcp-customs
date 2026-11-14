@@ -45,6 +45,24 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- Hidden text is read more closely (#33). Characters Unicode assigned
+  after Go's tables (15.0), such as 🫩 U+1FAE9 and the newest CJK, are no
+  longer `hidden-unassigned`. U+FE0E and U+FE0F are
+  `hidden-variation-selector` unless they follow a character Unicode gives
+  that variation sequence (after a digit, `#` or `*` only in a keycap,
+  before U+20E3), so a run of them, one after a letter, or one on a bare
+  digit is a finding. Control characters other than `\n`, `\t` and the `\r` of a
+  `\r\n` (a lone CR, backspace, NUL, NEL and the rest) are the new
+  `hidden-control-character`. The injection patterns read every Unicode
+  space, line break and blank lookalike (U+2800, the Hangul fillers,
+  U+1D159) as a space, with any combining mark on it left out, so
+  `ignore` U+2800 `previous` U+2800 `instructions` is found.
+- A pass's approval is written in one transaction with its check marked
+  done (#33): when that write fails, the check fails with no `HASH#` or
+  `APPROVED` item left behind, so a later check of the same dependency set
+  is not passed as seen before. A check marked done stays done: a failure
+  after it is never recorded as `failed` over it, and a pass's lift of a
+  superseded mark, or its event, that fails is logged instead.
 - A server the sandbox can't install ends at review, decided by code,
   with an `install-failed` finding naming what failed, instead of failing
   the check (#39). A PyPI dependency only an sdist ships fails the

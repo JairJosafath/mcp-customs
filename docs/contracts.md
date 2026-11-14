@@ -275,9 +275,10 @@ or the observations larger than that are kept whole in the bucket as
 finding on its `failed` step.
 
 No `STEP#` item is larger than DynamoDB's 400 KB, measured as the store
-encodes it (`store.StepSize`, after JSON writes a control character as six
-bytes): a step keeps at most 20 findings of each rule and 200 in all, each
-rule cut to 64 bytes and its evidence to 512, and fewer when those would
+encodes it (`store.StepSize`, after JSON writes each control character,
+`<`, `>`, `&`, U+2028, U+2029 and invalid byte as six bytes): a step keeps
+at most 20 findings of each rule and 200 in all, each rule cut to 64 bytes
+and its evidence to 512, and fewer when those would
 take the item past 400 KB. It adds one finding per rule saying how many
 more of that rule it left off past its 20, and one `more-findings` finding
 counting the findings of any rule, kept or not, it left off once it had

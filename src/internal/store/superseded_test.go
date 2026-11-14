@@ -13,7 +13,7 @@ func supersedingWorld(t *testing.T) *Store {
 	if err := store.PutCheck(t.Context(), Check{ID: "c0", Submission: Submission{Kind: "go", Ref: "example.com/mail@v1.0.0"}, Status: StatusDone, Verdict: "pass"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutApproved(t.Context(), Approved{Kind: "go", Name: "example.com/mail", Version: "v1.0.0", CheckID: "c0"}, false); err != nil {
+	if err := approve(t.Context(), store, Approved{Kind: "go", Name: "example.com/mail", Version: "v1.0.0", CheckID: "c0"}, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, v := range []string{"v1.0.1", "v1.0.2"} {
