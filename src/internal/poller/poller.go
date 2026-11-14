@@ -26,6 +26,7 @@ const maxConcurrent = 8
 type Approvals interface {
 	ListApproved(ctx context.Context) ([]store.Approved, error)
 	MarkPolled(ctx context.Context, kind, name, version string) error
+	ClearRetry(ctx context.Context, kind, name, version string) error
 }
 
 // Registry answers a package's latest version, and ErrNotPublished when
@@ -60,6 +61,8 @@ type Link struct {
 	CheckID      string `json:"checkId"`
 	Ref          string `json:"ref"`
 	ToolListHash string `json:"toolListSha256"`
+	// Retry says this is the one retry of a re-check that failed.
+	Retry bool `json:"retry,omitempty"`
 }
 
 // Deps are what a poll works with.
@@ -71,14 +74,17 @@ type Deps struct {
 }
 
 // Result is what a poll did: the packages it looked at, the re-checks it
-// started, and the packages it couldn't poll.
+// started, the failed re-checks it started again, and the packages it
+// couldn't poll.
 type Result struct {
 	Packages int `json:"packages"`
 	Started  int `json:"started"`
+	Retried  int `json:"retried"`
 	Failed   int `json:"failed"`
 }
 
-// Poll looks at every approved package once. A package whose latest
+// Poll looks at every approved package once. A re-check that failed and
+// asked for its retry is started again first (retryOne). A package whose latest
 // version is neither the approved one nor one a re-check was started for
 // gets a re-check, started once: its check ID comes from the package and
 // version, so a poll that runs again starts nothing new. A remote server
@@ -104,10 +110,17 @@ func Poll(ctx context.Context, d Deps) (Result, error) {
 		sem <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-sem }()
-			started, err := pollOne(ctx, d, a)
+			retried, err := retryOne(ctx, d, a)
+			started := false
+			if err == nil {
+				started, err = pollOne(ctx, d, a)
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			res.Packages++
+			if retried {
+				res.Retried++
+			}
 			switch {
 			case err != nil:
 				res.Failed++
@@ -149,21 +162,29 @@ func pollOne(ctx context.Context, d Deps, a store.Approved) (bool, error) {
 		Submission: store.Submission{Kind: a.Kind, Ref: ref},
 		Recheck:    Link{CheckID: a.CheckID, Ref: a.Name + "@" + a.Version, ToolListHash: a.ToolListHash},
 	}
-	// A poll that already ran for this version finds the check started
-	// (same ID): it is not a new start, but still marks the version polled.
-	err = d.Checker.Start(ctx, e)
-	already := errors.Is(err, ErrAlreadyStarted)
-	if err != nil && !already {
+	started, err := start(ctx, d, e)
+	if err != nil {
 		return false, fmt.Errorf("start re-check %s: %w", e.CheckID, err)
 	}
 	if err := d.Approvals.MarkPolled(ctx, a.Kind, a.Name, latest); err != nil {
 		return false, err
 	}
-	if already {
+	if !started {
 		return false, nil
 	}
 	d.Log.InfoContext(ctx, "A re-check started.", "checkId", e.CheckID, "kind", a.Kind, "ref", ref, "recheckOf", a.CheckID)
 	return true, nil
+}
+
+// start starts e on the Checker and answers whether it is a new start. A
+// poll that already ran for the check finds it started (same ID): it is
+// not a new start, and not an error.
+func start(ctx context.Context, d Deps, e Event) (bool, error) {
+	err := d.Checker.Start(ctx, e)
+	if errors.Is(err, ErrAlreadyStarted) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // RecheckID is the check ID of the re-check of version of package kind

@@ -270,16 +270,18 @@ describe('ApiStack', () => {
     });
   });
 
-  it('lets the Checker only put, get and update items, put reports, checkpoint its own executions, run its sandboxes and write its logs', () => {
+  it('lets the Checker only put, get and update items, put reports, checkpoint its own executions, run its sandboxes, put events and write its logs', () => {
     const role = idOf(development, 'AWS::IAM::Role', 'CheckerRole');
     expect(actionsOf(development, role)).toEqual(
       [
+        '"dynamodb:ConditionCheckItem"',
         '"dynamodb:GetItem"',
         '"dynamodb:PutItem"',
         '"dynamodb:UpdateItem"',
         '"s3:PutObject"',
         '"secretsmanager:GetSecretValue"',
         '"bedrock:InvokeModel"',
+        '"events:PutEvents"',
         ...DURABLE_EXECUTION_ACTIONS.map((action) => `"${action}"`),
         ...[...SANDBOX_ACTIONS, PASS_CONNECTOR_ACTION].map((action) => `"${action}"`),
         '"logs:CreateLogStream"',
@@ -480,9 +482,9 @@ describe('ApiStack', () => {
     // 5xx; errors, throttles and duration of each function (the fourth
     // copies the demo proxy's files, and development's fifth empties the bucket); the table's read and write throttles and
     // system errors; the re-check's dead letters, and its schedule group's
-    // dropped and undelivered polls.
-    production.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 4 * 3 + 3 + 3);
-    development.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 5 * 3 + 3 + 3);
+    // dropped and undelivered polls; a re-check that failed twice.
+    production.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 4 * 3 + 3 + 3 + 1);
+    development.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 5 * 3 + 3 + 3 + 1);
     for (const template of [production, development]) {
       template.resourceCountIs('AWS::CloudWatch::Dashboard', 1);
       // The p99 duration alarms fire at 8 of the web function's 10 seconds

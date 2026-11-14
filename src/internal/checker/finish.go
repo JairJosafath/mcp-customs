@@ -17,7 +17,8 @@ import (
 // package, to APPROVED, and the verdict to the
 // check's META, last, so a check reads done only once its report and its
 // verdict step are there. A verdict step that can't be written fails the
-// check before any approval is.
+// check before any approval is. A re-check that a person approved after
+// code did not pass lifts its superseded mark (lift).
 func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (verdict.Verdict, error) {
 	r.current = "verdict"
 	if err := r.endSandbox(ctx); err != nil {
@@ -40,6 +41,9 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 		return true, r.writeVerdict(sc, report)
 	}); err != nil {
 		return "", fmt.Errorf("write the verdict of check %s: %w", r.in.CheckID, err)
+	}
+	if err := r.settleSuperseded(ctx, decided.Verdict); err != nil {
+		return "", err
 	}
 	return decided.Verdict, nil
 }
@@ -71,4 +75,14 @@ func (r *run) writeVerdict(sc durable.StepContext, report Report) error {
 		}
 	}
 	return r.deps.Store.UpdateCheck(sc, r.in.CheckID, store.CheckUpdate{Status: store.StatusDone, Verdict: string(report.Verdict)})
+}
+
+// settleSuperseded, once a re-check's verdict is final, supersedes the
+// approved check when it did not pass (if code's verdict didn't already),
+// and lifts the mark when a person approved it after all.
+func (r *run) settleSuperseded(ctx durable.Context, v verdict.Verdict) error {
+	if v == verdict.Pass {
+		return r.lift(ctx)
+	}
+	return r.supersede(ctx, v)
 }

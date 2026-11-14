@@ -19,6 +19,9 @@ type Recheck struct {
 	Ref string `json:"ref"`
 	// ToolListHash is the tool-list hash that check approved.
 	ToolListHash string `json:"toolListSha256"`
+	// Retry says this is the one retry of a re-check that failed: its
+	// failure is recorded, not retried again.
+	Retry bool `json:"retry,omitempty"`
 }
 
 // ErrBadRecheck says the event's re-check names no approved check.

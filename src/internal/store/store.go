@@ -18,13 +18,14 @@ type DynamoAPI interface {
 	PutItem(ctx context.Context, in *dynamodb.PutItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
 	Query(ctx context.Context, in *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 	UpdateItem(ctx context.Context, in *dynamodb.UpdateItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+	TransactWriteItems(ctx context.Context, in *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
 }
 
 // The errors of a check's META that can't be written as asked.
 var (
 	ErrCheckExists = errors.New("the check already exists")
 	ErrNoCheck     = errors.New("there is no such check")
-	ErrEmptyUpdate = errors.New("an update must set a status, a verdict, a callback ID or a sandbox ID")
+	ErrEmptyUpdate = errors.New("an update must set a status, a verdict, a callback ID, a sandbox ID or a re-check's outcome")
 )
 
 // ErrItemTooLarge says an item is larger than DynamoDB keeps, so it was
@@ -38,6 +39,9 @@ type CheckUpdate struct {
 	Verdict    string
 	CallbackID string
 	SandboxID  string
+	// RecheckFailed marks an approved check with the retry of its re-check
+	// that failed again. Its supersededBy is MarkSuperseded's.
+	RecheckFailed string
 }
 
 // Store keeps checks, their steps and verdicts in one table keyed by pk
@@ -92,6 +96,7 @@ func (s *Store) UpdateCheck(ctx context.Context, id string, u CheckUpdate) error
 		{"verdict", u.Verdict},
 		{"callbackId", u.CallbackID},
 		{"sandboxId", u.SandboxID},
+		{"recheckFailed", u.RecheckFailed},
 	} {
 		if field.value == "" {
 			continue

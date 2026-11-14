@@ -95,6 +95,8 @@ func (a recorderApprovals) ListApproved(context.Context) ([]store.Approved, erro
 
 func (recorderApprovals) MarkPolled(context.Context, string, string, string) error { return nil }
 
+func (recorderApprovals) ClearRetry(context.Context, string, string, string) error { return nil }
+
 type oneVersion string
 
 func (v oneVersion) Latest(context.Context, string, string) (string, error) { return string(v), nil }
@@ -175,6 +177,13 @@ func TestTheMailDemosNewVersionIsRecheckedWithTheSameToolListAndBlockedWhenTheAd
 	}
 	if len(first.rec.approved) != 1 {
 		t.Errorf("approvals %+v, want v1.0.1 left unapproved", first.rec.approved)
+	}
+	// The approval of v1.0.0 is superseded, and anyone subscribed is told.
+	if c0, _, _ := second.rec.GetCheck(t.Context(), "c0"); c0.SupersededBy != in.CheckID {
+		t.Errorf("approved check %+v, want it superseded by %s", c0, in.CheckID)
+	}
+	if got := second.events.superseded; len(got) != 1 || got[0].ApprovedCheckID != "c0" || got[0].RecheckID != in.CheckID || got[0].Verdict != "block" {
+		t.Errorf("events %+v, want c0 superseded by the blocked re-check", got)
 	}
 }
 

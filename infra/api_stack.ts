@@ -22,7 +22,8 @@ import { Alarms } from './alarms';
 import { Backups } from './backups';
 import { DEMO_VERSIONS_FILE, DemoProxy, GO_PROXY_PREFIX } from './demo_proxy';
 import { goFunction } from './go_function';
-import { Recheck, POLLER_TIMEOUT } from './recheck';
+import { APPROVED_PARTITION, Recheck, POLLER_TIMEOUT } from './recheck';
+import { RecheckOutcomes } from './recheck_outcomes';
 import { API_HOST, Sandbox } from './sandbox';
 import { TIER_RULES } from './standard';
 import type { Operations, Tier, TierRules } from './standard';
@@ -216,9 +217,21 @@ export class ApiStack extends Stack {
     checker.addEnvironment(REPORTS_BUCKET_NAME, reports.bucketName);
     // Only the calls the Checker makes: it records a check and its steps,
     // reads a check it finds already made when a step is retried and an
-    // earlier verdict, writes a verdict and a package's approval, and
-    // updates the check's status.
+    // earlier verdict, writes a verdict and a package's approval, updates
+    // the check's status, marks an approved check a re-check superseded or
+    // failed twice, and asks the poller for a re-check's retry.
     table.grant(checker, 'dynamodb:PutItem', 'dynamodb:GetItem', 'dynamodb:UpdateItem');
+    // A superseded mark is written in a transaction with a check of the
+    // package's newest polled version: that check reads APPROVED items only.
+    checker.addToRolePolicy(
+      new PolicyStatement({
+        actions: ['dynamodb:ConditionCheckItem'],
+        resources: [table.tableArn],
+        conditions: {
+          'ForAllValues:StringEquals': { 'dynamodb:LeadingKeys': [APPROVED_PARTITION] },
+        },
+      }),
+    );
     this.grantReportWrites(checker, reports);
     this.grantRunTokenKey(checker, rules);
     this.grantDurableExecution(checker);
@@ -258,6 +271,7 @@ export class ApiStack extends Stack {
     }).grantLaunch(checker);
 
     const recheck = new Recheck(this, 'Recheck', { table, checker, rules, goProxy });
+    const outcomes = new RecheckOutcomes(this, 'RecheckOutcomes', { checker });
     const demoProxy = new DemoProxy(this, 'DemoProxy', {
       bucket: reports,
       versionsFile: props.demoVersionsFile ?? DEMO_VERSIONS_FILE,
@@ -274,6 +288,7 @@ export class ApiStack extends Stack {
         : [['ReportsAutoDelete', emptier, AUTO_DELETE_TIMEOUT] as const]),
     ]);
     recheck.addAlarms(alarms);
+    outcomes.addAlarms(alarms);
     alarms.monitoring.monitorDynamoTable({
       table: Table.fromTableName(this, 'MonitoredTable', table.tableName),
       alarmFriendlyName: 'Table',

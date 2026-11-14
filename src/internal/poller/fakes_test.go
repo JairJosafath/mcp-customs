@@ -17,6 +17,7 @@ type memoryApprovals struct {
 	items   []store.Approved
 	listErr error
 	marks   int
+	clears  int
 }
 
 func (m *memoryApprovals) ListApproved(context.Context) ([]store.Approved, error) {
@@ -36,6 +37,18 @@ func (m *memoryApprovals) MarkPolled(_ context.Context, kind, name, version stri
 		}
 	}
 	return store.ErrNoApproved
+}
+
+func (m *memoryApprovals) ClearRetry(_ context.Context, kind, name, version string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clears++
+	for i := range m.items {
+		if m.items[i].Kind == kind && m.items[i].Name == name && m.items[i].Retry == version {
+			m.items[i].Retry = ""
+		}
+	}
+	return nil
 }
 
 // fixedRegistry answers each package's latest version from latest, keyed
