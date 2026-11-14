@@ -15,6 +15,8 @@ the deadline. Cost and tokens come from each session's own report.
 | #4    | implementer | session_01SZoxckcHTcgtbYQjWfJUD4 | 2026-11-14 07:39 | 1      | PR #16, 15 min, 46 turns                                                                        | $4.07 |
 | #14   | implementer | session_01SZoxcnyK3xCTTbYFreeMPY | 2026-11-14 07:40 | 1      | PR #15, 9 min, 38 turns                                                                         | $2.74 |
 | #3    | merge       |                                  | 2026-11-14 08:02 |        | PR #13 merged after a CI rerun on #12                                                           |       |
-| #2    | reviewer    | session_01SZoxcnUwyrMYtCHMWAg78H | 2026-11-14 08:03 | 2      |                                                                                                 |       |
-| #14   | reviewer    | session_01SZoxckwoDW5poMVaocbPMD | 2026-11-14 08:03 | 1      |                                                                                                 |       |
-| #4    | reviewer    | session_01SZoxcmGSt796rtTH2FMFAu | 2026-11-14 08:03 | 1      |                                                                                                 |       |
+| #2    | reviewer    | session_01SZoxcnUwyrMYtCHMWAg78H | 2026-11-14 08:03 | 2      | approved; probed 50 fresh canary sets                                                           | $1.56 |
+| #14   | reviewer    | session_01SZoxckwoDW5poMVaocbPMD | 2026-11-14 08:03 | 1      | approved                                                                                        | $1.10 |
+| #4    | reviewer    | session_01SZoxcmGSt796rtTH2FMFAu | 2026-11-14 08:03 | 1      | changes requested: token readable via /proc when not root; secret-shaped fixtures               | $1.88 |
+| #6    | implementer | session_01SZoxcpFFXBJjqYoP9MUAUW | 2026-11-14 08:04 | 1      |                                                                                                 |       |
+| #4    | implementer | session_01SZoxckcHTcgtbYQjWfJUD4 | 2026-11-14 08:26 | 2      | round 2 sent                                                                                    |       |
