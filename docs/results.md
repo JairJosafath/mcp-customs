@@ -120,17 +120,20 @@ one, and the deploy's own time and AWS cost.
 What the plan's "Done when" asks for.
 
 - **Alone:** every product change came from an implementer session working
-  an issue, and every pull request had a reviewer session's verdict before
-  it merged; not every verdict was an approval (below).
+  an issue, and a reviewer session read each pull request. #22, #24, #34
+  and #37 merged with commits no reviewer read: their last rounds were
+  accepted on the orchestrator's own checks or on the round limit, and the
+  pull requests' comments say how.
 - **With a prompt:** the orchestrator filed follow-up issues where a review
   found a hole the pull request didn't open (#23, #25, #33, #36), and
   posted replies for implementers.
 - **With a hand:** three pull requests, #21, #22 and #24, merged after
   their third round with the reviewer still requesting changes; the
   orchestrator decided it and filed the findings as follow-ups (#23, #25,
-  #36; [friction row 20](plan.md#friction-log)). #34 merged after round 3
-  without a fourth review; its last finding was a merge conflict, and the
-  orchestrator checked the resolution itself (row 21, follow-up #42).
+  #36; [friction row 20](plan.md#friction-log)). #34 had two reviews: its
+  third round, the implementer's push after round 2's only blocking
+  finding, a merge conflict with #35, was checked by the orchestrator, not
+  reviewed (row 21; follow-ups #40, #42).
   TODO(deploy): the deploy and any hand-written fix after Sunday noon.
 
 ## theos's feedback
