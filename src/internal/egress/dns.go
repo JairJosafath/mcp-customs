@@ -66,7 +66,11 @@ func (e *Egress) answerDNS(packet []byte) ([]byte, bool) {
 	}
 	name := normalHost(q.Name.String())
 	answers, rcode, faked := e.lookup(name, q.Type)
-	e.record(KindDNS, DNSDetail{Name: name, Type: typeName(q.Type), Answers: answerStrings(answers), Faked: faked})
+	d := DNSDetail{Name: name, Type: typeName(q.Type), Answers: answerStrings(answers), Faked: faked}
+	if m := e.match([]byte(name + "\n" + strings.ReplaceAll(name, ".", ""))); len(m) > 0 {
+		d.Canaries = m
+	}
+	e.record(KindDNS, d)
 	reply, err := buildReply(h, q, answers, rcode)
 	if err != nil {
 		return nil, false

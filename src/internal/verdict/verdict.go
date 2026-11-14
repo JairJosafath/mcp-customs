@@ -24,6 +24,8 @@ var codeFloors = map[string]Verdict{
 	findings.RuleCanaryLeft:        Block,
 	findings.RuleAgentConfig:       Block,
 	findings.RuleShellStartup:      Block,
+	findings.RuleTLSNotIntercepted: Review,
+	findings.RuleBodyUnscanned:     Review,
 	findings.RuleSampling:          Review,
 	findings.RuleElicitation:       Review,
 	findings.RuleANSIEscape:        Review,

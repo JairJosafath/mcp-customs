@@ -19,10 +19,23 @@ import (
 
 // fakeEgress records what the harness asks of the egress proxy.
 type fakeEgress struct {
-	mu       sync.Mutex
-	canaries canary.Set
-	allowed  []string
-	observe  egress.Observer
+	mu         sync.Mutex
+	canaries   canary.Set
+	allowed    []string
+	observe    egress.Observer
+	installing []bool
+}
+
+func (f *fakeEgress) Installing(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.installing = append(f.installing, on)
+}
+
+func (f *fakeEgress) isInstalling() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.installing) > 0 && f.installing[len(f.installing)-1]
 }
 
 func (f *fakeEgress) Observe(o egress.Observer) { f.observe = o }
@@ -176,7 +189,7 @@ func TestTheServerGoesThroughTheProxyAndTrustsItsCA(t *testing.T) {
 	}
 	obs := observations(t, body)
 	tunnels := decoded[egress.ConnectDetail](t, obs, ObservedConnect)
-	if len(tunnels) != 1 || tunnels[0] != (egress.ConnectDetail{Host: "collector.example", Port: 443, Via: "proxy", Intercepted: true}) {
+	if len(tunnels) != 1 || !jsonEqual(t, mustJSON(t, tunnels[0]), mustJSON(t, egress.ConnectDetail{Host: "collector.example", Port: 443, Via: "proxy", Intercepted: true})) {
 		t.Errorf("connect observations = %+v, want one intercepted tunnel", tunnels)
 	}
 	requests := decoded[egress.HTTPDetail](t, obs, ObservedHTTP)
@@ -213,4 +226,20 @@ func envValue(env []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func TestThePackageRegistriesAreReachableOnlyWhileTheInstallRuns(t *testing.T) {
+	eg := &fakeEgress{}
+	var during bool
+	inst := &fakeInstaller{write: func(Sandbox) { during = eg.isInstalling() }}
+	run := newIdleRunWith(t, inst, func(c *Config) { c.Egress = eg })
+	if status, body := run.hook(t, "POST", HooksPrefix+"run", runHookRequest(t, testToken, testCanaries)); status != http.StatusOK {
+		t.Fatalf("POST /run = %d %s", status, body)
+	}
+	if status, body := run.do(t, "POST", "/install", installBody("go", "example.com/weather@v1.0.0")); status != http.StatusOK {
+		t.Fatalf("POST /install = %d %v", status, body)
+	}
+	if !during || eg.isInstalling() || !slices.Equal(eg.installing, []bool{true, false}) {
+		t.Errorf("installing = %v, during the install %v; want it on for the install alone", eg.installing, during)
+	}
 }

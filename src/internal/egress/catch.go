@@ -25,13 +25,13 @@ func (e *Egress) ServeCatch(l net.Listener, dst OriginalDestination) error {
 			}
 			return err
 		}
-		d := ConnectDetail{Via: "direct", Refused: true}
+		d := ConnectDetail{Proto: "tcp", Via: "direct", Refused: true}
 		if to, err := dst(conn); err == nil {
 			d.Address = to.Addr().String()
 			d.Port = int(to.Port())
 			d.Host = e.fakeName(d.Address)
 		}
-		e.record(KindConnect, d)
+		e.recordDirect(d)
 		reset(conn)
 	}
 }

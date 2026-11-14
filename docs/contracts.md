@@ -42,9 +42,15 @@ invocation and no execution history keeps it. JSON in and out; every response ca
 | `POST /clock`       | `{"offset":"720h"}`                                                                     | the fake clock now in force                            |
 | `GET /observations` |                                                                                         | all observations of the run                            |
 
-An observation is `{"at","kind","detail"}`, where `kind` is one of `dns`,
-`connect`, `http` (method, host, path, and the canaries found in it, with
-their encoding), `file` (path written), `sampling`, `elicitation`,
+An observation is `{"at","kind","detail"}`, where `kind` is one of `dns`
+(name, type, answers, `faked`, and the canaries found in the name),
+`connect` (a tunnel through the proxy: host, port, `intercepted`,
+`allowed`; or direct traffic the firewall refused: `via: "direct"`,
+`proto` (tcp, udp, icmp, …), address, port, the canaries in a refused
+packet's payload, and `more` on the last one a run records), `http`
+(method, host, path, `allowed`, the canaries found in it, with their
+encoding, and `unscanned`: why part of the body went unsearched, when it
+did), `file` (path written), `sampling`, `elicitation`,
 `process`, `hook` (a lifecycle hook called after `/run`: method, path,
 caller, the status it got). Bodies are not returned, only what was found
 in them.

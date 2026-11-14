@@ -171,6 +171,9 @@ func trustOutside(dir, home string) error {
 // firewallChain names the netfilter chains of the firewall.
 const firewallChain = "MCP_CUSTOMS"
 
+// nflogGroup is the NFLOG group the firewall logs refused packets to.
+const nflogGroup = 47
+
 // startEgress starts the egress proxy and puts up the firewall for uid. The
 // stop function takes both down.
 func startEgress(ctx context.Context, account harness.Account) (*egress.Egress, func(), error) {
@@ -194,15 +197,29 @@ func startEgress(ctx context.Context, account harness.Account) (*egress.Egress, 
 		return nil, nil, err
 	}
 	eg := egress.New(egress.Config{
-		CA:        ca,
-		Upstream:  &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second},
-		Resolver:  net.DefaultResolver,
-		Allow:     egress.RegistryHosts,
-		ServerEnv: egress.Env(l.Proxy.Addr().String(), trust),
+		CA:           ca,
+		Upstream:     &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second},
+		Resolver:     net.DefaultResolver,
+		InstallAllow: egress.RegistryHosts,
+		ServerEnv:    egress.Env(l.Proxy.Addr().String(), trust),
 	})
-	stop := eg.Serve(l, egress.RedirectedFrom)
+	nflog, err := egress.OpenNFLog(nflogGroup)
+	if err != nil {
+		return nil, nil, err
+	}
+	logged := make(chan struct{})
+	go func() {
+		defer close(logged)
+		_ = eg.ServeNFLog(nflog)
+	}()
+	serving := eg.Serve(l, egress.RedirectedFrom)
+	stop := func() {
+		serving()
+		_ = nflog.Close()
+		<-logged
+	}
 	proxy, dns, catch := l.Ports()
-	fw := egress.Firewall{Chain: firewallChain, UID: account.UID, ProxyPort: proxy, DNSPort: dns, CatchPort: catch}
+	fw := egress.Firewall{Chain: firewallChain, UID: account.UID, ProxyPort: proxy, DNSPort: dns, CatchPort: catch, NFLogGroup: nflogGroup}
 	fw.Down(ctx, egress.Exec) // what an earlier harness left
 	if err := fw.Up(ctx, egress.Exec); err != nil {
 		stop()

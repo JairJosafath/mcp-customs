@@ -57,6 +57,9 @@ type Egress interface {
 	Allow(hosts ...string) []string
 	// Env is what the server's environment needs to go through the proxy.
 	Env() []string
+	// Installing says whether an install runs, which alone may reach the
+	// package registries.
+	Installing(on bool)
 }
 
 // A Harness answers the Harness API for one run, once the /run hook has
@@ -195,7 +198,13 @@ func (h *Harness) install(r *http.Request) (int, answer) {
 	files := newWatcher(append([]string{h.cfg.Account.Home}, h.cfg.WatchRoots...), h.cfg.Workdir)
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.InstallTimeout)
 	defer cancel()
+	if h.cfg.Egress != nil {
+		h.cfg.Egress.Installing(true)
+	}
 	installed, err := h.cfg.Installer.Install(ctx, pkg, h.sandbox())
+	if h.cfg.Egress != nil {
+		h.cfg.Egress.Installing(false)
+	}
 	// From here on, files written outside the working directory are observed,
 	// the install's own included.
 	h.run = &run{files: files, command: installed.Command}

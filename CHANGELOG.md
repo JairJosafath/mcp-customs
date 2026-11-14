@@ -38,9 +38,15 @@ Every user-visible change, newest first. The format follows
   key never leaves the harness's memory; passes hosts on the run's
   allowlist (`POST /allow`, and `/install`'s `allowHosts`) and answers the
   rest with a fake 200; and records each request as an `http` observation
-  with the run's canaries found in it, and their encoding. A firewall
-  (iptables, on the server's user) refuses any direct connection and
-  records it as a `connect`. The MicroVM image asks for
+  with the run's canaries found in it, and their encoding, gzip and
+  deflate bodies decoded first. A firewall (iptables, on the server's
+  user) refuses all direct traffic, IPv6 included, and records each
+  refused connection or packet (through NFLOG) as a `connect`, with the
+  canaries in its payload. The package registries are reachable only
+  while `/install` runs. Two new code findings give at least review:
+  `tls-not-intercepted` (a client that refused the proxy's CA, to a host
+  not allowed) and `body-not-scanned` (a body over 8 MiB, or in an
+  encoding the proxy can't decode). The MicroVM image asks for
   `additionalOsCapabilities: ["ALL"]` and ships iptables for it.
 
 ### Changed

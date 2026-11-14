@@ -32,6 +32,10 @@ const (
 	RuleSensitivePath     = "injection-sensitive-path"
 	RuleSecretResend      = "injection-secret-resend"
 	RuleCanaryLeft        = "canary-left"
+	// Traffic the egress proxy couldn't read: TLS a client wouldn't let it
+	// intercept, to a host not allowed, and a body it couldn't search whole.
+	RuleTLSNotIntercepted = "tls-not-intercepted"
+	RuleBodyUnscanned     = "body-not-scanned"
 	RuleAgentConfig       = "agent-config-write"
 	RuleShellStartup      = "shell-startup-write"
 	RuleSampling          = "unexplained-sampling"

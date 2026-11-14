@@ -2,6 +2,9 @@ package egress
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -9,7 +12,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -71,7 +76,7 @@ func (e *Egress) tunnel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), handshakeTimeout)
 	err = tlsConn.HandshakeContext(ctx)
 	cancel()
-	e.record(KindConnect, ConnectDetail{Host: host, Port: port, Via: "proxy", Intercepted: err == nil})
+	e.record(KindConnect, ConnectDetail{Host: host, Port: port, Via: "proxy", Intercepted: err == nil, Allowed: e.isAllowed(host)})
 	if err != nil {
 		return
 	}
@@ -88,8 +93,8 @@ func (e *Egress) tunnel(w http.ResponseWriter, r *http.Request) {
 // forward records one request, searched for canaries, then sends it on to
 // an allowed host or answers it with a fake 200.
 func (e *Egress) forward(w http.ResponseWriter, r *http.Request, scheme, hostport string) {
-	host, _ := splitHostPort(hostport, 0)
-	head, body, err := readScanned(r.Body)
+	host, port := splitHostPort(hostport, 0)
+	head, body, more, err := readScanned(r.Body)
 	if err != nil {
 		http.Error(w, "cannot read the request", http.StatusBadRequest)
 		return
@@ -98,25 +103,46 @@ func (e *Egress) forward(w http.ResponseWriter, r *http.Request, scheme, hostpor
 	_ = r.Header.Write(&seen)
 	seen.WriteString(r.Method + " " + r.URL.RequestURI() + "\n")
 	seen.Write(head)
-	allowed := e.isAllowed(host)
+	decoded, unscanned := decodeBody(r.Header.Get("Content-Encoding"), head)
+	seen.Write(decoded)
+	if more {
+		unscanned = fmt.Sprintf("the body is over %d MiB; only its first %d MiB were searched", maxScan>>20, maxScan>>20)
+	}
+	target, err := upstreamURL(scheme, host, port, r.URL)
+	allowed := e.isAllowed(host) && err == nil
 	e.record(KindHTTP, HTTPDetail{
-		Method:   r.Method,
-		Host:     host,
-		Path:     r.URL.Path,
-		Allowed:  allowed,
-		Canaries: e.match(seen.Bytes()),
+		Method:    r.Method,
+		Host:      host,
+		Path:      r.URL.Path,
+		Allowed:   allowed,
+		Canaries:  e.match(seen.Bytes()),
+		Unscanned: unscanned,
 	})
 	if !allowed {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, fakeBody)
 		return
 	}
-	e.pass(w, r, scheme, hostport, body)
+	e.pass(w, r, target, body)
 }
 
-// pass sends r on to its real host and copies the answer back.
-func (e *Egress) pass(w http.ResponseWriter, r *http.Request, scheme, hostport string, body io.Reader) {
-	out, err := http.NewRequestWithContext(r.Context(), r.Method, scheme+"://"+hostport+r.URL.RequestURI(), body) //nolint:gosec // only hosts on the run's allowlist are reached; forward checks it first
+// upstreamURL is where an allowed request goes: built from the host and
+// port the proxy checked, never from the raw Host header.
+func upstreamURL(scheme, host string, port int, u *url.URL) (string, error) {
+	if host == "" || strings.ContainsAny(host, "@/?#[] ") {
+		return "", fmt.Errorf("%q is not a host", host)
+	}
+	hostport := host
+	if port != 0 {
+		hostport = net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	out := url.URL{Scheme: scheme, Host: hostport, Path: u.Path, RawPath: u.RawPath, RawQuery: u.RawQuery}
+	return out.String(), nil
+}
+
+// pass sends r on to target and copies the answer back.
+func (e *Egress) pass(w http.ResponseWriter, r *http.Request, target string, body io.Reader) {
+	out, err := http.NewRequestWithContext(r.Context(), r.Method, target, body) //nolint:gosec // only hosts on the run's allowlist are reached; forward checks it first
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -151,16 +177,52 @@ var hopHeaders = []string{
 }
 
 // readScanned reads up to maxScan bytes of body for searching, and returns
-// them with a reader of the whole body.
-func readScanned(body io.Reader) ([]byte, io.Reader, error) {
+// them with a reader of the whole body, and whether there was more.
+func readScanned(body io.Reader) ([]byte, io.Reader, bool, error) {
 	if body == nil {
-		return nil, http.NoBody, nil
+		return nil, http.NoBody, false, nil
 	}
-	head, err := io.ReadAll(io.LimitReader(body, maxScan))
+	head, err := io.ReadAll(io.LimitReader(body, maxScan+1))
 	if err != nil {
-		return nil, nil, fmt.Errorf("read the body: %w", err)
+		return nil, nil, false, fmt.Errorf("read the body: %w", err)
 	}
-	return head, io.MultiReader(bytes.NewReader(head), body), nil
+	more := len(head) > maxScan
+	return head[:min(len(head), maxScan)], io.MultiReader(bytes.NewReader(head), body), more, nil
+}
+
+// decodeBody is head decoded as encoding says, up to maxScan bytes, for
+// searching, and why some of it went unsearched, if it did.
+func decodeBody(encoding string, head []byte) ([]byte, string) {
+	var r io.Reader
+	switch e := strings.ToLower(strings.TrimSpace(encoding)); e {
+	case "", "identity":
+		return nil, ""
+	case "gzip", "x-gzip":
+		gz, err := gzip.NewReader(bytes.NewReader(head))
+		if err != nil {
+			return nil, "the gzip body could not be decoded"
+		}
+		r = gz
+	case "deflate":
+		// HTTP's deflate is zlib-wrapped; some clients send it raw.
+		if z, err := zlib.NewReader(bytes.NewReader(head)); err == nil {
+			r = z
+		} else {
+			r = flate.NewReader(bytes.NewReader(head))
+		}
+	default:
+		return nil, fmt.Sprintf("the body's encoding %q can't be decoded", e)
+	}
+	out, err := io.ReadAll(io.LimitReader(r, maxScan+1))
+	switch {
+	case len(out) > maxScan:
+		return out[:maxScan], fmt.Sprintf("the decoded body is over %d MiB; only its first %d MiB were searched", maxScan>>20, maxScan>>20)
+	case err != nil && !errors.Is(err, io.ErrUnexpectedEOF):
+		return out, "the " + encoding + " body could not be decoded whole"
+	case err != nil:
+		return out, "the " + encoding + " body is cut short; what decoded was searched"
+	}
+	return out, ""
 }
 
 // splitHostPort splits "host:port", giving port def when there is none.

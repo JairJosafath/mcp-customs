@@ -47,7 +47,7 @@ func TestTheWeatherDemosStolenKeyIsSeenLeavingBase64Encoded(t *testing.T) {
 		t.Fatal(err)
 	}
 	eg, l := startEgress(t, filepath.Join(base, "trust"), net.DefaultResolver)
-	upFirewall(t, l)
+	upFirewall(t, eg, l)
 
 	inst := &fakeInstaller{out: Installed{Resolved: []byte("mod weather\n"), Command: []string{"/usr/bin/env", "WEATHER_CFG_DOMAIN=" + weatherCfgDomain, weather}}}
 	run := newIdleRunWith(t, inst, func(c *Config) {
@@ -127,12 +127,25 @@ func buildWeather(t *testing.T, dir string) string {
 	return out
 }
 
-// upFirewall holds the account's traffic to the proxy on l, until the
-// test ends.
-func upFirewall(t *testing.T, l *egress.Listeners) {
+// upFirewall holds the account's traffic to eg's proxy on l, refused
+// packets logged to eg, until the test ends.
+func upFirewall(t *testing.T, eg *egress.Egress, l *egress.Listeners) {
 	t.Helper()
+	group := uint16(3000 + os.Getpid()%1000)
+	nflog, err := egress.OpenNFLog(group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged := make(chan error, 1)
+	go func() { logged <- eg.ServeNFLog(nflog) }()
+	t.Cleanup(func() {
+		_ = nflog.Close()
+		if err := <-logged; err != nil {
+			t.Error(err)
+		}
+	})
 	proxy, dns, catch := l.Ports()
-	fw := egress.Firewall{Chain: fmt.Sprintf("MCPC_E2E_%d", os.Getpid()), UID: nobody, ProxyPort: proxy, DNSPort: dns, CatchPort: catch}
+	fw := egress.Firewall{Chain: fmt.Sprintf("MCPC_E2E_%d", os.Getpid()), UID: nobody, ProxyPort: proxy, DNSPort: dns, CatchPort: catch, NFLogGroup: group}
 	if err := fw.Up(t.Context(), egress.Exec); err != nil {
 		t.Fatal(err)
 	}

@@ -12,13 +12,15 @@ import (
 // A Firewall is the netfilter rules that hold the server under test to the
 // proxy. A Lambda MicroVM filters no hosts, so deny-by-default is enforced
 // here, inside it: every packet the account's processes send, matched by
-// their user ID, goes to the harness or nowhere.
+// their user ID, goes to the harness or nowhere, and every one turned away
+// is recorded.
 //
 //   - DNS (UDP port 53, to any address) is redirected to ServeDNS.
 //   - TCP to the proxy passes.
 //   - Any other TCP, to any address or port, is redirected to ServeCatch,
 //     which records and refuses it.
-//   - Anything else, and all IPv6, is rejected.
+//   - Anything else (other UDP, ICMP, other protocols) and all IPv6 is
+//     logged to the NFLOG group, which ServeNFLog records, then rejected.
 //
 // Applying it needs CAP_NET_ADMIN: the harness runs as root, and the
 // MicroVM image grants it (additionalOsCapabilities).
@@ -30,6 +32,8 @@ type Firewall struct {
 	UID uint32
 	// The harness's ports on 127.0.0.1.
 	ProxyPort, DNSPort, CatchPort int
+	// NFLogGroup is the NFLOG group refused packets are logged to.
+	NFLogGroup uint16
 }
 
 // A Command is one iptables or ip6tables invocation.
@@ -39,6 +43,7 @@ type Command []string
 func (f Firewall) Rules() []Command {
 	uid := strconv.FormatUint(uint64(f.UID), 10)
 	proxy, dns, catch := strconv.Itoa(f.ProxyPort), strconv.Itoa(f.DNSPort), strconv.Itoa(f.CatchPort)
+	nflog := []string{"-j", "NFLOG", "--nflog-group", strconv.Itoa(int(f.NFLogGroup))}
 	jump := []string{"-m", "owner", "--uid-owner", uid, "-j", f.Chain}
 	return []Command{
 		{"iptables", "-w", "-t", "nat", "-N", f.Chain},
@@ -52,9 +57,11 @@ func (f Firewall) Rules() []Command {
 		{"iptables", "-w", "-t", "filter", "-A", f.Chain, "-d", "127.0.0.1", "-p", "udp", "--dport", dns, "-j", "ACCEPT"},
 		{"iptables", "-w", "-t", "filter", "-A", f.Chain, "-d", "127.0.0.1", "-p", "tcp", "--dport", proxy, "-j", "ACCEPT"},
 		{"iptables", "-w", "-t", "filter", "-A", f.Chain, "-d", "127.0.0.1", "-p", "tcp", "--dport", catch, "-j", "ACCEPT"},
+		append(Command{"iptables", "-w", "-t", "filter", "-A", f.Chain}, nflog...),
 		{"iptables", "-w", "-t", "filter", "-A", f.Chain, "-j", "REJECT"},
 		append(Command{"iptables", "-w", "-t", "filter", "-I", "OUTPUT"}, jump...),
 		{"ip6tables", "-w", "-t", "filter", "-N", f.Chain},
+		append(Command{"ip6tables", "-w", "-t", "filter", "-A", f.Chain}, nflog...),
 		{"ip6tables", "-w", "-t", "filter", "-A", f.Chain, "-j", "REJECT"},
 		append(Command{"ip6tables", "-w", "-t", "filter", "-I", "OUTPUT"}, jump...),
 	}
@@ -81,8 +88,8 @@ type Runner func(ctx context.Context, c Command) error
 // Up puts the firewall up with run. If any rule fails, it takes down what
 // it put up and returns why: the server must never run without it.
 func (f Firewall) Up(ctx context.Context, run Runner) error {
-	if f.Chain == "" || f.UID == 0 || f.ProxyPort == 0 || f.DNSPort == 0 || f.CatchPort == 0 {
-		return errors.New("the firewall needs a chain, an unprivileged user ID and the harness's ports")
+	if f.Chain == "" || f.UID == 0 || f.ProxyPort == 0 || f.DNSPort == 0 || f.CatchPort == 0 || f.NFLogGroup == 0 {
+		return errors.New("the firewall needs a chain, an unprivileged user ID, the harness's ports and an NFLOG group")
 	}
 	for _, c := range f.Rules() {
 		if err := run(ctx, c); err != nil {
