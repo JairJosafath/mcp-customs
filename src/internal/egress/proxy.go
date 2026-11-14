@@ -127,6 +127,10 @@ const fakeBody = "ok\n"
 func (e *Egress) Proxy() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
+			if e.isSealed() {
+				e.refuseSealed(w, r)
+				return
+			}
 			e.tunnel(w, r)
 			return
 		}
@@ -299,7 +303,9 @@ func upstreamURL(scheme, host string, port int, u *url.URL) (string, error) {
 
 // pass sends r on to target and copies the answer back.
 func (e *Egress) pass(w http.ResponseWriter, r *http.Request, target string, body io.Reader) {
-	out, err := http.NewRequestWithContext(r.Context(), r.Method, target, body) //nolint:gosec // only hosts on the run's allowlist are reached; forward checks it first
+	ctx, stop := e.untilSealed(r.Context())
+	defer stop()
+	out, err := http.NewRequestWithContext(ctx, r.Method, target, body) //nolint:gosec // only hosts on the run's allowlist are reached; forward checks it first
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
