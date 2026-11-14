@@ -8,6 +8,16 @@ Every user-visible change, newest first. The format follows
 
 ### Added
 
+- The harness can't be exhausted or blinded quietly by the server it runs
+  (#18). Observations of each kind and of the whole run, sampling and
+  elicitation requests, and the server's requests answered at once are
+  capped, within what the Checker reads; reaching a cap, or the file
+  watch's limit, stops recording that kind with one `truncated`
+  observation, an `observations-truncated` code finding (at least
+  review). What would block (a canary leaving, an agent-config or
+  shell-startup write) is still recorded past a cap. The run's end kills
+  every process of the account, those that called `setsid` included.
+
 - The harness answers the judge's investigation (#27): `POST /clock`
   moves the server's clock forward with libfaketime, `POST /source` reads
   a file of the installed package (64 KB at most, nothing outside it),

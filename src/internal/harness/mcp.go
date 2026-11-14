@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -24,6 +25,21 @@ var clientCapabilities = map[string]any{
 
 // maxMessage bounds one JSON-RPC message from the server.
 const maxMessage = 16 << 20
+
+// maxPending bounds the server's requests the harness answers at once,
+// each with a goroutine. A real client has one or two open; a server
+// sending more without reading its answers is flooding the harness.
+const maxPending = 64
+
+// maxRequestID bounds a request id the harness keeps until it answers: a
+// JSON-RPC id is a number or a short string.
+const maxRequestID = 256
+
+// observer is what a session tells of the server's requests.
+type observer interface {
+	add(kind ObservationKind, detail any)
+	truncate(kind ObservationKind, why string)
+}
 
 var errServerGone = errors.New("the server under test has stopped")
 
@@ -52,8 +68,11 @@ type rpcMessage struct {
 // to the server, the server's answers, and the server's own requests, which
 // become observations.
 type conn struct {
-	out     chan []byte
-	observe func(ObservationKind, any)
+	out chan []byte
+	obs observer
+	// slots holds one token per request of the server being answered: at
+	// most maxPending, each with its goroutine.
+	slots chan struct{}
 
 	mu      sync.Mutex
 	next    int64
@@ -64,10 +83,11 @@ type conn struct {
 
 // newConn starts a session writing to w and reading r. Its goroutines end
 // when r ends or w fails; then every waiting call fails and closed closes.
-func newConn(w io.Writer, r io.Reader, observe func(ObservationKind, any)) *conn {
+func newConn(w io.Writer, r io.Reader, obs observer) *conn {
 	c := &conn{
 		out:     make(chan []byte),
-		observe: observe,
+		obs:     obs,
+		slots:   make(chan struct{}, maxPending),
 		pending: map[int64]chan rpcMessage{},
 		closed:  make(chan struct{}),
 	}
@@ -100,7 +120,7 @@ func (c *conn) read(r io.Reader) {
 		}
 		switch {
 		case msg.Method != "" && len(msg.ID) > 0:
-			go c.answer(msg)
+			c.request(msg)
 		case msg.Method != "":
 			// A notification: logging and progress say nothing a check needs.
 		default:
@@ -123,16 +143,64 @@ func (c *conn) deliver(msg rpcMessage) {
 	}
 }
 
-// answer answers a request the server sent. Sampling and elicitation are
-// observed, then answered blandly, as a user who declines would.
-func (c *conn) answer(msg rpcMessage) {
+// request takes a request the server sent: sampling and elicitation are
+// observed as they arrive, then every request is answered on a goroutine
+// of its own, at most maxPending at once. Past that, a request is not
+// answered, with one truncated observation of kind request.
+func (c *conn) request(msg rpcMessage) {
+	kind := requestKind(msg.Method)
+	select {
+	case c.slots <- struct{}{}:
+	default:
+		c.obs.truncate(ObservedRequest, fmt.Sprintf("more than %d requests of the server unanswered at once; that one and any after went unanswered", maxPending))
+		return
+	}
+	if kind != "" {
+		c.obs.add(kind, requestDetail(msg))
+	}
+	if len(msg.ID) > maxRequestID {
+		<-c.slots
+		return
+	}
 	reply := rpcMessage{JSONRPC: "2.0", ID: msg.ID}
-	switch msg.Method {
+	go func() {
+		defer func() { <-c.slots }()
+		c.answer(msg.Method, reply)
+	}()
+}
+
+// requestDetail is what an observation keeps of a request: its params
+// whole, or their start as a string when they are over maxRequestParams.
+func requestDetail(msg rpcMessage) RequestDetail {
+	if len(msg.Params) <= maxRequestParams {
+		return RequestDetail{Method: msg.Method, Params: msg.Params}
+	}
+	start, err := json.Marshal(strings.ToValidUTF8(string(msg.Params[:maxRequestParams]), "\uFFFD"))
+	if err != nil {
+		start = json.RawMessage(`""`)
+	}
+	return RequestDetail{Method: msg.Method, Params: start, Cut: true}
+}
+
+// requestKind is the observation kind of a request the server sends, or
+// "" when it is not observed.
+func requestKind(method string) ObservationKind {
+	switch method {
 	case "sampling/createMessage":
-		c.observe(ObservedSampling, RequestDetail{Method: msg.Method, Params: msg.Params})
+		return ObservedSampling
+	case "elicitation/create":
+		return ObservedElicitation
+	}
+	return ""
+}
+
+// answer answers a request the server sent: sampling and elicitation
+// blandly, as a user who declines would.
+func (c *conn) answer(method string, reply rpcMessage) {
+	switch method {
+	case "sampling/createMessage":
 		reply.Result = json.RawMessage(`{"role":"assistant","content":{"type":"text","text":"I can't help with that."},"model":"claude-sonnet-4-5","stopReason":"endTurn"}`)
 	case "elicitation/create":
-		c.observe(ObservedElicitation, RequestDetail{Method: msg.Method, Params: msg.Params})
 		reply.Result = json.RawMessage(`{"action":"decline"}`)
 	case "ping":
 		reply.Result = json.RawMessage(`{}`)

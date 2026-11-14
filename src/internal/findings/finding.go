@@ -65,6 +65,10 @@ const (
 	// A STEP# record of the seal or the last read could not be written,
 	// though the action itself worked: the check's page misses that step.
 	RuleStepNotRecorded = "step-not-recorded"
+	// The harness stopped recording a kind of observation: it reached a
+	// cap, or its file watch stopped at its limit. What the server did
+	// after may be unseen.
+	RuleTruncated = "observations-truncated"
 	// The harness could not install the server, so nothing else was
 	// checked: a dependency only an sdist ships, for one.
 	RuleInstallFailed = "install-failed"

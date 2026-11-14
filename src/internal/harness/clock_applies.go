@@ -132,23 +132,39 @@ func (a Account) elfApplies(exe, name string) (applies, why string) {
 var errUnreadable = errors.New("not a regular file the account can read")
 
 // openReadable opens, as the root harness, only what the account could
-// read itself: a regular file it owns or anyone may read. It looks before
-// it opens, so no device or FIFO is ever opened, and the file opened must
-// be the one it looked at.
+// read itself: a regular file it owns or anyone may read, along a path it
+// may search and through no /proc magic link. The look and the open run
+// as the account (asAccount), each through openNoMagic. It
+// looks before it opens, so no device or FIFO is ever opened, and the file
+// opened must be the one it looked at.
 func (a Account) openReadable(name string) (*os.File, error) {
-	seen, err := os.Stat(name)
-	if err != nil || !a.mayRead(seen) {
-		return nil, errUnreadable
-	}
-	f, err := os.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, errUnreadable
-	}
-	if info, err := f.Stat(); err != nil || !os.SameFile(seen, info) || !a.mayRead(info) {
-		_ = f.Close()
+	var f *os.File
+	a.asAccount(func() { f = a.openLooked(name) })
+	if f == nil {
 		return nil, errUnreadable
 	}
 	return f, nil
+}
+
+func (a Account) openLooked(name string) *os.File {
+	look, err := openNoMagic(name, oPath) // an O_PATH open only looks: it opens no device
+	if err != nil {
+		return nil
+	}
+	seen, err := look.Stat()
+	_ = look.Close()
+	if err != nil || !a.mayRead(seen) {
+		return nil
+	}
+	f, err := openNoMagic(name, os.O_RDONLY|syscall.O_NONBLOCK)
+	if err != nil {
+		return nil
+	}
+	if info, err := f.Stat(); err != nil || !os.SameFile(seen, info) || !a.mayRead(info) {
+		_ = f.Close()
+		return nil
+	}
+	return f
 }
 
 func (a Account) mayRead(info os.FileInfo) bool {
