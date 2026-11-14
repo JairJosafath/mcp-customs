@@ -46,6 +46,25 @@ describe('RecheckOutcomes', () => {
     expect(policies).toContain(`:event-bus/${EVENT_BUS}"]]}`);
   });
 
+  it('lets the Checker check a condition only on APPROVED items', () => {
+    const role = idOf(template, 'AWS::IAM::Role', 'CheckerRole');
+    const table = idOf(template, 'AWS::DynamoDB::Table', 'Table');
+    const policies = JSON.stringify(
+      Object.values(template.findResources('AWS::IAM::Policy')).filter((policy: unknown) =>
+        JSON.stringify(policy).includes(`{"Ref":"${role}"}`),
+      ),
+    );
+    expect(policies.split('dynamodb:ConditionCheckItem').length - 1).toBe(1);
+    expect(policies).toContain(
+      JSON.stringify({
+        Action: 'dynamodb:ConditionCheckItem',
+        Condition: { 'ForAllValues:StringEquals': { 'dynamodb:LeadingKeys': ['APPROVED'] } },
+        Effect: 'Allow',
+        Resource: { 'Fn::GetAtt': [table, 'Arn'] },
+      }),
+    );
+  });
+
   it('counts each re-check that failed twice from the Checker’s logs, and alarms on the first', () => {
     const logs = idOf(template, 'AWS::Logs::LogGroup', 'CheckerLogs');
     template.hasResourceProperties('AWS::Logs::MetricFilter', {

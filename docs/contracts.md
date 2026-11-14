@@ -264,11 +264,13 @@ A re-check never ends silently:
   the verdict code's. The mark is written in one transaction with a
   check that the re-check's version is still the package's `polled`, so
   of two re-checks of one approval only the newest version's sets the
-  link and sends the event, whichever ends last. A person who then
-  approves the re-check lifts the mark, only while it names that
-  re-check, and a second event goes out: detail-type
+  link and sends the event, whichever ends last. A re-check that passes, by code or a person's approval, always tries
+  to lift the mark, which comes off only while it names that re-check or,
+  for a retry, the re-check it retries (a mark left by a re-check that
+  failed after setting it is lifted by its retry), and a second event goes out: detail-type
   `Approved check no longer superseded`, the same detail with verdict
-  `pass`. A user subscribes with a rule on that source and those
+  `pass`. The `ConditionCheckItem` the transaction needs is granted to the
+  Checker on `APPROVED` items only. A user subscribes with a rule on that source and those
   detail-types; a retried step may send an event twice, told apart by
   `recheckId`.
 

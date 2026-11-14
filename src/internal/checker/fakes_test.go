@@ -216,9 +216,14 @@ type memoryReports struct {
 	mu      sync.Mutex
 	objects map[string][]byte
 	puts    int
+	// reportErr makes every report write fail, as an outage would.
+	reportErr error
 }
 
 func (m *memoryReports) PutReport(_ context.Context, checkID string, report []byte) error {
+	if m.reportErr != nil {
+		return m.reportErr
+	}
 	return m.put("reports/"+checkID+".json", report)
 }
 

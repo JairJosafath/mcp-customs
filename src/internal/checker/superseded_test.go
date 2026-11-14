@@ -1,11 +1,13 @@
 package checker
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/aws/aws-durable-execution-sdk-go/durable/durabletest"
 
+	"github.com/JairJosafath/mcp-customs/src/internal/poller"
 	"github.com/JairJosafath/mcp-customs/src/internal/store"
 	"github.com/JairJosafath/mcp-customs/src/internal/verdict"
 )
@@ -102,5 +104,48 @@ func TestOnlyTheNewestPolledVersionsRecheckSupersedesWhicheverEndsLast(t *testin
 		if len(w.events.superseded) != 1 || w.events.superseded[0].RecheckID != "recheck-1-0-2" {
 			t.Errorf("order %v: events %+v, want one, for 1.0.2's re-check", order, w.events.superseded)
 		}
+	}
+}
+
+func TestARetryThatPassesLiftsTheMarkTheFailedRecheckLeft(t *testing.T) {
+	// The reviewer's repro: code says review, so c0 is marked; a person
+	// approves; writing the verdict fails, so the re-check fails and asks
+	// for its retry; the retry passes and must lift recheck-1's mark.
+	w := reviewedRecheck()
+	w.rec.newestPolled = "1.0.1"
+	w.reports.reportErr = errors.New("the bucket is unavailable")
+	first := newVersion(false)
+	first.CheckID = poller.RecheckID("npm", "weather-mcp", "1.0.1")
+	runner := durabletest.NewLocalRunner(Handler(w.deps()))
+	if _, err := runner.RunUntilComplete(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.SendCallbackSuccess(runner.OpenCallbacks()[0].CallbackID, HumanAnswer{Decision: DecisionApprove}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.RunUntilComplete(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != durabletest.Failed || len(w.rec.retries) != 1 {
+		t.Fatalf("status %s, retries %v; want the re-check failed and its retry asked", result.Status, w.rec.retries)
+	}
+	if c0, _, _ := w.rec.GetCheck(t.Context(), "c0"); c0.SupersededBy != first.CheckID {
+		t.Fatalf("approved check %+v, want it still superseded by the failed re-check", c0)
+	}
+
+	// The poller starts the retry; this time it passes by code.
+	w.reports.reportErr = nil
+	w.judge = cleanJudge()
+	retry := newVersion(true)
+	retry.CheckID = poller.RetryID("npm", "weather-mcp", "1.0.1")
+	if out := runCheck(t, w, retry); out.Verdict != verdict.Pass {
+		t.Fatalf("retry verdict %s, want pass", out.Verdict)
+	}
+	if c0, _, _ := w.rec.GetCheck(t.Context(), "c0"); c0.SupersededBy != "" {
+		t.Errorf("approved check %+v, want the failed re-check's mark lifted by its retry", c0)
+	}
+	if len(w.events.lifted) != 1 || w.events.lifted[0].RecheckID != retry.CheckID {
+		t.Errorf("lifted events %+v, want one, from the retry", w.events.lifted)
 	}
 }

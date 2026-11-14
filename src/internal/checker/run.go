@@ -118,10 +118,8 @@ type run struct {
 	oversized *findings.Finding
 	// sealing says the sandbox's egress is being sealed for the last read.
 	sealing bool
-	// supersedeDone says a re-check's supersede ran, and superseded that it
-	// marked the approved check.
+	// supersedeDone says a re-check's supersede ran.
 	supersedeDone bool
-	superseded    bool
 }
 
 // Handler is the Checker's durable handler. Each write and each call is a

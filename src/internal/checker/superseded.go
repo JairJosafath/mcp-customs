@@ -3,6 +3,7 @@ package checker
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-durable-execution-sdk-go/durable"
 
@@ -34,23 +35,34 @@ func (r *run) supersede(ctx durable.Context, v verdict.Verdict) error {
 	if err != nil {
 		return fmt.Errorf("mark check %s superseded: %w", re.CheckID, err)
 	}
-	r.superseded = marked
 	if !marked {
 		return nil
 	}
 	return r.announce(ctx, "announce-superseded", v, r.deps.Events.PutSuperseded)
 }
 
-// lift, for a re-check that marked the approved check superseded and that
-// a person then approved, removes the mark while it is still this
-// re-check's and sends a second event saying so.
+// lift, for a re-check that passed, removes the approved check's
+// superseded mark while it names this re-check or, for a retry, the
+// re-check it retries, and sends a second event saying so. It is always
+// tried on a pass and the store's condition decides, so a mark set by a
+// run that later failed, or by a run before a replay, is still lifted.
 func (r *run) lift(ctx durable.Context) error {
 	re := r.in.Recheck
-	if re == nil || !r.superseded {
+	if re == nil {
 		return nil
 	}
+	owners := []string{r.in.CheckID}
+	if re.Retry {
+		owners = append(owners, retriedID(r.in.CheckID))
+	}
 	lifted, err := durable.Step(ctx, "lift-superseded", func(sc durable.StepContext) (bool, error) {
-		return r.deps.Store.LiftSuperseded(sc, re.CheckID, r.in.CheckID)
+		for _, owner := range owners {
+			lifted, err := r.deps.Store.LiftSuperseded(sc, re.CheckID, owner)
+			if err != nil || lifted {
+				return lifted, err
+			}
+		}
+		return false, nil
 	})
 	if err != nil {
 		return fmt.Errorf("lift the superseded mark of check %s: %w", re.CheckID, err)
@@ -60,6 +72,13 @@ func (r *run) lift(ctx durable.Context) error {
 	}
 	return r.announce(ctx, "announce-lifted", verdict.Pass, r.deps.Events.PutLifted)
 }
+
+// retrySuffix ends a retry's check ID: poller.RetryID is the first
+// re-check's ID with it appended.
+const retrySuffix = "-retry"
+
+// retriedID is the ID of the re-check that retry retries.
+func retriedID(retry string) string { return strings.TrimSuffix(retry, retrySuffix) }
 
 // announce sends, in step name, the event put makes of this re-check and
 // verdict v.
