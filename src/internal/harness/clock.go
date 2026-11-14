@@ -74,15 +74,16 @@ type clockRequest struct {
 }
 
 // clock moves the server's clock forward by the offset and answers the
-// clock now in force: the whole offset, and the time the server sees.
+// clock now in force: the whole offset, the time a server that loads
+// libfaketime sees, and whether this server's runtime does.
 func (h *Harness) clock(r *http.Request) (int, answer) {
 	var req clockRequest
 	if err := decode(r, &req); err != nil {
 		return problem(http.StatusBadRequest, err.Error())
 	}
 	d, err := time.ParseDuration(req.Offset)
-	if err != nil || d < time.Second || d > maxClockMove {
-		return problem(http.StatusBadRequest, fmt.Sprintf("The offset is a duration of a second to %s, such as \"720h\".", maxClockMove))
+	if err != nil || d < time.Second || d > maxClockMove || d%time.Second != 0 {
+		return problem(http.StatusBadRequest, fmt.Sprintf("The offset is whole seconds, from one to %s, such as \"720h\".", maxClockMove))
 	}
 	if !h.cfg.FakeTime.on() {
 		return problem(http.StatusConflict, "This harness has no fake clock.")
@@ -99,5 +100,13 @@ func (h *Harness) clock(r *http.Request) (int, answer) {
 }
 
 func (h *Harness) clockNow() answer {
-	return answer{"offset": h.clockOffset.String(), "now": h.cfg.Now().Add(h.clockOffset).UTC()}
+	var command []string
+	switch {
+	case h.srv != nil:
+		command = h.srv.command
+	case h.run != nil:
+		command = h.run.command
+	}
+	applies, why := fakeTimeApplies(command, h.serverPath())
+	return answer{"offset": h.clockOffset.String(), "now": h.cfg.Now().Add(h.clockOffset).UTC(), "applies": applies, "why": why}
 }

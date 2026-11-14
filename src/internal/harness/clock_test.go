@@ -56,7 +56,7 @@ func TestClockMovesTheServersClockForwardAndAnswersTheClockInForce(t *testing.T)
 func TestClockRefusesWhatIsNotAForwardMoveWithinItsBounds(t *testing.T) {
 	ft := fakeTimeIn(t.TempDir())
 	run := newTestRunWith(t, func(c *Config) { c.FakeTime = ft })
-	for _, bad := range []string{"", "soon", "-1h", "0s", "9000h"} {
+	for _, bad := range []string{"", "soon", "-1h", "0s", "9000h", "1.5s"} {
 		if status, _ := run.do(t, http.MethodPost, "/clock", map[string]any{"offset": bad}); status != http.StatusBadRequest {
 			t.Errorf("POST /clock %q = %d, want 400", bad, status)
 		}
@@ -96,5 +96,56 @@ func TestTheServerRunsWithTheFakeClockPreloaded(t *testing.T) {
 		if got := envValue(env, name); got != want {
 			t.Errorf("the server's %s = %q, want %q", name, got, want)
 		}
+	}
+}
+
+func TestClockSaysWhetherTheServersRuntimeSeesTheMove(t *testing.T) {
+	ft := fakeTimeIn(t.TempDir())
+	run := newTestRunWith(t, func(c *Config) { c.FakeTime = ft })
+	_, body := run.do(t, http.MethodPost, "/clock", map[string]any{"offset": "1h"})
+	if got := text(t, body["applies"]); got != appliesUnknown {
+		t.Errorf("before an install, applies = %q, want unknown", got)
+	}
+	// The test server is this test binary: Go, which libfaketime can't fake.
+	startTestServerIn(t, run)
+	if status, body := run.do(t, http.MethodPost, "/start", map[string]any{}); status != http.StatusOK {
+		t.Fatalf("POST /start = %d %v", status, body)
+	}
+	_, body = run.do(t, http.MethodPost, "/clock", map[string]any{"offset": "1h"})
+	if got := text(t, body["applies"]); got != appliesNo || !strings.Contains(text(t, body["why"]), "Go") {
+		t.Errorf("for a Go server, applies = %q (%s), want no", got, body["why"])
+	}
+}
+
+func TestFakeTimeAppliesToADynamicBinaryAndTheScriptsItRuns(t *testing.T) {
+	const path = "/usr/local/bin:/usr/bin:/bin"
+	found, ok := interpreter("sh", path)
+	if !ok {
+		t.Skip("no sh")
+	}
+	sh := []string{found}
+	if applies, why := fakeTimeApplies(sh, ""); applies != appliesYes {
+		t.Skipf("sh here is %s (%s); the test needs a dynamic one", applies, why)
+	}
+	dir := t.TempDir()
+	for name, script := range map[string]string{
+		"direct": "#!" + sh[0] + "\necho hi\n",
+		"env":    "#!/usr/bin/env sh\necho hi\n",
+	} {
+		file := filepath.Join(dir, name)
+		must(t, os.WriteFile(file, []byte(script), 0o700)) //nolint:gosec // an executable script for the test
+		if applies, why := fakeTimeApplies([]string{file}, path); applies != appliesYes {
+			t.Errorf("%s script: applies = %s (%s), want yes", name, applies, why)
+		}
+	}
+	missing := filepath.Join(dir, "missing")
+	must(t, os.WriteFile(missing, []byte("#!/usr/bin/env no-such-interpreter\n"), 0o700)) //nolint:gosec // an executable script for the test
+	if applies, _ := fakeTimeApplies([]string{missing}, path); applies != appliesUnknown {
+		t.Errorf("a script with no interpreter: applies = %s, want unknown", applies)
+	}
+	exe, err := os.Executable()
+	must(t, err)
+	if applies, _ := fakeTimeApplies([]string{exe}, ""); applies != appliesNo {
+		t.Errorf("a Go binary: applies = %s, want no", applies)
 	}
 }

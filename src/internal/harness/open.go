@@ -55,13 +55,23 @@ func openRoot(base, dir string) (*os.Root, error) {
 // openOwned opens name in root for reading: a regular file only, so no
 // FIFO or device can stall the harness, and, when the harness switches to
 // the account, one the account owns, so a hard link can't hand it a file
-// of root's. With follow false a link as the last element is refused.
+// of root's. With follow false a link as the last element is refused:
+// os.Root follows a link that stays inside it even with O_NOFOLLOW, so the
+// element is looked at first, and the file opened must be the one seen.
 func (a Account) openOwned(root *os.Root, name string, follow bool) (*os.File, fs.FileInfo, error) {
-	flag := os.O_RDONLY | syscall.O_NONBLOCK
+	var seen fs.FileInfo
 	if !follow {
-		flag |= syscall.O_NOFOLLOW
+		var err error
+		if seen, err = root.Lstat(name); errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, errNotFound
+		} else if err != nil {
+			return nil, nil, fmt.Errorf("%s can't be read here: %w", name, err)
+		}
+		if seen.Mode()&fs.ModeSymlink != 0 {
+			return nil, nil, fmt.Errorf("%s is a link", name)
+		}
 	}
-	f, err := root.OpenFile(name, flag, 0)
+	f, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil, errNotFound
 	}
@@ -72,6 +82,10 @@ func (a Account) openOwned(root *os.Root, name string, follow bool) (*os.File, f
 	if err != nil || !info.Mode().IsRegular() {
 		_ = f.Close()
 		return nil, nil, fmt.Errorf("%s is not a regular file", name)
+	}
+	if seen != nil && !os.SameFile(seen, info) {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("%s changed while it was opened", name)
 	}
 	if st, ok := info.Sys().(*syscall.Stat_t); a.Switch && (!ok || st.Uid != a.UID) {
 		_ = f.Close()

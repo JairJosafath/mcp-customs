@@ -27,6 +27,7 @@ func installedPackage(t *testing.T) testRun {
 		must(t, os.Symlink("../../secret.txt", filepath.Join(pkg, "link-out.js")))
 		must(t, os.Symlink("/etc/passwd", filepath.Join(pkg, "link-abs.js")))
 		must(t, syscall.Mkfifo(filepath.Join(pkg, "fifo.js"), 0o600))
+		must(t, os.Link(filepath.Join(run.workdir, "secret.txt"), filepath.Join(pkg, "hard.js")))
 	}
 	if status, body := run.do(t, http.MethodPost, "/install", installBody("npm", "weather@1.0.0")); status != http.StatusOK {
 		t.Fatalf("POST /install = %d %v", status, body)
@@ -61,7 +62,7 @@ func TestSourceIsBoundedTo64KB(t *testing.T) {
 
 func TestSourceRefusesAPathOrALinkOutOfThePackage(t *testing.T) {
 	run := installedPackage(t)
-	for _, p := range []string{"../../secret.txt", "dist/../../../secret.txt", "/etc/passwd", "", "link-out.js", "link-abs.js", "fifo.js", "dist"} {
+	for _, p := range []string{"../../secret.txt", "dist/../../../secret.txt", "/etc/passwd", "", "link-out.js", "link-abs.js", "fifo.js", "dist", "hard.js"} {
 		if status, body := run.do(t, http.MethodPost, "/source", map[string]any{"path": p}); status != http.StatusBadRequest {
 			t.Errorf("POST /source %q = %d %v, want 400", p, status, body)
 		}
@@ -72,12 +73,16 @@ func TestSourceRefusesAPathOrALinkOutOfThePackage(t *testing.T) {
 }
 
 func TestSourceRefusesAPackageDirectorySwappedForALink(t *testing.T) {
-	run := installedPackage(t)
-	pkg := filepath.Join(run.workdir, "node_modules", "weather")
-	must(t, os.Rename(pkg, pkg+".moved"))
-	must(t, os.Symlink(run.workdir, pkg))
-	if status, body := run.do(t, http.MethodPost, "/source", map[string]any{"path": "secret.txt"}); status != http.StatusConflict {
-		t.Errorf("POST /source through a swapped link = %d %v, want 409", status, body)
+	// The relative link stays inside the home, so os.Root alone follows it;
+	// only the check of the opened directory's real path refuses it.
+	for _, target := range []string{"../..", "/"} {
+		run := installedPackage(t)
+		pkg := filepath.Join(run.workdir, "node_modules", "weather")
+		must(t, os.Rename(pkg, pkg+".moved"))
+		must(t, os.Symlink(target, pkg))
+		if status, body := run.do(t, http.MethodPost, "/source", map[string]any{"path": "secret.txt"}); status != http.StatusBadRequest {
+			t.Errorf("POST /source through a link to %s = %d %v, want 400", target, status, body)
+		}
 	}
 }
 

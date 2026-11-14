@@ -190,11 +190,31 @@ func clock(ctx durable.Context, r *run, args json.RawMessage) (outcome, error) {
 	if err != nil || d < time.Minute || d > maxClock {
 		return outcome{}, fmt.Errorf("%w: a clock offset is a duration of a minute to %s", ErrBadArguments, maxClock)
 	}
-	got, err := r.harnessStep(ctx, ActClock, "/clock", map[string]any{"offset": d.String()}, jsonStrings)
+	got, err := r.harnessStep(ctx, ActClock, "/clock", map[string]any{"offset": d.String()}, clockText)
 	if err != nil {
 		return outcome{}, err
 	}
 	return got.outcome(fmt.Sprintf("Moved the sandbox's clock %s forward", d)), nil
+}
+
+// clockText is the clock the harness answered, and whether the server's
+// runtime sees it, as the judge reads them. A move the runtime can't see
+// is said plainly: then what the server does after proves nothing.
+func clockText(raw json.RawMessage) string {
+	var c struct {
+		Now     string `json:"now"`
+		Applies string `json:"applies"`
+		Why     string `json:"why"`
+	}
+	_ = json.Unmarshal(raw, &c)
+	seen := "It is not known whether the server's runtime sees the moved clock"
+	switch c.Applies {
+	case "yes":
+		seen = "The server's runtime sees the moved clock"
+	case "no":
+		seen = "The server's runtime does NOT see the moved clock, so nothing it does after shows what a waiting trigger would do"
+	}
+	return fmt.Sprintf("The sandbox's clock now reads %s. %s (%s).", c.Now, seen, c.Why)
 }
 
 type allowArgs struct {

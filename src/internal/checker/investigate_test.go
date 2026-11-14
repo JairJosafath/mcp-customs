@@ -30,3 +30,14 @@ func TestAnInvestigationMovesTheClockReadsTheSourceAndEndsAtAVerdict(t *testing.
 		t.Errorf("turns %+v, want the clock in force, then the source's text", turns)
 	}
 }
+
+func TestTheJudgeIsToldWhenTheServersRuntimeCantSeeTheMovedClock(t *testing.T) {
+	srv := cleanServer()
+	srv.clockApplies = "no"
+	w := newWorld(srv)
+	w.judge.moves = []string{"move_clock", "move_done_pass"}
+	runToEnd(t, w, npm)
+	if turns := w.judge.asked[1].Turns; len(turns) != 1 || !strings.Contains(turns[0].Outcome, "does NOT see the moved clock") {
+		t.Errorf("turns %+v, want the judge told the move isn't seen", turns)
+	}
+}

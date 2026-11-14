@@ -19,6 +19,8 @@ type server struct {
 	exited  chan struct{}
 	stderr  *tail
 	initial json.RawMessage
+	// command is what started the server.
+	command []string
 }
 
 // startServer starts args as the account in dir, with exactly env, and
@@ -36,7 +38,7 @@ func startServer(a Account, dir string, env, args []string, observe func(Observa
 		stop()
 		return nil, fmt.Errorf("connect to the server's stdout: %w", err)
 	}
-	s := &server{stdout: stdout, stop: stop, exited: make(chan struct{}), stderr: &tail{max: maxStderr}}
+	s := &server{stdout: stdout, stop: stop, exited: make(chan struct{}), stderr: &tail{max: maxStderr}, command: args}
 	cmd.Stderr = s.stderr
 	if err := cmd.Start(); err != nil {
 		stop()

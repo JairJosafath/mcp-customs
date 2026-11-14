@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -58,19 +59,38 @@ func (h *Harness) download(r *http.Request) (int, answer) {
 		return problem(http.StatusInternalServerError, "Could not read "+p+": "+err.Error())
 	}
 	head = head[:n]
-	sum := sha256.New()
-	sum.Write(head)
-	rest, err := io.Copy(sum, io.LimitReader(f, maxDownload))
+	size, sum, err := hashBounded(io.MultiReader(bytes.NewReader(head), f), maxDownload)
+	if errors.Is(err, errTooLarge) {
+		return problem(http.StatusRequestEntityTooLarge, fmt.Sprintf("%s grew past %d bytes while it was read.", p, maxDownload))
+	}
 	if err != nil {
 		return problem(http.StatusInternalServerError, "Could not read "+p+": "+err.Error())
 	}
 	return http.StatusOK, answer{
 		"path":    p,
-		"size":    int64(n) + rest,
-		"sha256":  hex.EncodeToString(sum.Sum(nil)),
+		"size":    size,
+		"sha256":  sum,
 		"kind":    http.DetectContentType(head),
 		"excerpt": strings.ToValidUTF8(string(head), "�"),
 	}
+}
+
+// errTooLarge is a file longer than the bound it is read to.
+var errTooLarge = errors.New("too large")
+
+// hashBounded is the size and SHA-256 of all r holds, read to limit bytes:
+// past it, errTooLarge, so a file still growing is never answered with
+// the hash of a part of it.
+func hashBounded(r io.Reader, limit int64) (int64, string, error) {
+	sum := sha256.New()
+	n, err := io.Copy(sum, io.LimitReader(r, limit+1))
+	if err != nil {
+		return 0, "", err
+	}
+	if n > limit {
+		return 0, "", errTooLarge
+	}
+	return n, hex.EncodeToString(sum.Sum(nil)), nil
 }
 
 // watchRootOf is the watched directory p is in, and p relative to it.
