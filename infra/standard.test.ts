@@ -1,0 +1,1523 @@
+// The Standard's rules for every stack, checked on the stacks infra/stacks.ts
+// defines for each tier, built the way `cdk synth -c tier=<tier>` builds
+// them. CDK Nag checks most AWS defaults; these check the rest, and that the
+// stacks keep what infra/operations.ts promises. A failing case here means a
+// stack breaks the Standard: fix the stack, never the test.
+import { App, Duration, RemovalPolicy, Stack } from 'aws-cdk-lib';
+import { HttpApi } from 'aws-cdk-lib/aws-apigatewayv2';
+import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import { Annotations, Match, Template } from 'aws-cdk-lib/assertions';
+import { BackupPlan, BackupPlanRule, BackupResource } from 'aws-cdk-lib/aws-backup';
+import { SubnetType, Vpc } from 'aws-cdk-lib/aws-ec2';
+import { Key } from 'aws-cdk-lib/aws-kms';
+import { Code, Function as LambdaFunction, Runtime, Tracing } from 'aws-cdk-lib/aws-lambda';
+import type { FunctionProps } from 'aws-cdk-lib/aws-lambda';
+import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
+import {
+  AuroraPostgresEngineVersion,
+  CfnDBCluster,
+  ClusterInstance,
+  Credentials,
+  DatabaseCluster,
+  DatabaseClusterEngine,
+} from 'aws-cdk-lib/aws-rds';
+import type { DatabaseClusterProps } from 'aws-cdk-lib/aws-rds';
+import { Secret } from 'aws-cdk-lib/aws-secretsmanager';
+import { Topic } from 'aws-cdk-lib/aws-sns';
+import { EmailSubscription, LambdaSubscription } from 'aws-cdk-lib/aws-sns-subscriptions';
+import { Queue } from 'aws-cdk-lib/aws-sqs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { beforeAll, describe, expect, it } from 'vitest';
+
+import { defineStacks } from './stacks';
+import { applyStandard, stackNameFor, STANDARD_TAGS, TIER_RULES, TIERS, tierOf } from './standard';
+import type { Operations, Tier, TierRules } from './standard';
+
+/** A resource in a synthesized template, as far as these rules read it. */
+interface Resource {
+  readonly Type: string;
+  readonly Properties?: Record<string, unknown>;
+  readonly DeletionPolicy?: string;
+  readonly UpdateReplacePolicy?: string;
+  readonly Condition?: string;
+}
+
+// Resources that hold data, which a stack must say to keep or delete.
+const STATEFUL_TYPES = [
+  'AWS::DynamoDB::Table',
+  'AWS::DynamoDB::GlobalTable',
+  'AWS::S3::Bucket',
+  'AWS::SQS::Queue',
+  'AWS::SNS::Topic',
+  'AWS::Logs::LogGroup',
+  'AWS::RDS::DBInstance',
+  'AWS::RDS::DBCluster',
+  'AWS::EFS::FileSystem',
+  'AWS::KMS::Key',
+  'AWS::Backup::BackupVault',
+];
+
+// What the alarms watch: per resource type, the metric each alarm reads.
+const ALARMED_METRICS: Readonly<Record<string, readonly string[]>> = {
+  'AWS::Lambda::Function': ['Errors', 'Throttles', 'Duration'],
+  'AWS::DynamoDB::Table': ['ReadThrottleEvents', 'WriteThrottleEvents', 'SystemErrors'],
+  'AWS::ApiGatewayV2::Api': ['5xx'],
+  // A load balancer's own 5xx, its targets' 5xx and how long they take.
+  'AWS::ElasticLoadBalancingV2::LoadBalancer': [
+    'HTTPCode_ELB_5XX_Count',
+    'HTTPCode_Target_5XX_Count',
+    'TargetResponseTime',
+  ],
+  'AWS::ElasticLoadBalancingV2::TargetGroup': ['UnHealthyHostCount'],
+  // Container Insights counts the running tasks.
+  'AWS::ECS::Service': ['CPUUtilization', 'MemoryUtilization', 'RunningTaskCount'],
+  // The group's CPU, and its instances in service against its minimum.
+  'AWS::AutoScaling::AutoScalingGroup': ['CPUUtilization', 'GroupInServiceInstances'],
+  'AWS::CloudFront::Distribution': ['5xxErrorRate'],
+  // The Scheduler's metrics are per schedule group: a run it dropped, or
+  // couldn't put in the dead-letter queue, is lost.
+  'AWS::Scheduler::ScheduleGroup': [
+    'InvocationDroppedCount',
+    'InvocationsFailedToBeSentToDeadLetterCount',
+  ],
+  // A rule's metrics are per rule: an event it gave up on, or couldn't put
+  // in the dead-letter queue. On the default bus its Ref is its name.
+  'AWS::Events::Rule': ['FailedInvocations', 'InvocationsFailedToBeSentToDlq'],
+};
+
+// What runs on an instance, whose volumes hold no data (docs/style/aws.md).
+const INSTANCE_TYPES = [
+  'AWS::AutoScaling::AutoScalingGroup',
+  'AWS::EC2::LaunchTemplate',
+  'AWS::EC2::Instance',
+];
+
+// Where a message or event that failed for good goes: a queue's redrive
+// policy, a function's or a schedule's or a rule target's dead-letter
+// config, or an asynchronous invocation's on-failure destination.
+const DEAD_LETTER_KEYS = ['RedrivePolicy', 'DeadLetterConfig', 'OnFailure'];
+
+// What AWS Backup's plan backs up; a stack holding none of it has no plan.
+// A data bucket keeps its earlier versions instead.
+const BACKED_UP_TYPES = ['AWS::DynamoDB::Table', 'AWS::RDS::DBCluster'];
+
+// The attribute that is a data store's ARN, per type: what a backup
+// selection names it by (#1921).
+const ARN_ATTRIBUTES: Readonly<Record<string, string>> = {
+  'AWS::DynamoDB::Table': 'Arn',
+  'AWS::RDS::DBCluster': 'DBClusterArn',
+};
+
+/** A data store a backup selection names: its logical id, properties and ARN attribute. */
+type DataStore = readonly [id: string, properties: unknown, arnAttribute: string];
+
+// The image of the AWS Distro for OpenTelemetry collector, which a task
+// runs beside its app to send the app's traces to X-Ray.
+const COLLECTOR_IMAGE = 'public.ecr.aws/aws-observability/aws-otel-collector:';
+
+// The actions that write traces to X-Ray.
+const XRAY_WRITE_ACTIONS = ['xray:PutTraceSegments', 'xray:PutTelemetryRecords'];
+
+/** The feature flags `cdk synth` reads from cdk.json, so the tests build the same app. */
+function cdkContext(): Record<string, unknown> {
+  const cdkJson: unknown = JSON.parse(
+    readFileSync(path.join(import.meta.dirname, '..', 'cdk.json'), 'utf8'),
+  );
+  if (typeof cdkJson !== 'object' || cdkJson === null || !('context' in cdkJson)) {
+    return {};
+  }
+  const { context } = cdkJson;
+  return typeof context === 'object' && context !== null ? { ...context } : {};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Whether `value` has the shape of `Operations`, field by field. */
+function isOperations(value: unknown): value is Operations {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const { backups, recovery, alerts } = value;
+  return (
+    isRecord(backups) &&
+    typeof backups['retentionDays'] === 'number' &&
+    typeof backups['copyToRegion'] === 'string' &&
+    isRecord(recovery) &&
+    typeof recovery['rpo'] === 'string' &&
+    typeof recovery['rto'] === 'string' &&
+    isRecord(alerts) &&
+    typeof alerts['email'] === 'string'
+  );
+}
+
+/**
+ * The block infra/operations.ts holds, which the factory renders from the
+ * Container's spec.operations; undefined in a repository scaffolded before
+ * it had one, whose stacks promise nothing per tier.
+ */
+async function loadOperations(): Promise<Operations | undefined> {
+  const file = path.join(import.meta.dirname, 'operations.ts');
+  if (!existsSync(file)) {
+    return undefined;
+  }
+  const loaded: unknown = await import(pathToFileURL(file).href);
+  const operations = isRecord(loaded) ? loaded['OPERATIONS'] : undefined;
+  if (!isOperations(operations)) {
+    throw new Error(
+      "infra/operations.ts exports no OPERATIONS of the Standard's Operations shape.",
+    );
+  }
+  return operations;
+}
+
+function isResource(value: unknown): value is Resource {
+  return isRecord(value) && typeof value['Type'] === 'string';
+}
+
+/** The resources in `template`, of one `type` or all. */
+function resourcesOf(template: Template, type?: string): [string, Resource][] {
+  const resources: unknown = template.toJSON()['Resources'];
+  const found: [string, Resource][] = [];
+  if (isRecord(resources)) {
+    for (const [id, resource] of Object.entries(resources)) {
+      if (isResource(resource) && (type === undefined || resource.Type === type)) {
+        found.push([id, resource]);
+      }
+    }
+  }
+  return found;
+}
+
+/** Every IAM policy statement in `value`: an object with an `Effect`, anywhere in it. */
+function statementsIn(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) {
+    return (value as unknown[]).flatMap(statementsIn);
+  }
+  if (!isRecord(value)) {
+    return [];
+  }
+  const own = 'Effect' in value ? [value] : [];
+  return [...own, ...Object.values(value).flatMap(statementsIn)];
+}
+
+/** Whether `statement` is KMS's default key policy statement, which hands the key's use to IAM. */
+function isKeyDefault(statement: Record<string, unknown>): boolean {
+  return (
+    statement['Action'] === 'kms:*' && JSON.stringify(statement['Principal']).endsWith(':root"]]}}')
+  );
+}
+
+/** The one item of `items`, failing the test with `what` when there are more or none. */
+function only<T>(items: readonly T[], what: string): T {
+  const [item] = items;
+  if (items.length !== 1 || item === undefined) {
+    throw new Error(`${what}: want exactly one, found ${String(items.length)}.`);
+  }
+  return item;
+}
+
+/**
+ * Whether the table `id` may be left out of the backups: Powertools'
+ * idempotency table, whose records expire (TTL) and need no restore. A data
+ * table that expires some items still holds data.
+ */
+function needsNoBackup(id: string, properties: unknown): boolean {
+  const ttl = isRecord(properties) ? properties['TimeToLiveSpecification'] : undefined;
+  return id.startsWith('Idempotency') && isRecord(ttl) && ttl['Enabled'] === true;
+}
+
+/**
+ * What a selection reaching past the stack should be instead, as the `aws-*`
+ * Frameworks' `infra/backups.ts` do since #1267. A cluster is selected by its
+ * `CfnDBCluster`'s `attrDbClusterArn` (`Fn::GetAtt`): `DatabaseCluster`'s
+ * `clusterArn` is a `formatArn` over a `Ref`, an ARN written out (#1921).
+ */
+const SELECT_BY_ARN =
+  "pass the stack's data tables and clusters to infra/backups.ts and select each with BackupResource.fromArn(table.tableArn) or BackupResource.fromArn((cluster.node.defaultChild as CfnDBCluster).attrDbClusterArn)";
+
+/**
+ * What is wrong with a backup selection in a stack whose data stores are
+ * `stores`, each one's logical id, properties and ARN attribute (`Arn` for a
+ * table, `DBClusterArn` for an Aurora cluster, #1921). It names the stack's
+ * own tables and clusters by `Fn::GetAtt` of that attribute and nothing
+ * else, every one but the idempotency table among them (`needsNoBackup`). A
+ * tag (`ListOfTags`), a condition, `*` or an ARN written out reaches past
+ * the stack: its `<name>-development` stack in the same account carries the
+ * same tag and names its tables alike (#1267). A fault of that kind names
+ * the fix (`SELECT_BY_ARN`), as a Container scaffolded before #1267 meets it
+ * first on the Standard's update (#1490).
+ */
+function selectionFaults(selection: unknown, stores: readonly DataStore[]): string[] {
+  if (!isRecord(selection)) {
+    return ['no BackupSelection'];
+  }
+  const faults: string[] = [];
+  for (const key of ['ListOfTags', 'Conditions']) {
+    if (key in selection) {
+      faults.push(
+        `selects by ${key}, which reaches every stack of the Container: ${SELECT_BY_ARN}`,
+      );
+    }
+  }
+  const named: unknown[] = [selection['Resources'] ?? []].flat();
+  const arnOf = ([id, , attribute]: DataStore): string =>
+    JSON.stringify({ 'Fn::GetAtt': [id, attribute] });
+  for (const resource of named) {
+    if (!stores.some((store) => JSON.stringify(resource) === arnOf(store))) {
+      faults.push(
+        `${JSON.stringify(resource)} is none of the stack's tables or clusters: ${SELECT_BY_ARN}`,
+      );
+    }
+  }
+  for (const store of stores) {
+    const [id, properties] = store;
+    if (
+      !needsNoBackup(id, properties) &&
+      !named.some((resource) => JSON.stringify(resource) === arnOf(store))
+    ) {
+      faults.push(`${id} is in no backup selection`);
+    }
+  }
+  return faults;
+}
+
+/** Each data store of `template` a backup selection names: its tables and Aurora clusters. */
+function dataStoresOf(template: Template): DataStore[] {
+  return Object.entries(ARN_ATTRIBUTES).flatMap(([type, attribute]) =>
+    resourcesOf(template, type).map(
+      ([id, store]): DataStore => [id, store.Properties, attribute] as const,
+    ),
+  );
+}
+
+/** What is wrong with a template's Aurora clusters, per rule of the tier. */
+interface ClusterFaults {
+  readonly encryption: string[];
+  readonly removal: string[];
+  readonly protection: string[];
+  readonly recovery: string[];
+}
+
+/**
+ * What is wrong with the Aurora clusters of `template` under `rules`, per
+ * rule, each fault naming the cluster (#1921): encrypted at rest with a
+ * customer managed key; on removal `Snapshot` where the tier keeps data,
+ * else `Delete`, and its key `Retain` or `Delete` alike; deletion
+ * protection where the tier keeps data and nowhere else; 35 days of
+ * backups, the most Aurora keeps, where the tier recovers data, else the
+ * one day it keeps anyway (`BackupRetentionPeriod` left out).
+ */
+function clusterFaults(template: Template, rules: TierRules): ClusterFaults {
+  const faults: ClusterFaults = { encryption: [], removal: [], protection: [], recovery: [] };
+  const keys = resourcesOf(template, 'AWS::KMS::Key');
+  for (const [id, cluster] of resourcesOf(template, 'AWS::RDS::DBCluster')) {
+    const properties = cluster.Properties ?? {};
+    if (properties['StorageEncrypted'] !== true) {
+      faults.encryption.push(`${id} is not encrypted at rest`);
+    }
+    const keyId = properties['KmsKeyId'];
+    const ownKeys = keys.filter(([keyLogicalId]) =>
+      JSON.stringify(keyId ?? null).includes(`"${keyLogicalId}"`),
+    );
+    if (keyId === undefined) {
+      faults.encryption.push(`${id} is encrypted with no customer managed key`);
+    } else if (ownKeys.length === 0) {
+      faults.encryption.push(
+        `${id} is encrypted with ${JSON.stringify(keyId)}, which is none of the stack's keys`,
+      );
+    }
+    const policy = rules.keepData ? 'Snapshot' : 'Delete';
+    if (cluster.DeletionPolicy !== policy || cluster.UpdateReplacePolicy !== policy) {
+      faults.removal.push(
+        `${id} is ${String(cluster.DeletionPolicy)}/${String(cluster.UpdateReplacePolicy)} on removal, not ${policy}`,
+      );
+    }
+    const keyPolicy = rules.keepData ? 'Retain' : 'Delete';
+    for (const [clusterKeyId, key] of ownKeys) {
+      if (key.DeletionPolicy !== keyPolicy) {
+        faults.removal.push(
+          `${id}'s key ${clusterKeyId} is ${String(key.DeletionPolicy)} on removal, not ${keyPolicy}`,
+        );
+      }
+    }
+    if ((properties['DeletionProtection'] === true) !== rules.keepData) {
+      faults.protection.push(
+        `${id} has ${rules.keepData ? 'no ' : ''}deletion protection, which the tier ${rules.keepData ? 'wants' : 'leaves off'}`,
+      );
+    }
+    const retention: unknown = properties['BackupRetentionPeriod'] ?? 1;
+    const days = rules.pointInTimeRecovery ? 35 : 1;
+    if (retention !== days) {
+      faults.recovery.push(`${id} keeps ${String(retention)} days of backups, not ${String(days)}`);
+    }
+  }
+  return faults;
+}
+
+/**
+ * Whether `json`, a part of a template, refers to the resource `id`: by
+ * `Ref`, as a table's or function's name, or by `Fn::GetAtt`, as a load
+ * balancer's or target group's full name and a service's name, or by the
+ * `Name` the resource has in the template, as a schedule group's name CDK
+ * makes at synth.
+ */
+function refersTo(json: string, id: string, resource?: Resource): boolean {
+  const name = resource?.Properties?.['Name'];
+  return (
+    json.includes(JSON.stringify({ Ref: id })) ||
+    json.includes(`{"Fn::GetAtt":[${JSON.stringify(id)},`) ||
+    (typeof name === 'string' && json.includes(JSON.stringify(name)))
+  );
+}
+
+/** The ids of the queues in `template` that something sends what failed for good to. */
+function deadLetterQueues(template: Template): Set<string> {
+  const queues = new Set(resourcesOf(template, 'AWS::SQS::Queue').map(([id]) => id));
+  const found = new Set<string>();
+  const visit = (value: unknown, deadLetter: boolean): void => {
+    if (Array.isArray(value)) {
+      for (const item of value as unknown[]) {
+        visit(item, deadLetter);
+      }
+      return;
+    }
+    if (!isRecord(value)) {
+      return;
+    }
+    const getAtt = value['Fn::GetAtt'];
+    if (deadLetter && Array.isArray(getAtt) && getAtt[1] === 'Arn') {
+      const [id] = getAtt as unknown[];
+      if (typeof id === 'string' && queues.has(id)) {
+        found.add(id);
+      }
+    }
+    for (const [key, child] of Object.entries(value)) {
+      visit(child, deadLetter || DEAD_LETTER_KEYS.includes(key));
+    }
+  };
+  for (const [, resource] of resourcesOf(template)) {
+    visit(resource.Properties, false);
+  }
+  return found;
+}
+
+/** The container definitions of a task definition, as records. */
+function containersOf(taskDefinition: Resource): Record<string, unknown>[] {
+  const containers = taskDefinition.Properties?.['ContainerDefinitions'];
+  return Array.isArray(containers) ? (containers as unknown[]).filter(isRecord) : [];
+}
+
+/** A stack that holds only the vault a backup is copied to, and its key: it serves nothing. */
+function holdsOnlyACopyVault(template: Template): boolean {
+  const types = new Set(resourcesOf(template).map(([, resource]) => resource.Type));
+  types.delete('AWS::CDK::Metadata');
+  return (
+    types.has('AWS::Backup::BackupVault') &&
+    [...types].every((type) => ['AWS::Backup::BackupVault', 'AWS::KMS::Key'].includes(type))
+  );
+}
+
+/** Whether `template` holds a resource AWS Backup's plan backs up. */
+function holdsBackedUpData(template: Template): boolean {
+  return BACKED_UP_TYPES.some((type) => resourcesOf(template, type).length > 0);
+}
+
+/**
+ * The buckets in `template` that hold data: every bucket but those another
+ * resource writes its logs to (a bucket's access logs, a distribution's, a
+ * load balancer's), which are not data and expire.
+ */
+function dataBuckets(template: Template): [string, Resource][] {
+  const logging = resourcesOf(template).flatMap(([, resource]) => {
+    const properties = resource.Properties ?? {};
+    const distribution = properties['DistributionConfig'];
+    const attributes = properties['LoadBalancerAttributes'];
+    return [
+      properties['LoggingConfiguration'],
+      isRecord(distribution) ? distribution['Logging'] : undefined,
+      Array.isArray(attributes)
+        ? (attributes as unknown[]).filter(
+            (attribute) => isRecord(attribute) && attribute['Key'] === 'access_logs.s3.bucket',
+          )
+        : undefined,
+    ].map((value: unknown) => JSON.stringify(value ?? null));
+  });
+  return resourcesOf(template, 'AWS::S3::Bucket').filter(
+    ([id]) => !logging.some((json) => refersTo(json, id)),
+  );
+}
+
+/** One tier's app, as `cdk synth -c tier=<tier>` builds it. */
+interface Built {
+  readonly stacks: Stack[];
+  readonly templates: [string, Template][];
+}
+
+/** Builds and synthesizes the app for `tier`; synth throws on an unacknowledged CDK Nag finding. */
+function build(tier: Tier): Built {
+  const app = new App({ context: { ...cdkContext(), tier } });
+  // A stacks.ts written before tiers takes the app alone, and fits this too.
+  const define: (app: App, tier: Tier) => Stack[] = defineStacks;
+  define(app, tierOf(app));
+  applyStandard(app, tier);
+  // Every stack in the app, as applyStandard sees them, not only those
+  // defineStacks returns.
+  const stacks = app.node.findAll().filter((node) => Stack.isStack(node));
+  app.synth();
+  return { stacks, templates: stacks.map((stack) => [stack.stackName, Template.fromStack(stack)]) };
+}
+
+const operations = await loadOperations();
+const built = new Map<Tier, Built>();
+
+/** The app built for `tier`. */
+function app(tier: Tier): Built {
+  const found = built.get(tier);
+  if (found === undefined) {
+    throw new Error(`No app was built for ${tier}.`);
+  }
+  return found;
+}
+
+beforeAll(() => {
+  for (const tier of TIERS) {
+    built.set(tier, build(tier));
+  }
+});
+
+// The rule a backup selection keeps, case by case: the stack's own data
+// tables and clusters by ARN, never what could reach another stack of the
+// Container.
+describe('a backup selection', () => {
+  const expiring = { TimeToLiveSpecification: { AttributeName: 'expiration', Enabled: true } };
+  const tables: DataStore[] = [
+    ['ItemsA1B2', {}, 'Arn'],
+    ['IdempotencyC3D4', expiring, 'Arn'],
+  ];
+  const stores: DataStore[] = [...tables, ['ClusterE5F6', {}, 'DBClusterArn']];
+  const arn = (id: string, attribute = 'Arn'): unknown => ({ 'Fn::GetAtt': [id, attribute] });
+  const development = 'arn:aws:dynamodb:eu-west-1:123456789012:table/orders-development-Items*';
+  const clusterArn = 'arn:aws:rds:eu-west-1:123456789012:cluster:orders-cluster';
+  it.each([
+    ["names the stack's data table", { Resources: [arn('ItemsA1B2')] }, []],
+    [
+      'names the idempotency table too',
+      { Resources: [arn('ItemsA1B2'), arn('IdempotencyC3D4')] },
+      [],
+    ],
+    [
+      "selects the Container's tag alone, which the development stack's tables carry too (#1267)",
+      {
+        ListOfTags: [
+          {
+            ConditionKey: 'theos:container',
+            ConditionType: 'STRINGEQUALS',
+            ConditionValue: 'orders',
+          },
+        ],
+      },
+      [
+        `selects by ListOfTags, which reaches every stack of the Container: ${SELECT_BY_ARN}`,
+        'ItemsA1B2 is in no backup selection',
+      ],
+    ],
+    [
+      'takes every resource with the tag by a condition (#1267)',
+      {
+        Resources: ['*'],
+        Conditions: {
+          StringEquals: [
+            { ConditionKey: 'aws:ResourceTag/theos:container', ConditionValue: 'orders' },
+          ],
+        },
+      },
+      [
+        `selects by Conditions, which reaches every stack of the Container: ${SELECT_BY_ARN}`,
+        `"*" is none of the stack's tables or clusters: ${SELECT_BY_ARN}`,
+        'ItemsA1B2 is in no backup selection',
+      ],
+    ],
+    [
+      "names the development stack's tables by an ARN written out (#1267)",
+      { Resources: [arn('ItemsA1B2'), development] },
+      [
+        `${JSON.stringify(development)} is none of the stack's tables or clusters: ${SELECT_BY_ARN}`,
+      ],
+    ],
+    [
+      'leaves the data table out',
+      { Resources: [arn('IdempotencyC3D4')] },
+      ['ItemsA1B2 is in no backup selection'],
+    ],
+  ])('that %s has the faults it lists', (_, selection, faults) => {
+    expect(selectionFaults(selection, tables)).toEqual(faults);
+  });
+
+  // A stack with a table and an Aurora cluster (#1921).
+  it.each([
+    [
+      "names the stack's table and cluster, the cluster by DBClusterArn",
+      { Resources: [arn('ItemsA1B2'), arn('ClusterE5F6', 'DBClusterArn')] },
+      [],
+    ],
+    [
+      'leaves the cluster out',
+      { Resources: [arn('ItemsA1B2')] },
+      ['ClusterE5F6 is in no backup selection'],
+    ],
+    [
+      'names the cluster by an ARN written out',
+      { Resources: [arn('ItemsA1B2'), clusterArn] },
+      [
+        `${JSON.stringify(clusterArn)} is none of the stack's tables or clusters: ${SELECT_BY_ARN}`,
+        'ClusterE5F6 is in no backup selection',
+      ],
+    ],
+    [
+      'names the cluster by Arn, which a cluster has no attribute of, instead of DBClusterArn',
+      { Resources: [arn('ItemsA1B2'), arn('ClusterE5F6')] },
+      [
+        `${JSON.stringify(arn('ClusterE5F6'))} is none of the stack's tables or clusters: ${SELECT_BY_ARN}`,
+        'ClusterE5F6 is in no backup selection',
+      ],
+    ],
+  ])(
+    'in a stack with a cluster that %s has the faults it lists (#1921)',
+    (_, selection, faults) => {
+      expect(selectionFaults(selection, stores)).toEqual(faults);
+    },
+  );
+
+  it('that selects by tag has a fault naming the fix in infra/backups.ts (#1490)', () => {
+    const [fault] = selectionFaults({ ListOfTags: [] }, tables);
+    expect(fault).toContain('infra/backups.ts');
+    expect(fault).toContain('BackupResource.fromArn(table.tableArn)');
+    expect(fault).toContain(
+      'BackupResource.fromArn((cluster.node.defaultChild as CfnDBCluster).attrDbClusterArn)',
+    );
+  });
+
+  it('that leaves out a data table whose items expire has a fault: it still holds data', () => {
+    expect(
+      selectionFaults({ Resources: [arn('IdempotencyC3D4')] }, [
+        ['ItemsA1B2', expiring, 'Arn'],
+        ['IdempotencyC3D4', expiring, 'Arn'],
+      ]),
+    ).toEqual(['ItemsA1B2 is in no backup selection']);
+  });
+});
+
+describe('the tier', () => {
+  it('is development when the app names none', () => {
+    expect(tierOf(new App())).toBe('development');
+  });
+
+  it('is the one the tier context names', () => {
+    for (const tier of TIERS) {
+      expect(tierOf(new App({ context: { tier } }))).toBe(tier);
+    }
+  });
+
+  it('refuses a tier it does not know', () => {
+    expect(() => tierOf(new App({ context: { tier: 'staging' } }))).toThrow(/staging/);
+  });
+});
+
+describe.each(TIERS)('the Standard, in %s', (tier) => {
+  it('has at least one stack', () => {
+    expect(app(tier).stacks.length).toBeGreaterThan(0);
+  });
+
+  it('leaves no error or warning on any stack', () => {
+    for (const stack of app(tier).stacks) {
+      const annotations = Annotations.fromStack(stack);
+      expect(annotations.findError('*', Match.anyValue()), stack.stackName).toEqual([]);
+      expect(annotations.findWarning('*', Match.anyValue()), stack.stackName).toEqual([]);
+    }
+  });
+
+  it('tags every stack with its project, system and container', () => {
+    for (const stack of app(tier).stacks) {
+      expect(stack.tags.tagValues(), stack.stackName).toMatchObject(STANDARD_TAGS);
+    }
+  });
+
+  it('tags every resource that takes a list of tags', () => {
+    // An Auto Scaling group's tags also say whether instances get them.
+    const wanted: unknown[] = Object.entries(STANDARD_TAGS).map(([Key, Value]): unknown =>
+      expect.objectContaining({ Key, Value }),
+    );
+    for (const [name, template] of app(tier).templates) {
+      for (const [id, resource] of resourcesOf(template)) {
+        const tags = resource.Properties?.['Tags'];
+        if (Array.isArray(tags)) {
+          expect(tags, `${name}/${id}`).toEqual(expect.arrayContaining(wanted));
+        }
+      }
+    }
+  });
+
+  it('grants no IAM action with a wildcard service or action', () => {
+    for (const [name, template] of app(tier).templates) {
+      for (const statement of statementsIn(template.toJSON())) {
+        // A Deny may name every action, such as a bucket refusing plain HTTP;
+        // a key's default policy lets the account's IAM decide who uses it.
+        if (statement['Effect'] === 'Deny' || isKeyDefault(statement)) {
+          continue;
+        }
+        for (const key of ['Action', 'NotAction']) {
+          for (const action of [statement[key] ?? []].flat()) {
+            expect(action, name).not.toMatch(/^\*$|^[a-z0-9-]+:\*$/);
+          }
+        }
+      }
+    }
+  });
+
+  it('encrypts every table, bucket, queue, topic and cluster at rest, a cluster with a customer managed key', () => {
+    for (const [name, template] of app(tier).templates) {
+      expect(clusterFaults(template, TIER_RULES[tier]).encryption, name).toEqual([]);
+      for (const [id, table] of resourcesOf(template, 'AWS::DynamoDB::Table')) {
+        expect(table.Properties?.['SSESpecification'], `${name}/${id}`).toMatchObject({
+          SSEEnabled: true,
+        });
+      }
+      for (const [id, bucket] of resourcesOf(template, 'AWS::S3::Bucket')) {
+        expect(bucket.Properties?.['BucketEncryption'], `${name}/${id}`).toBeDefined();
+      }
+      for (const [id, queue] of resourcesOf(template, 'AWS::SQS::Queue')) {
+        const encrypted =
+          queue.Properties?.['KmsMasterKeyId'] !== undefined ||
+          queue.Properties?.['SqsManagedSseEnabled'] === true;
+        expect(encrypted, `${name}/${id}`).toBe(true);
+      }
+      for (const [id, topic] of resourcesOf(template, 'AWS::SNS::Topic')) {
+        expect(topic.Properties?.['KmsMasterKeyId'], `${name}/${id}`).toBeDefined();
+      }
+    }
+  });
+
+  it('keeps every log group for a set time, and gives every function one', () => {
+    for (const [name, template] of app(tier).templates) {
+      for (const [id, group] of resourcesOf(template, 'AWS::Logs::LogGroup')) {
+        expect(group.Properties?.['RetentionInDays'], `${name}/${id}`).toBeGreaterThan(0);
+      }
+      for (const [id, fn] of resourcesOf(template, 'AWS::Lambda::Function')) {
+        expect(fn.Properties?.['LoggingConfig'], `${name}/${id}`).toHaveProperty('LogGroup');
+      }
+    }
+  });
+
+  it('delivers again only the messages that failed, from every queue a function consumes', () => {
+    for (const [name, template] of app(tier).templates) {
+      const queues = resourcesOf(template, 'AWS::SQS::Queue').map(([id]) => `"${id}"`);
+      for (const [id, mapping] of resourcesOf(template, 'AWS::Lambda::EventSourceMapping')) {
+        // A source without an ARN (a self-managed Kafka cluster) is no queue.
+        const source = JSON.stringify(mapping.Properties?.['EventSourceArn'] ?? '');
+        if (source.includes(':sqs:') || queues.some((queue) => source.includes(queue))) {
+          // Without it one bad message fails its whole batch, again and again.
+          expect(mapping.Properties?.['FunctionResponseTypes'], `${name}/${id}`).toContain(
+            'ReportBatchItemFailures',
+          );
+        }
+      }
+    }
+  });
+
+  it('retries every schedule’s target, sends what it could not deliver to a dead-letter queue, and keeps it in a group of its stack', () => {
+    for (const [name, template] of app(tier).templates) {
+      const groups = resourcesOf(template, 'AWS::Scheduler::ScheduleGroup');
+      const queues = deadLetterQueues(template);
+      for (const [id, schedule] of resourcesOf(template, 'AWS::Scheduler::Schedule')) {
+        const target = schedule.Properties?.['Target'];
+        const deadLetter = isRecord(target) ? JSON.stringify(target['DeadLetterConfig'] ?? {}) : '';
+        expect(
+          [...queues].some((queue) => refersTo(deadLetter, queue)),
+          `${name}/${id} dead-letter queue`,
+        ).toBe(true);
+        expect(isRecord(target) && isRecord(target['RetryPolicy']), `${name}/${id} retries`).toBe(
+          true,
+        );
+        // The Scheduler's metrics are per group: in the default group, the
+        // stack's alarms couldn't tell its runs from any other schedule's.
+        const group = JSON.stringify(schedule.Properties?.['GroupName'] ?? '');
+        expect(
+          groups.some(([groupId, resource]) => refersTo(group, groupId, resource)),
+          `${name}/${id} group`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('retries every rule’s Lambda target and sends what it could not deliver to a dead-letter queue', () => {
+    for (const [name, template] of app(tier).templates) {
+      const queues = deadLetterQueues(template);
+      const functions = resourcesOf(template, 'AWS::Lambda::Function').map(([id]) => id);
+      for (const [id, rule] of resourcesOf(template, 'AWS::Events::Rule')) {
+        const targets = rule.Properties?.['Targets'];
+        for (const target of Array.isArray(targets) ? (targets as unknown[]) : []) {
+          const arn = isRecord(target) ? JSON.stringify(target['Arn'] ?? '') : '';
+          if (!functions.some((fn) => refersTo(arn, fn))) {
+            continue;
+          }
+          const deadLetter = isRecord(target)
+            ? JSON.stringify(target['DeadLetterConfig'] ?? {})
+            : '';
+          expect(
+            [...queues].some((queue) => refersTo(deadLetter, queue)),
+            `${name}/${id} dead-letter queue`,
+          ).toBe(true);
+          expect(isRecord(target) && isRecord(target['RetryPolicy']), `${name}/${id} retries`).toBe(
+            true,
+          );
+        }
+      }
+    }
+  });
+
+  it('says what happens to the data of every stateful resource when it is removed', () => {
+    for (const [name, template] of app(tier).templates) {
+      for (const [id, resource] of resourcesOf(template)) {
+        if (STATEFUL_TYPES.includes(resource.Type)) {
+          expect(resource.DeletionPolicy, `${name}/${id}`).toMatch(
+            /^(Retain|Delete|Snapshot|RetainExceptOnCreate)$/,
+          );
+        }
+      }
+    }
+  });
+
+  it('protects every stack from termination where the tier keeps data', () => {
+    for (const stack of app(tier).stacks) {
+      expect(stack.terminationProtection, stack.stackName).toBe(TIER_RULES[tier].keepData);
+    }
+  });
+});
+
+// What infra/operations.ts promises, per tier: one describe per item of the
+// Standard's digest. A repository with no infra/operations.ts was scaffolded
+// before the block, and its stacks don't read it.
+describe.runIf(operations !== undefined).each(TIERS)(
+  'what infra/operations.ts promises, in %s',
+  (tier) => {
+    const rules = TIER_RULES[tier];
+    const promised = (): Operations => {
+      if (operations === undefined) {
+        throw new Error('infra/operations.ts is gone.');
+      }
+      return operations;
+    };
+    // The stacks that serve: all but one holding only the vault backups are copied to.
+    const serving = (): [string, Template][] =>
+      app(tier).templates.filter(([, template]) => !holdsOnlyACopyVault(template));
+
+    describe('the stack names', () => {
+      it("name every stack for the tier, so a deploy without one never changes production's", () => {
+        for (const stack of app(tier).stacks) {
+          const base = stack.stackName.replace(/-development$/, '');
+          expect(stack.stackName).toBe(stackNameFor(base, tier));
+        }
+      });
+    });
+
+    describe('the removal policies', () => {
+      it('keep every table, data bucket, backup vault and vault key where the tier keeps data, else delete them; snapshot every cluster where it keeps data, else delete it and its key', () => {
+        const policy = rules.keepData ? 'Retain' : 'Delete';
+        for (const [name, template] of app(tier).templates) {
+          expect(clusterFaults(template, rules).removal, name).toEqual([]);
+          for (const [id, data] of [
+            ...resourcesOf(template, 'AWS::DynamoDB::Table'),
+            ...dataBuckets(template),
+          ]) {
+            expect([data.DeletionPolicy, data.UpdateReplacePolicy], `${name}/${id}`).toEqual([
+              policy,
+              policy,
+            ]);
+          }
+          for (const [id, vault] of resourcesOf(template, 'AWS::Backup::BackupVault')) {
+            expect(vault.DeletionPolicy, `${name}/${id}`).toBe('Retain');
+            const key = JSON.stringify(vault.Properties?.['EncryptionKeyArn']);
+            for (const [keyId, vaultKey] of resourcesOf(template, 'AWS::KMS::Key')) {
+              if (key.includes(`"${keyId}"`)) {
+                expect(vaultKey.DeletionPolicy, `${name}/${keyId}`).toBe('Retain');
+              }
+            }
+          }
+        }
+      });
+    });
+
+    describe('deletion and termination protection', () => {
+      it('protect every table, cluster and stack where the tier keeps data, and nothing else', () => {
+        for (const [name, template] of app(tier).templates) {
+          expect(clusterFaults(template, rules).protection, name).toEqual([]);
+          for (const [id, table] of resourcesOf(template, 'AWS::DynamoDB::Table')) {
+            expect(table.Properties?.['DeletionProtectionEnabled'] === true, `${name}/${id}`).toBe(
+              rules.keepData,
+            );
+          }
+        }
+        for (const stack of app(tier).stacks) {
+          expect(stack.terminationProtection, stack.stackName).toBe(rules.keepData);
+        }
+      });
+    });
+
+    describe('point-in-time recovery', () => {
+      it('is on for every table, and 35 days of backups for every cluster, in production when the RPO is under a day', () => {
+        const [, count = '', unit = ''] = /^(\d+)([mhd])$/.exec(promised().recovery.rpo) ?? [];
+        const minutes = Number(count) * ({ m: 1, h: 60, d: 1440 }[unit] ?? Number.NaN);
+        // An RPO of 0 asks for the least loss there is: point-in-time recovery, as under a day (#1266).
+        expect(minutes, `recovery.rpo ${promised().recovery.rpo}`).toBeGreaterThanOrEqual(0);
+        if (tier !== 'production' || minutes >= 1440) {
+          return;
+        }
+        for (const [name, template] of app(tier).templates) {
+          const recovering = { ...rules, pointInTimeRecovery: true };
+          expect(clusterFaults(template, recovering).recovery, name).toEqual([]);
+          for (const [id, table] of resourcesOf(template, 'AWS::DynamoDB::Table')) {
+            expect(table.Properties?.['PointInTimeRecoverySpecification'], `${name}/${id}`).toEqual(
+              expect.objectContaining({ PointInTimeRecoveryEnabled: true }),
+            );
+          }
+        }
+      });
+
+      it('is on for every table, and every cluster keeps 35 days of backups, where the tier recovers data; off and a day elsewhere', () => {
+        for (const [name, template] of app(tier).templates) {
+          expect(clusterFaults(template, rules).recovery, name).toEqual([]);
+          for (const [id, table] of resourcesOf(template, 'AWS::DynamoDB::Table')) {
+            const spec = table.Properties?.['PointInTimeRecoverySpecification'];
+            const enabled = isRecord(spec) && spec['PointInTimeRecoveryEnabled'] === true;
+            expect(enabled, `${name}/${id}`).toBe(rules.pointInTimeRecovery);
+          }
+        }
+      });
+    });
+
+    describe('the versions of data buckets', () => {
+      it('are kept where the tier keeps data, the earlier ones as long as a table recovers or the backups last', () => {
+        if (!rules.keepData) {
+          return;
+        }
+        // Point-in-time recovery's 35 days, or retentionDays when longer.
+        const days = Math.max(35, promised().backups.retentionDays);
+        for (const [name, template] of app(tier).templates) {
+          for (const [id, bucket] of dataBuckets(template)) {
+            expect(bucket.Properties?.['VersioningConfiguration'], `${name}/${id}`).toEqual({
+              Status: 'Enabled',
+            });
+            const lifecycle = bucket.Properties?.['LifecycleConfiguration'];
+            const lifecycleRules: unknown[] = isRecord(lifecycle)
+              ? [lifecycle['Rules']].flat()
+              : [];
+            const kept = lifecycleRules.flatMap((rule) => {
+              const expiry = isRecord(rule) ? rule['NoncurrentVersionExpiration'] : undefined;
+              return isRecord(rule) && rule['Status'] === 'Enabled' && isRecord(expiry)
+                ? [expiry['NoncurrentDays']]
+                : [];
+            });
+            expect(kept, `${name}/${id}: the days earlier versions are kept`).toHaveLength(1);
+            expect(kept[0], `${name}/${id}`).toBeGreaterThanOrEqual(days);
+          }
+        }
+      });
+    });
+
+    describe('the backup plan and vault', () => {
+      it('back up daily for retentionDays in a vault with its own key, copied to copyToRegion', () => {
+        const { retentionDays, copyToRegion } = promised().backups;
+        const backedUp = rules.backups && retentionDays > 0;
+        for (const [name, template] of serving()) {
+          const plans = resourcesOf(template, 'AWS::Backup::BackupPlan');
+          const vaults = resourcesOf(template, 'AWS::Backup::BackupVault');
+          const selections = resourcesOf(template, 'AWS::Backup::BackupSelection');
+          if (!backedUp || !holdsBackedUpData(template)) {
+            expect([plans, vaults, selections], name).toEqual([[], [], []]);
+            continue;
+          }
+          const [vaultId, vault] = only(vaults, `${name}'s backup vaults`);
+          expect(vault.Properties?.['EncryptionKeyArn'], name).toEqual({
+            'Fn::GetAtt': [expect.any(String), 'Arn'],
+          });
+          const plan = only(plans, `${name}'s backup plans`)[1].Properties?.['BackupPlan'];
+          const planRules: unknown[] = isRecord(plan) ? [plan['BackupPlanRule']].flat() : [];
+          expect(planRules.length, name).toBeGreaterThan(0);
+          // Daily: a minute and an hour, every day of every month.
+          const daily: unknown = expect.stringMatching(/^cron\(\S+ \S+ \* \* \? \*\)$/);
+          for (const rule of planRules) {
+            expect(rule, name).toMatchObject({
+              ScheduleExpression: daily,
+              Lifecycle: { DeleteAfterDays: retentionDays },
+              TargetBackupVault: { 'Fn::GetAtt': [vaultId, 'BackupVaultName'] },
+            });
+            const copies: unknown[] = isRecord(rule) ? [rule['CopyActions'] ?? []].flat() : [];
+            if (copyToRegion === '') {
+              expect(copies, name).toEqual([]);
+            } else {
+              expect(copies, name).toEqual([
+                expect.objectContaining({ Lifecycle: { DeleteAfterDays: retentionDays } }),
+              ]);
+              expect(JSON.stringify(copies), name).toContain(`:backup:${copyToRegion}:`);
+            }
+          }
+          // The plan backs up the stack's own data tables and clusters, named by ARN.
+          const selection = only(selections, `${name}'s backup selections`)[1];
+          const backupSelection = selection.Properties?.['BackupSelection'];
+          expect(selectionFaults(backupSelection, dataStoresOf(template)), name).toEqual([]);
+        }
+        const copyStacks = app(tier).stacks.filter((stack) =>
+          holdsOnlyACopyVault(Template.fromStack(stack)),
+        );
+        if (backedUp && copyToRegion !== '' && serving().some(([, t]) => holdsBackedUpData(t))) {
+          expect(copyStacks.map((stack) => stack.region)).toEqual([copyToRegion]);
+        } else {
+          expect(copyStacks).toEqual([]);
+        }
+      });
+
+      it("leave every load balancer's log bucket out: logs, not data", () => {
+        for (const [name, template] of app(tier).templates) {
+          const selections = resourcesOf(template, 'AWS::Backup::BackupSelection');
+          for (const [balancerId, balancer] of resourcesOf(
+            template,
+            'AWS::ElasticLoadBalancingV2::LoadBalancer',
+          )) {
+            const attributes = balancer.Properties?.['LoadBalancerAttributes'];
+            const bucket = (Array.isArray(attributes) ? (attributes as unknown[]) : [])
+              .filter(isRecord)
+              .find((attribute) => attribute['Key'] === 'access_logs.s3.bucket')?.['Value'];
+            if (!isRecord(bucket) || typeof bucket['Ref'] !== 'string') {
+              continue;
+            }
+            // A selection names the stack's tables only, never the bucket.
+            for (const [id, selection] of selections) {
+              const backupSelection = selection.Properties?.['BackupSelection'];
+              expect(
+                refersTo(JSON.stringify(backupSelection), bucket['Ref']),
+                `${name}/${id} selects ${balancerId}'s log bucket ${bucket['Ref']}`,
+              ).toBe(false);
+            }
+          }
+        }
+      });
+    });
+
+    describe('the instances', () => {
+      it('hold no data: their volumes go with them', () => {
+        for (const [name, template] of app(tier).templates) {
+          if (!INSTANCE_TYPES.some((type) => resourcesOf(template, type).length > 0)) {
+            continue;
+          }
+          expect(resourcesOf(template, 'AWS::EC2::Volume'), name).toEqual([]);
+          // A launch template's volumes, and a lone instance's.
+          const owners: [string, unknown][] = [
+            ...resourcesOf(template, 'AWS::EC2::LaunchTemplate').map(
+              ([id, launchTemplate]): [string, unknown] => [
+                id,
+                launchTemplate.Properties?.['LaunchTemplateData'],
+              ],
+            ),
+            ...resourcesOf(template, 'AWS::EC2::Instance').map(
+              ([id, instance]): [string, unknown] => [id, instance.Properties],
+            ),
+          ];
+          for (const [id, data] of owners) {
+            const devices: unknown[] = isRecord(data)
+              ? [data['BlockDeviceMappings'] ?? []].flat()
+              : [];
+            for (const device of devices) {
+              const ebs = isRecord(device) ? device['Ebs'] : undefined;
+              if (ebs !== undefined) {
+                expect(ebs, `${name}/${id}`).toMatchObject({ DeleteOnTermination: true });
+              }
+            }
+          }
+        }
+      });
+    });
+
+    describe('the runbook', () => {
+      it('restores from the copy region, when there is one', () => {
+        const { retentionDays, copyToRegion } = promised().backups;
+        const runbook = path.join(import.meta.dirname, '..', 'docs', 'runbook.md');
+        if (retentionDays === 0 || copyToRegion === '' || !existsSync(runbook)) {
+          return;
+        }
+        expect(readFileSync(runbook, 'utf8')).toContain(copyToRegion);
+      });
+    });
+
+    describe('the alarms and topic', () => {
+      it('alarm on every function, table, API, load balancer, target group, service, Auto Scaling group, distribution, schedule group and rule, to the one encrypted topic, with a dashboard', () => {
+        for (const [name, template] of serving()) {
+          const [topicId] = only(resourcesOf(template, 'AWS::SNS::Topic'), `${name}'s topics`);
+          expect(resourcesOf(template, 'AWS::CloudWatch::Dashboard').length, name).toBe(1);
+          const alarms = resourcesOf(template, 'AWS::CloudWatch::Alarm');
+          for (const [id, alarm] of alarms) {
+            expect(alarm.Properties?.['AlarmActions'], `${name}/${id}`).toEqual([{ Ref: topicId }]);
+          }
+          for (const [type, metrics] of Object.entries(ALARMED_METRICS)) {
+            for (const [watchedId, watched] of resourcesOf(template, type)) {
+              for (const metric of metrics) {
+                const watching = alarms.filter(([, alarm]) => {
+                  const json = JSON.stringify(alarm.Properties);
+                  return (
+                    json.includes(`"MetricName":"${metric}"`) && refersTo(json, watchedId, watched)
+                  );
+                });
+                expect(watching.length, `${name}/${watchedId} ${metric}`).toBeGreaterThan(0);
+              }
+            }
+          }
+        }
+      });
+    });
+
+    describe('the dead-letter queues', () => {
+      it('alarm on the first message in every dead-letter queue', () => {
+        for (const [name, template] of serving()) {
+          const alarms = resourcesOf(template, 'AWS::CloudWatch::Alarm');
+          for (const target of deadLetterQueues(template)) {
+            const watching = alarms.filter(([, alarm]) => {
+              const json = JSON.stringify(alarm.Properties);
+              return (
+                json.includes('"MetricName":"ApproximateNumberOfMessagesVisible"') &&
+                json.includes(`"${target}"`) &&
+                alarm.Properties?.['Threshold'] === 0 &&
+                alarm.Properties['ComparisonOperator'] === 'GreaterThanThreshold'
+              );
+            });
+            expect(watching.length, `${name}/${target} depth`).toBeGreaterThan(0);
+          }
+        }
+      });
+    });
+
+    describe('the subscription', () => {
+      it('emails the AlertEmail parameter, which defaults to alerts.email, only when it is set', () => {
+        for (const [name, template] of serving()) {
+          template.hasParameter('AlertEmail', { Type: 'String', Default: promised().alerts.email });
+          const [topicId] = only(resourcesOf(template, 'AWS::SNS::Topic'), `${name}'s topics`);
+          const [id, subscription] = only(
+            resourcesOf(template, 'AWS::SNS::Subscription'),
+            `${name}'s subscriptions`,
+          );
+          expect(subscription.Properties, `${name}/${id}`).toMatchObject({
+            Protocol: 'email',
+            Endpoint: { Ref: 'AlertEmail' },
+            TopicArn: { Ref: topicId },
+          });
+          const conditions: unknown = template.toJSON()['Conditions'];
+          const condition = isRecord(conditions)
+            ? conditions[subscription.Condition ?? '']
+            : undefined;
+          expect(condition, `${name}/${id}`).toEqual({
+            'Fn::Not': [{ 'Fn::Equals': [{ Ref: 'AlertEmail' }, ''] }],
+          });
+        }
+      });
+    });
+
+    describe('tracing', () => {
+      it('traces every function with X-Ray where the tier traces, and none elsewhere', () => {
+        for (const [name, template] of app(tier).templates) {
+          for (const [id, fn] of resourcesOf(template, 'AWS::Lambda::Function')) {
+            const config = fn.Properties?.['TracingConfig'];
+            const active = isRecord(config) && config['Mode'] === 'Active';
+            expect(active, `${name}/${id}`).toBe(rules.tracing);
+          }
+        }
+      });
+
+      it('traces every task through an ADOT collector beside the app where the tier traces, and none elsewhere', () => {
+        for (const [name, template] of app(tier).templates) {
+          for (const [id, task] of resourcesOf(template, 'AWS::ECS::TaskDefinition')) {
+            const containers = containersOf(task);
+            const collectors = containers.filter(
+              (container) =>
+                typeof container['Image'] === 'string' &&
+                container['Image'].startsWith(COLLECTOR_IMAGE),
+            );
+            const sending = containers.filter((container) =>
+              JSON.stringify(container['Environment'] ?? []).includes(
+                '"Name":"OTEL_EXPORTER_OTLP_ENDPOINT"',
+              ),
+            );
+            if (rules.tracing) {
+              expect(collectors.length, `${name}/${id} collectors`).toBe(1);
+              expect(
+                sending.length,
+                `${name}/${id} containers sending to the collector`,
+              ).toBeGreaterThan(0);
+            } else {
+              expect([collectors, sending], `${name}/${id}`).toEqual([[], []]);
+            }
+          }
+        }
+      });
+
+      it('grants no X-Ray writes where the tier does not trace', () => {
+        if (rules.tracing) {
+          return;
+        }
+        for (const [name, template] of app(tier).templates) {
+          for (const statement of statementsIn(template.toJSON())) {
+            const actions = [statement['Action'] ?? []].flat();
+            for (const action of XRAY_WRITE_ACTIONS) {
+              expect(actions, name).not.toContain(action);
+            }
+          }
+        }
+      });
+    });
+
+    describe('log retention', () => {
+      it("keeps every log group for the tier's time", () => {
+        for (const [name, template] of app(tier).templates) {
+          for (const [id, group] of resourcesOf(template, 'AWS::Logs::LogGroup')) {
+            expect(group.Properties?.['RetentionInDays'], `${name}/${id}`).toBe(rules.logRetention);
+          }
+        }
+      });
+    });
+
+    describe('the two outputs', () => {
+      it("name every serving stack's entry point and its alarm topic", () => {
+        for (const [name, template] of serving()) {
+          const [topicId] = only(resourcesOf(template, 'AWS::SNS::Topic'), `${name}'s topics`);
+          template.hasOutput('AlarmTopicArn', { Value: { Ref: topicId } });
+          template.hasOutput('EntryPoint', { Value: Match.anyValue() });
+        }
+      });
+    });
+  },
+);
+
+// Each pack's finding on the probe function nothing calls, which shows the
+// pack ran: the rule (which cdk-nag may suffix with what it found, as
+// `AwsSolutions-IAM4[Policy::...]`) and the construct path.
+const CANARY_FINDINGS = {
+  AwsSolutions: ['AwsSolutions-IAM4', 'probe/Canary/ServiceRole/Resource'],
+  Serverless: ['Serverless-LambdaDLQ', 'probe/Canary/Resource'],
+} as const;
+
+/**
+ * The findings of the Nag pack `pack` on a stack `define` builds, after the
+ * Standard, as `<rule> <construct path>`: synth writes them into the
+ * outdir's validation report, not into the error it throws.
+ */
+function nagFindings(
+  pack: keyof typeof CANARY_FINDINGS,
+  tier: Tier,
+  define: (stack: Stack) => void,
+): string[] {
+  const outdir = mkdtempSync(path.join(tmpdir(), 'standard-'));
+  try {
+    const probe = new App({ outdir, context: { ...cdkContext(), tier } });
+    const stack = new Stack(probe, 'probe');
+    define(stack);
+    // Called by nobody, so never acknowledged: its finding shows the pack ran.
+    probeFunction(stack, 'Canary');
+    applyStandard(probe, tier);
+    try {
+      probe.synth();
+    } catch {
+      // Every finding fails synth; the report says which.
+    }
+    // The canary is a finding, so synth writes a report.
+    const parsed: unknown = JSON.parse(
+      readFileSync(path.join(outdir, 'validation-report.json'), 'utf8'),
+    );
+    const plugins =
+      isRecord(parsed) && Array.isArray(parsed['pluginReports']) ? parsed['pluginReports'] : [];
+    const findings = (plugins as unknown[])
+      .filter((plugin) => isRecord(plugin) && plugin['pluginName'] === pack)
+      .flatMap((plugin) =>
+        isRecord(plugin) && Array.isArray(plugin['violations'])
+          ? (plugin['violations'] as unknown[])
+          : [],
+      )
+      .flatMap((violation: unknown) =>
+        isRecord(violation) && Array.isArray(violation['violatingConstructs'])
+          ? (violation['violatingConstructs'] as unknown[]).map(
+              (construct) =>
+                `${String(violation['ruleName'])} ${isRecord(construct) ? String(construct['constructPath']) : ''}`,
+            )
+          : [],
+      )
+      .sort();
+    const [rule, construct] = CANARY_FINDINGS[pack];
+    if (
+      !findings.some((finding) => finding.startsWith(rule) && finding.endsWith(` ${construct}`))
+    ) {
+      throw new Error(`The ${pack} pack did not find ${rule} ${construct}: did it run?`);
+    }
+    return findings.filter((finding) => !finding.includes('/Canary/'));
+  } finally {
+    rmSync(outdir, { recursive: true, force: true });
+  }
+}
+
+/** A function of `stack` with a timeout and memory, so only the rules under test find it. */
+function probeFunction(
+  stack: Stack,
+  id: string,
+  props: Partial<FunctionProps> = {},
+): LambdaFunction {
+  return new LambdaFunction(stack, id, {
+    runtime: Runtime.NODEJS_22_X,
+    handler: 'index.handler',
+    code: Code.fromInline('exports.handler = async () => ({});'),
+    timeout: Duration.seconds(10),
+    memorySize: 256,
+    ...props,
+  });
+}
+
+/**
+ * Overrides of a probe cluster's props: a key set to `undefined` leaves it
+ * out, which `Partial` forbids under `exactOptionalPropertyTypes`.
+ */
+type ClusterOverrides = { [K in keyof DatabaseClusterProps]?: DatabaseClusterProps[K] | undefined };
+
+/**
+ * An Aurora cluster in `stack` as the rds Connector builds it for `tier`
+ * (docs/plans/aws-rds.md), as far as the Standard's rules read it; `props`
+ * override any of it, and `keyPolicy` is its key's removal policy.
+ */
+function probeCluster(
+  stack: Stack,
+  tier: Tier,
+  props: ClusterOverrides = {},
+  keyPolicy = TIER_RULES[tier].keepData ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+): DatabaseCluster {
+  const rules = TIER_RULES[tier];
+  const vpc = new Vpc(stack, 'Vpc', {
+    natGateways: 0,
+    subnetConfiguration: [{ name: 'Isolated', subnetType: SubnetType.PRIVATE_ISOLATED }],
+  });
+  const key = new Key(stack, 'Key', { enableKeyRotation: true, removalPolicy: keyPolicy });
+  const clusterProps = {
+    engine: DatabaseClusterEngine.auroraPostgres({ version: AuroraPostgresEngineVersion.VER_16_6 }),
+    writer: ClusterInstance.serverlessV2('Writer'),
+    vpc,
+    vpcSubnets: { subnetType: SubnetType.PRIVATE_ISOLATED },
+    credentials: Credentials.fromGeneratedSecret('app'),
+    storageEncryptionKey: key,
+    enableDataApi: true,
+    iamAuthentication: true,
+    deletionProtection: rules.keepData,
+    removalPolicy: rules.keepData ? RemovalPolicy.SNAPSHOT : RemovalPolicy.DESTROY,
+    backup: { retention: Duration.days(rules.pointInTimeRecovery ? 35 : 1) },
+    ...props,
+  } as DatabaseClusterProps;
+  return new DatabaseCluster(stack, 'Cluster', clusterProps);
+}
+
+// The cluster branch of the rules on a stack with an Aurora cluster, in
+// either tier (#1921): the cluster the rds Connector builds keeps every rule,
+// and each thing a Connector could get wrong names its fault.
+describe.each(TIERS)('an Aurora cluster, in %s', (tier) => {
+  const rules = TIER_RULES[tier];
+  const faultsOf = (
+    props: ClusterOverrides | ((stack: Stack) => ClusterOverrides) = {},
+    keyPolicy?: RemovalPolicy,
+  ): ClusterFaults => {
+    const probe = new App({ context: { ...cdkContext(), tier } });
+    const stack = new Stack(probe, 'probe');
+    probeCluster(stack, tier, typeof props === 'function' ? props(stack) : props, keyPolicy);
+    return clusterFaults(Template.fromStack(stack), rules);
+  };
+  const none: ClusterFaults = { encryption: [], removal: [], protection: [], recovery: [] };
+  const other = rules.keepData ? RemovalPolicy.DESTROY : RemovalPolicy.SNAPSHOT;
+
+  it('as the rds Connector builds it keeps every rule', () => {
+    expect(faultsOf()).toEqual(none);
+  });
+
+  it('encrypted with the AWS-managed key fails the encryption rule', () => {
+    expect(faultsOf({ storageEncryptionKey: undefined, storageEncrypted: true })).toEqual({
+      ...none,
+      encryption: [expect.stringMatching(/^Cluster\w+ is encrypted with no customer managed key$/)],
+    });
+  });
+
+  it('encrypted with a key outside the stack fails the encryption rule', () => {
+    const outside = 'arn:aws:kms:eu-west-1:123456789012:key/00000000-0000-0000-0000-000000000000';
+    expect(
+      faultsOf((stack) => ({ storageEncryptionKey: Key.fromKeyArn(stack, 'Outside', outside) })),
+    ).toEqual({
+      ...none,
+      encryption: [
+        expect.stringMatching(
+          /^Cluster\w+ is encrypted with "arn:aws:kms:[^"]+", which is none of the stack's keys$/,
+        ),
+      ],
+    });
+  });
+
+  // What the rds Connector's infra/backups.ts must select the cluster by, on
+  // the ARN CDK renders: the CfnDBCluster's attrDbClusterArn is the
+  // Fn::GetAtt the selection rule reads; DatabaseCluster.clusterArn is a
+  // formatArn over a Ref, an ARN written out, and the fault names the fix.
+  const selectionFaultsBy = (arnOf: (cluster: DatabaseCluster) => string): string[] => {
+    const probe = new App({ context: { ...cdkContext(), tier } });
+    const stack = new Stack(probe, 'probe');
+    const cluster = probeCluster(stack, tier);
+    const plan = new BackupPlan(stack, 'Plan', { backupPlanRules: [BackupPlanRule.daily()] });
+    plan.addSelection('Selection', { resources: [BackupResource.fromArn(arnOf(cluster))] });
+    const template = Template.fromStack(stack);
+    const [selection] = resourcesOf(template, 'AWS::Backup::BackupSelection');
+    return selectionFaults(selection?.[1].Properties?.['BackupSelection'], dataStoresOf(template));
+  };
+
+  it("selected for backup by its CfnDBCluster's attrDbClusterArn keeps the selection rule", () => {
+    const byAttribute = (cluster: DatabaseCluster): string =>
+      (cluster.node.defaultChild as CfnDBCluster).attrDbClusterArn;
+    expect(selectionFaultsBy(byAttribute)).toEqual([]);
+  });
+
+  it("selected for backup by DatabaseCluster's clusterArn fails the selection rule, naming the fix", () => {
+    expect(selectionFaultsBy((cluster) => cluster.clusterArn)).toEqual([
+      expect.stringMatching(
+        /^\{"Fn::Join".* is none of the stack's tables or clusters: .*attrDbClusterArn\)$/,
+      ),
+      expect.stringMatching(/^Cluster\w+ is in no backup selection$/),
+    ]);
+  });
+
+  it("removed the other tier's way fails the removal rule", () => {
+    const expected = rules.keepData ? 'Snapshot' : 'Delete';
+    expect(faultsOf({ removalPolicy: other })).toEqual({
+      ...none,
+      removal: [
+        expect.stringMatching(new RegExp(`^Cluster\\w+ is \\w+/\\w+ on removal, not ${expected}$`)),
+      ],
+    });
+  });
+
+  it("whose key is removed the other tier's way fails the removal rule", () => {
+    const expected = rules.keepData ? 'Retain' : 'Delete';
+    expect(faultsOf({}, rules.keepData ? RemovalPolicy.DESTROY : RemovalPolicy.RETAIN)).toEqual({
+      ...none,
+      removal: [
+        expect.stringMatching(
+          new RegExp(`^Cluster\\w+'s key Key\\w+ is \\w+ on removal, not ${expected}$`),
+        ),
+      ],
+    });
+  });
+
+  it("protected from deletion the other tier's way fails the protection rule", () => {
+    expect(faultsOf({ deletionProtection: !rules.keepData })).toEqual({
+      ...none,
+      protection: [
+        expect.stringMatching(
+          /^Cluster\w+ has (no )?deletion protection, which the tier (wants|leaves off)$/,
+        ),
+      ],
+    });
+  });
+
+  it('keeping 7 days of backups fails the recovery rule', () => {
+    expect(faultsOf({ backup: { retention: Duration.days(7) } })).toEqual({
+      ...none,
+      recovery: [expect.stringMatching(/^Cluster\w+ keeps 7 days of backups, not (35|1)$/)],
+    });
+  });
+});
+
+// Where the tier recovers no data, the Standard acknowledges what a
+// cluster's credentials and the cluster itself lack there by design (#1921).
+describe('the AwsSolutions rules on a cluster and its credentials', () => {
+  it('find a secret without rotation in production, and not in development', () => {
+    const secret = (stack: Stack): void => {
+      new Secret(stack, 'Credentials');
+    };
+    const finding = 'AwsSolutions-SMG4 probe/Credentials/Resource';
+    expect(nagFindings('AwsSolutions', 'production', secret)).toContain(finding);
+    expect(nagFindings('AwsSolutions', 'development', secret)).not.toContain(finding);
+  });
+
+  it('find a cluster without deletion protection in production, and not in development', () => {
+    const unprotected = (tier: Tier) => (stack: Stack) => {
+      probeCluster(stack, tier, { deletionProtection: false });
+    };
+    const finding = 'AwsSolutions-RDS10 probe/Cluster/Resource';
+    expect(nagFindings('AwsSolutions', 'production', unprotected('production'))).toContain(finding);
+    expect(nagFindings('AwsSolutions', 'development', unprotected('development'))).not.toContain(
+      finding,
+    );
+  });
+});
+
+// The Serverless pack runs beside AwsSolutions where the Frameworks carry
+// operations, and the Standard acknowledges the rules that are wrong for a
+// resource or duplicate an AwsSolutions one (#1112).
+describe.runIf(operations !== undefined)('the Serverless rules', () => {
+  it('find an asynchronous function without a dead-letter queue, and not one only synchronous callers call', () => {
+    const findings = nagFindings('Serverless', 'development', (stack) => {
+      new HttpApi(stack, 'Api', {
+        defaultIntegration: new HttpLambdaIntegration('Called', probeFunction(stack, 'Called')),
+      });
+      const queue = new Queue(stack, 'Messages', { enforceSSL: true });
+      probeFunction(stack, 'Consumer').addEventSource(new SqsEventSource(queue));
+      new Topic(stack, 'Topic').addSubscription(
+        new LambdaSubscription(probeFunction(stack, 'Notified')),
+      );
+    });
+    expect(findings).toContain('Serverless-LambdaDLQ probe/Notified/Resource');
+    expect(findings.filter((finding) => finding.includes('/Called/'))).toEqual([]);
+    expect(findings.filter((finding) => finding.includes('/Consumer/'))).toEqual([]);
+    expect(findings.filter((finding) => finding.includes('EventSourceMapping'))).toEqual([]);
+  });
+
+  it('take a dead-letter queue for an asynchronous failure destination', () => {
+    const findings = nagFindings('Serverless', 'development', (stack) => {
+      probeFunction(stack, 'Retried', {
+        deadLetterQueue: new Queue(stack, 'DeadLetters', { enforceSSL: true }),
+        retryAttempts: 2,
+      });
+    });
+    expect(findings.filter((finding) => finding.includes('AsyncFailureDestination'))).toEqual([]);
+  });
+
+  it('leave an email subscription without a redrive policy, and not a function’s', () => {
+    const findings = nagFindings('Serverless', 'development', (stack) => {
+      const topic = new Topic(stack, 'Alarms');
+      topic.addSubscription(new EmailSubscription('alerts@example.com'));
+      topic.addSubscription(new LambdaSubscription(probeFunction(stack, 'Notified')));
+    });
+    expect(findings.filter((finding) => finding.startsWith('Serverless-SNSRedrivePolicy'))).toEqual(
+      ['Serverless-SNSRedrivePolicy probe/Notified/Alarms/Resource'],
+    );
+  });
+
+  it('leave to AwsSolutions the rules it checks too', () => {
+    const findings = nagFindings('Serverless', 'development', (stack) => {
+      probeFunction(stack, 'Old', { runtime: Runtime.NODEJS_20_X });
+      new Queue(stack, 'Lonely', { enforceSSL: true });
+    });
+    for (const rule of ['LambdaLatestVersion', 'SQSRedrivePolicy', 'LambdaStarPermissions']) {
+      expect(findings.filter((finding) => finding.includes(rule))).toEqual([]);
+    }
+  });
+
+  it('find an untraced function in production, and not in development', () => {
+    const untraced = (stack: Stack): void => {
+      probeFunction(stack, 'Untraced', { tracing: Tracing.DISABLED });
+    };
+    expect(nagFindings('Serverless', 'production', untraced)).toContain(
+      'Serverless-LambdaTracing probe/Untraced/Resource',
+    );
+    expect(nagFindings('Serverless', 'development', untraced)).not.toContain(
+      'Serverless-LambdaTracing probe/Untraced/Resource',
+    );
+  });
+});

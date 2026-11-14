@@ -1,0 +1,118 @@
+# Reviewer guide
+
+You review one pull request against the issue it closes: its acceptance
+criteria, the diff, CI's result and the C4 context. You judge the change; you
+don't rewrite it. Your task prompt says how to give your verdict; this guide
+says what to check.
+
+## Checklist, in priority order
+
+1. **Acceptance criteria.** Report each one as met or not met, naming the test
+   that proves it. A criterion is met only when a test would fail without the
+   change. Missing or untested is not met.
+2. **Correctness and edge cases.** Empty, huge, malformed and non-ASCII
+   bodies, paths and query strings; base64-encoded bodies; a missing item; a
+   request retried after a timeout (idempotency); SDK calls that fail or are
+   throttled; every error answered with the right HTTP status and a JSON
+   message, never a stack trace.
+3. **Tests.** They test behaviour through the request handling and other
+   exports, check the status code and the body, would fail without the
+   change, cover the edge cases above, and are deterministic: no real timers
+   or real-time bounds (fake timers instead), no network, no call to AWS (SDK
+   clients faked behind their interface). Infrastructure changes have
+   `Template.fromStack` assertions.
+4. **Design.** The rules in files that import neither the AWS SDK nor
+   `aws-lambda-go`; one type per AWS service behind an interface;
+   `src/main.go` only wiring; names; no dead code; no speculative
+   generality (routes or options nobody needs, abstractions with one use);
+   the change stays in the issue's scope.
+5. **Errors and resources.** Every error handled or returned, wrapped with
+   `%w`; the invocation's `ctx` passed to every SDK call; no goroutine
+   outlives the handler; the SDK's configuration and clients created once in
+   `main`, never per invocation; a failure is logged once as structured JSON
+   with the request id and answered with a status code; no stack trace or
+   SDK error text reaches a client.
+6. **Performance and cost.** Nothing heavy at import beyond the clients; the
+   function's memory and timeout are set and fit the work; DynamoDB is read
+   by key or query, never a scan on a request path; budgets from the issue or
+   the system's needs are measured by a bench, never by a test with a time
+   bound.
+7. **Docs and DX.** The README (routes, shapes, status codes) and the
+   CHANGELOG match the behaviour; messages tell a client what happened and
+   what to do.
+8. **Security.** Permissions through CDK grants narrowed to the calls the
+   code makes, never `*` actions or AWS managed policies; data encrypted at
+   rest; every route authorized; input validated before it reaches DynamoDB
+   or a log; no secret in an environment variable, the template, a log or a
+   response; new install scripts justified.
+9. **CDK Nag acknowledgements.** Check each
+   `Validations.of(...).acknowledge(...)` the change adds: it names one
+   finding on one construct, its reason is true and specific to this system,
+   and fixing the resource instead would be wrong. A missing, vague or false
+   reason ("not needed", "for now") is blocking. `docs/well-architected.md`
+   says what each rule protects.
+
+## Verdict
+
+- **Blocking** means the change would ship a defect or break a stated need or
+  acceptance criterion. Request changes only for blocking findings, and for a
+  red CI (quote the failing step).
+- **Everything else is non-blocking:** list it and approve.
+- Each finding says what is wrong, where (`file:line`), the input that shows it,
+  and what would fix it. No vague advice.
+- Don't ask for style the linters already enforce, or for rules `docs/style/`
+  doesn't have.
+
+## Follow-ups
+
+Name up to three issues worth filing later: non-blocking points that deserve
+their own work. Each is a title and one to three sentences saying what and why.
+The factory files them as `status/proposed` issues when the pull request merges.
+A blocking problem is never a follow-up.
+
+## When CI runs the full check
+
+When `.github/workflows/check.yaml` has a `full` job, the Container's owner chose
+`BeforeRelease`: green CI on the pull request means `make check-light` passed
+(lint and the type or vet checks), not the tests. Take the tests' result
+from the implementer's _How it was checked_ and judge the tests in the diff
+yourself; the full `make check` runs on the release's commit before its tag.
+
+## Standard changes
+
+- **In a normal pull request,** don't require a change to a protected file
+  (listed in `AGENTS.md`). Those change through a Standard change, a separate
+  Task. An implementer's `Standard change:` line in the summary is only a note.
+- **In a pull request that carries a Standard change,** it changes the paths
+  its issue names, and other files only where `make check` fails without them.
+  Require changes unless all four hold:
+  - it weakens no check, and turns none off;
+  - every other file it changes changes only what `make check` fails on
+    without it, such as a test that checks what the protected paths produce;
+  - it works with this change alone, without another branch;
+  - it does no more than its issue asks.
+
+## Go and AWS notes
+
+- `make check` synthesized the stacks with CDK Nag and ran cfn-lint on them,
+  and CI is green on the last commit.
+- Look for: logging past the `*slog.Logger` the function is given
+  (`fmt.Print`, the `log` package); an SDK client or configuration created
+  inside the handler; the environment read outside `main`; an SDK call
+  without the invocation's `ctx`; a goroutine left running when the handler
+  returns; `panic`, `log.Fatal` or `os.Exit` past start-up; an error dropped
+  or not wrapped with `%w`; a `//nolint` that hides a real finding; a `Scan`
+  on a request path; a grant wider than the calls the code makes; a resource
+  without encryption, log retention or an explicit removal policy; an `env`
+  taken from the environment or a context lookup, which would need an AWS
+  account to synthesize.
+- Look for, in the stacks: a resource that ignores the tier (a table always
+  `RETAIN`, or never protected), a new function, table or API without its
+  alarms on the stack's topic, a context value read but `tier`, and a
+  change to `infra/operations.ts` that its issue's change to the
+  Container's `spec.operations` doesn't ask for. A change
+  to what the stacks keep, or how, without its `docs/runbook.md` steps in
+  a Standard change is blocking: the runbook is how the data comes back.
+- Behaviour only a real AWS account can show (IAM at run time, throttling,
+  cold starts, the deployed URL) is "could not be verified": nothing here
+  deploys. Say so rather than approving on faith.

@@ -1,0 +1,11 @@
+# Written once by theos when this repository was scaffolded.
+# The Session client reads it to find this repository's Container.
+project: mcp-customs
+softwareSystem: mcp-customs
+container: mcp-customs
+type: function
+scaffoldedFrom:
+    - aws-lambda-go@local
+    - aws-standard@local
+    - dynamodb@local
+checks: EveryChange

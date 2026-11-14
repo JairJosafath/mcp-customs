@@ -1,0 +1,412 @@
+// What every stack of this Container gets from the Standard: the tier it is
+// synthesized for, what that tier means, the tags that say whose it is, and
+// CDK Nag's AWS Solutions and Serverless checks, so an unacknowledged finding
+// fails `cdk synth`. Changing this file is the Standard's job, not a task's.
+import { CfnResource, Stack, Tags, Validations } from 'aws-cdk-lib';
+import type { App } from 'aws-cdk-lib';
+import { CfnTable } from 'aws-cdk-lib/aws-dynamodb';
+import { CfnPolicy } from 'aws-cdk-lib/aws-iam';
+import { RetentionDays } from 'aws-cdk-lib/aws-logs';
+import { CfnDBCluster } from 'aws-cdk-lib/aws-rds';
+import { CfnSecret } from 'aws-cdk-lib/aws-secretsmanager';
+import { AwsSolutionsChecks, ServerlessChecks } from 'cdk-nag';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+
+/** The tags on every stack, and on every resource in it that takes tags. */
+export const STANDARD_TAGS: Readonly<Record<string, string>> = {
+  'theos:project': 'webshop',
+  'theos:system': 'shop',
+  'theos:container': 'mcp-customs',
+};
+
+/**
+ * Where the app runs: the deploy target's choice, never the code's. `cdk synth
+ * -c tier=production` builds the production stacks; without the context value
+ * the tier is `development`. `make synth` writes both, into `cdk.out/<tier>/`.
+ */
+export type Tier = 'production' | 'development';
+
+/** Every tier, in the order `make synth` and the Standard's test build them. */
+export const TIERS: readonly Tier[] = ['production', 'development'];
+
+/** What a tier means for every stack; the Standard's test holds the stacks to it. */
+export interface TierRules {
+  /**
+   * Data (tables, Aurora clusters and their keys, backup vaults and their
+   * keys) outlives the stack, tables and clusters refuse deletion, a removed
+   * cluster leaves a final snapshot, and the stack has termination
+   * protection. Off, deleting the stack deletes the data.
+   */
+  readonly keepData: boolean;
+  /** Point-in-time recovery on every table, and 35 days of backups on every Aurora cluster. */
+  readonly pointInTimeRecovery: boolean;
+  /**
+   * An AWS Backup plan keeping daily backups for `OPERATIONS.backups.retentionDays`,
+   * in a vault with its own key, copied to `copyToRegion` when it is set,
+   * of the stack's tables and Aurora clusters, named by ARN.
+   */
+  readonly backups: boolean;
+  /**
+   * X-Ray tracing: active on every function, and an AWS Distro for
+   * OpenTelemetry collector beside the app in every task, which sends it the
+   * app's spans.
+   */
+  readonly tracing: boolean;
+  /** How long every log group keeps its entries. */
+  readonly logRetention: RetentionDays;
+}
+
+/** The tiers' rules. Alarms, the dashboard and the alarm topic are the same in both. */
+export const TIER_RULES: Readonly<Record<Tier, TierRules>> = {
+  production: {
+    keepData: true,
+    pointInTimeRecovery: true,
+    backups: true,
+    tracing: true,
+    logRetention: RetentionDays.ONE_YEAR,
+  },
+  development: {
+    keepData: false,
+    pointInTimeRecovery: false,
+    backups: false,
+    tracing: false,
+    logRetention: RetentionDays.ONE_MONTH,
+  },
+};
+
+/**
+ * The shape of `infra/operations.ts`, which the factory renders from the
+ * Container's `spec.operations`: what the app promises whatever tier runs it.
+ */
+export interface Operations {
+  readonly backups: {
+    /** Days AWS Backup keeps each daily backup in production; 0 is point-in-time recovery only. */
+    readonly retentionDays: number;
+    /** A second region the backups are copied to; empty is none. */
+    readonly copyToRegion: string;
+  };
+  readonly recovery: {
+    /** The most data a restore may lose, such as `1h`. */
+    readonly rpo: string;
+    /** The longest a restore may take, such as `4h`. */
+    readonly rto: string;
+  };
+  readonly alerts: {
+    /** Who the alarms tell, the default of each stack's `AlertEmail` parameter; empty is nobody. */
+    readonly email: string;
+  };
+}
+
+/**
+ * The name of the stack named `name` in production, for `tier`: development
+ * stacks carry the tier's name too, so a deploy that names no tier makes or
+ * changes a development stack and never strips a production one.
+ */
+export function stackNameFor(name: string, tier: Tier): string {
+  return tier === 'production' ? name : `${name}-${tier}`;
+}
+
+/** The tier `app` is synthesized for: its `tier` context value, `development` when it has none. */
+export function tierOf(app: App): Tier {
+  const value: unknown = app.node.tryGetContext('tier');
+  if (value === undefined) {
+    return 'development';
+  }
+  const tier = TIERS.find((t) => t === value);
+  if (tier === undefined) {
+    throw new Error(
+      `The tier ${JSON.stringify(value)} is not one of ${TIERS.join(', ')}: synthesize with -c tier=production, or with no tier for development.`,
+    );
+  }
+  return tier;
+}
+
+// The only actions X-Ray's tracing needs, which take no resource but `*`.
+const XRAY_WRITE_ACTIONS = ['xray:PutTelemetryRecords', 'xray:PutTraceSegments'];
+
+/** Whether `policy` grants a resource `*` to X-Ray's write actions, and to nothing else. */
+function onlyXrayTakesEveryResource(stack: Stack, policy: CfnPolicy): boolean {
+  const document: unknown = stack.resolve(policy.policyDocument);
+  const statements: unknown =
+    typeof document === 'object' && document !== null && 'Statement' in document
+      ? document.Statement
+      : [];
+  let xray = false;
+  for (const statement of Array.isArray(statements) ? (statements as unknown[]) : []) {
+    if (typeof statement !== 'object' || statement === null) {
+      continue;
+    }
+    const record = statement as Record<string, unknown>;
+    if (![record['Resource']].flat().includes('*')) {
+      continue;
+    }
+    const actions = [record['Action']].flat();
+    if (
+      !actions.every((action) => typeof action === 'string' && XRAY_WRITE_ACTIONS.includes(action))
+    ) {
+      return false;
+    }
+    xray = true;
+  }
+  return xray;
+}
+
+/**
+ * Whether the repository has `infra/operations.ts`. The Serverless rules check
+ * the tracing, dead-letter queues and destinations a Framework gives with its
+ * operations block, so a repository scaffolded before it is checked by the
+ * AWS Solutions rules alone.
+ */
+function carriesOperations(): boolean {
+  return existsSync(path.join(import.meta.dirname, 'operations.ts'));
+}
+
+/**
+ * The Serverless rules that check what an AwsSolutions rule checks too: that
+ * rule's finding stands, so the Serverless one is acknowledged on every stack.
+ */
+const SERVERLESS_DUPLICATES: Readonly<Record<string, string>> = {
+  'Serverless-LambdaLatestVersion':
+    'AwsSolutions-L1 checks the same: every function runs its language’s latest runtime, or acknowledges L1 with why.',
+  'Serverless-LambdaStarPermissions':
+    'AwsSolutions-IAM5 checks the same, on every policy and not only a function’s role: each wildcard it finds is acknowledged on its own, with why.',
+  'Serverless-APIGWAccessLogging':
+    'AwsSolutions-APIG1 checks the same: every API stage logs its requests.',
+  'Serverless-SQSRedrivePolicy':
+    'AwsSolutions-SQS3 checks the same, and knows what this rule doesn’t: a dead-letter queue needs no dead-letter queue of its own.',
+  'Serverless-StepFunctionStateMachineXray':
+    'AwsSolutions-SF2 checks the same: every state machine traces with X-Ray.',
+};
+
+/** Who may call a function only synchronously, waiting for its answer. */
+const SYNCHRONOUS_PRINCIPALS = ['apigateway.amazonaws.com', 'elasticloadbalancing.amazonaws.com'];
+
+/**
+ * The resources that call a function asynchronously through a role, not a
+ * permission (an event rule's or a topic's permission names its principal),
+ * and the property of each that names the function.
+ */
+const ASYNCHRONOUS_CALLERS: Readonly<Record<string, string>> = {
+  'AWS::Lambda::EventInvokeConfig': 'FunctionName',
+  'AWS::Pipes::Pipe': 'Target',
+  'AWS::Scheduler::Schedule': 'Target',
+  'AWS::SNS::Subscription': 'Endpoint',
+};
+
+/** A resource of a stack, by what its template will say. */
+interface Declared {
+  readonly construct: CfnResource;
+  readonly type: string;
+  /** The property `name` (`FunctionName`), resolved as `cdk synth` writes it. */
+  readonly read: (name: string) => unknown;
+}
+
+/**
+ * The resources of `stack` by logical ID. A property is resolved only when it
+ * is read, and only it: resolving a whole resource this early would cache its
+ * lazy values before the aspects that run at synth.
+ */
+function declaredIn(stack: Stack): Map<string, Declared> {
+  const declared = new Map<string, Declared>();
+  for (const construct of stack.node.findAll().filter((node) => node instanceof CfnResource)) {
+    if (construct.stack !== stack) {
+      continue;
+    }
+    // A typed resource keys its properties in camel case, a custom one as the template does.
+    const properties = (construct as unknown as { cfnProperties: Record<string, unknown> })
+      .cfnProperties;
+    declared.set(stack.resolve(construct.logicalId) as string, {
+      construct,
+      type: construct.cfnResourceType,
+      read: (name): unknown =>
+        stack.resolve(properties[name] ?? properties[name.charAt(0).toLowerCase() + name.slice(1)]),
+    });
+  }
+  return declared;
+}
+
+/** Whether `value` names the resource `id`, by `Ref` or `Fn::GetAtt`. */
+function refersTo(value: unknown, id: string): boolean {
+  const json = JSON.stringify(value ?? null);
+  return json.includes(`{"Ref":"${id}"}`) || json.includes(`{"Fn::GetAtt":["${id}",`);
+}
+
+/** Whether `value` is a queue of `declared`, or the ARN of one. */
+function isQueue(value: unknown, declared: Map<string, Declared>): boolean {
+  if (typeof value === 'string') {
+    return value.startsWith('arn:') && value.split(':')[2] === 'sqs';
+  }
+  return [...declared].some(
+    ([id, resource]) => resource.type === 'AWS::SQS::Queue' && refersTo(value, id),
+  );
+}
+
+/**
+ * Who calls the function `id`: the synchronous callers, by name, or
+ * undefined when any caller is asynchronous or there is none.
+ */
+function synchronousCallersOf(id: string, declared: Map<string, Declared>): string[] | undefined {
+  const callers = new Set<string>();
+  for (const { type, read } of declared.values()) {
+    if (type === 'AWS::Lambda::Permission' && refersTo(read('FunctionName'), id)) {
+      const principal = read('Principal');
+      if (typeof principal !== 'string' || !SYNCHRONOUS_PRINCIPALS.includes(principal)) {
+        return undefined;
+      }
+      callers.add(principal === 'apigateway.amazonaws.com' ? 'API Gateway' : 'a load balancer');
+    } else if (type === 'AWS::Lambda::EventSourceMapping' && refersTo(read('FunctionName'), id)) {
+      if (!isQueue(read('EventSourceArn'), declared)) {
+        return undefined;
+      }
+      callers.add('an SQS event source mapping, which returns a failed message to its queue');
+    } else if (
+      (type.startsWith('Custom::') || type === 'AWS::CloudFormation::CustomResource') &&
+      refersTo(read('ServiceToken'), id)
+    ) {
+      callers.add('CloudFormation, for a custom resource whose failure fails the deployment');
+    } else if (
+      type in ASYNCHRONOUS_CALLERS &&
+      refersTo(read(ASYNCHRONOUS_CALLERS[type] ?? ''), id)
+    ) {
+      return undefined;
+    }
+  }
+  return callers.size > 0 ? [...callers] : undefined;
+}
+
+/** Whether an API stage's `AccessLogSettings` write each request as a JSON object. */
+function logsJson(settings: unknown): boolean {
+  // A typed stage keys its settings in camel case.
+  const record =
+    typeof settings === 'object' && settings !== null ? (settings as Record<string, unknown>) : {};
+  const format = record['format'] ?? record['Format'];
+  return typeof format === 'string' && format.trimStart().startsWith('{');
+}
+
+/**
+ * Acknowledges, on `stack`, the Serverless findings that are wrong for what
+ * it builds, each on the one resource, and on the stack the rules that
+ * duplicate AwsSolutions ones.
+ */
+function acknowledgeServerless(stack: Stack, tier: Tier): void {
+  for (const [id, reason] of Object.entries(SERVERLESS_DUPLICATES)) {
+    Validations.of(stack).acknowledge({ id, reason });
+  }
+  const declared = declaredIn(stack);
+  for (const [id, { construct, type, read }] of declared) {
+    if (type === 'AWS::Lambda::Function') {
+      const callers = synchronousCallersOf(id, declared);
+      if (callers !== undefined) {
+        Validations.of(construct).acknowledge({
+          id: 'Serverless-LambdaDLQ',
+          reason: `Only ${callers.join(' and ')} calls the function: a dead-letter queue holds only failed asynchronous invocations.`,
+        });
+      }
+      if (!TIER_RULES[tier].tracing) {
+        Validations.of(construct).acknowledge({
+          id: 'Serverless-LambdaTracing',
+          reason: `The ${tier} tier traces nothing, for X-Ray’s cost; production traces every function.`,
+        });
+      }
+    } else if (
+      type === 'AWS::Lambda::EventSourceMapping' &&
+      isQueue(read('EventSourceArn'), declared)
+    ) {
+      Validations.of(construct).acknowledge({
+        id: 'Serverless-LambdaEventSourceMappingDestination',
+        reason:
+          'Lambda takes no on-failure destination for an SQS source: a message that keeps failing goes to the dead-letter queue the queue’s redrive policy names (AwsSolutions-SQS3).',
+      });
+    } else if (type === 'AWS::Lambda::EventInvokeConfig') {
+      const deadLetters = [...declared].some(
+        ([fn, resource]) =>
+          resource.type === 'AWS::Lambda::Function' &&
+          refersTo(read('FunctionName'), fn) &&
+          resource.read('DeadLetterConfig') !== undefined,
+      );
+      if (deadLetters) {
+        Validations.of(construct).acknowledge({
+          id: 'Serverless-LambdaAsyncFailureDestination',
+          reason:
+            'The function’s dead-letter queue (its DeadLetterConfig) holds every asynchronous invocation that fails its retries; an on-failure destination would be a second place for the same events.',
+        });
+      }
+    } else if (type === 'AWS::ApiGatewayV2::Stage' && !logsJson(read('AccessLogSettings'))) {
+      Validations.of(construct).acknowledge({
+        id: 'Serverless-APIGWStructuredLogging',
+        reason:
+          'The stage writes its access log in the Common Log Format, as aws-lambda-ts before v1.4.0 and aws-lambda-py and -go before v1.3.0 did; the Standard cannot tell which version a repository was scaffolded from, so it cannot hold an older one to JSON. A newer stage writes JSON and needs no acknowledgement.',
+      });
+    } else if (
+      type === 'AWS::SNS::Subscription' &&
+      ['email', 'email-json'].includes(String(read('Protocol')))
+    ) {
+      Validations.of(construct).acknowledge({
+        id: 'Serverless-SNSRedrivePolicy',
+        reason:
+          'An alarm email SNS cannot deliver is one the inbox refused, and a dead-letter queue would keep it where nobody reads it; the alarm’s state stays in CloudWatch and on the dashboard, and a deploy target subscribes its own channel to AlarmTopicArn.',
+      });
+    }
+  }
+}
+
+/**
+ * Tags every stack in `app`, protects it from termination in a tier that
+ * keeps data, and checks the app with CDK Nag's AWS Solutions and Serverless
+ * rules, acknowledging what the tier decides (X-Ray's resource `*`, tables
+ * without point-in-time recovery and functions without tracing where the
+ * tier recovers or traces nothing) and the Serverless rules that are wrong
+ * for a resource or duplicate an AWS Solutions one. The Serverless rules run
+ * where the repository has `infra/operations.ts`.
+ */
+export function applyStandard(app: App, tier: Tier): void {
+  const serverless = carriesOperations();
+  for (const stack of app.node.findAll().filter((node) => Stack.isStack(node))) {
+    for (const [key, value] of Object.entries(STANDARD_TAGS)) {
+      // The stack's own tags, which CloudFormation copies to what it creates,
+      // and each resource's in the template, for what it doesn't.
+      stack.tags.setTag(key, value);
+      Tags.of(stack).add(key, value);
+    }
+    stack.terminationProtection = TIER_RULES[tier].keepData;
+    if (!TIER_RULES[tier].pointInTimeRecovery) {
+      for (const table of stack.node.findAll().filter((node) => node instanceof CfnTable)) {
+        Validations.of(table).acknowledge({
+          id: 'AwsSolutions-DDB3',
+          reason: `The ${tier} tier keeps no data worth recovering: deleting the stack deletes its tables.`,
+        });
+      }
+      for (const secret of stack.node.findAll().filter((node) => node instanceof CfnSecret)) {
+        Validations.of(secret).acknowledge({
+          id: 'AwsSolutions-SMG4',
+          reason: `The ${tier} tier keeps no data worth recovering: deleting the stack deletes its data, and its secrets rotate only in production.`,
+        });
+      }
+    }
+    if (!TIER_RULES[tier].keepData) {
+      for (const cluster of stack.node.findAll().filter((node) => node instanceof CfnDBCluster)) {
+        Validations.of(cluster).acknowledge({
+          id: 'AwsSolutions-RDS10',
+          reason: `The ${tier} tier keeps no data: deleting the stack deletes its databases, so nothing protects them from deletion.`,
+        });
+      }
+    }
+    for (const policy of stack.node.findAll().filter((node) => node instanceof CfnPolicy)) {
+      if (onlyXrayTakesEveryResource(stack, policy)) {
+        Validations.of(policy).acknowledge({
+          id: 'AwsSolutions-IAM5[Resource::*]',
+          reason:
+            'X-Ray tracing writes segments with xray:PutTraceSegments and xray:PutTelemetryRecords, which take no resource but *; the Standard acknowledges it only on a policy where no other statement has the resource *.',
+        });
+      }
+    }
+    if (serverless) {
+      acknowledgeServerless(stack, tier);
+    }
+  }
+  Validations.of(app).addPlugins(
+    new AwsSolutionsChecks(app),
+    ...(serverless ? [new ServerlessChecks(app)] : []),
+  );
+}

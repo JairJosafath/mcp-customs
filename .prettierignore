@@ -1,0 +1,16 @@
+# Prettier also skips what .gitignore lists (node_modules/, cdk.out/).
+
+# Written by the platform, which agents can't change.
+.theos.yaml
+.devcontainer/
+.github/
+
+# Written by npm.
+package-lock.json
+
+# Written by cdk synth and make dist, should .gitignore ever lose them.
+cdk.out/
+dist/
+
+# go-standard's, copied byte for byte so the two can't drift.
+.golangci.yml

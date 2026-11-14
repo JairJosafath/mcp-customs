@@ -1,0 +1,142 @@
+# Implementer guide
+
+You implement one Gitea issue in this repository, as one pull request.
+`AGENTS.md` holds the rules; this guide is how to work an issue. A reviewer
+checks your work against `docs/agents/reviewer.md`, so read that too.
+
+## Before you write code
+
+1. **Read the issue.** Goal, every acceptance criterion, Out of scope, Notes.
+   The acceptance criteria are the contract: meet each one, add nothing they
+   don't ask for. Out of scope stays out.
+2. **Read the C4 context** you were given: the system's needs, this Container,
+   its relationships. Needs bind every change, even ones the issue doesn't
+   repeat (such as "answers within a second" or "keeps orders for seven years").
+3. **Read the related repositories** under `/workspace/related/<name>`, if any:
+   the parts this issue touches, such as the API that calls this one and
+   the shape of the requests it sends. They are read-only; never change them or
+   copy their code.
+4. **Read the code** you'll change and its tests. Find where each criterion lands.
+5. **Plan briefly:** for each criterion, the test that will prove it and the
+   code that will make it pass. If a criterion is ambiguous, choose the reading
+   that fits the system's needs and say so in your summary. Don't widen scope.
+
+## While you work
+
+- **Test first.** For each criterion, write a test that fails, then make it pass.
+  A bug fix starts with a test that shows the bug.
+- **The smallest change that meets every criterion.** No drive-by refactors,
+  renames or reformatting outside the issue; note them as follow-ups instead.
+- **Keep the change focused:** one issue, one pull request, small Conventional
+  Commits.
+- **Update what users read** in the same change when behaviour they see
+  changes: `README.md` (routes, request and response shapes, status codes)
+  and a `CHANGELOG.md` entry under "Unreleased".
+- **`make check` green before every commit.** When a rule fires, fix the code.
+- **Protected files** (the Standard's and the platform's, listed in
+  `AGENTS.md`) change only through a Standard change, below. The Git host
+  refuses them in a normal pull request.
+
+## When CI runs the full check
+
+The Container's owner chooses it (its `checks` setting). When
+`.github/workflows/check.yaml` has a `full` job, the choice is `BeforeRelease`:
+CI runs only `make check-light` (lint and the type or vet checks; no
+tests) on your pull request and on `main`, so your own `make check` before every
+commit is the only full check your change gets until a release. The full
+`make check` runs on a push to `release-check/vX.Y.Z` at the commit a release
+will be tagged at, and a release is tagged only once that `full` job passes. If
+you are asked to tag a release by hand, push that branch at the commit first,
+wait for `check / full (push)` to pass, then tag the commit and delete the
+branch; never tag a commit whose `full` job failed. Without a `full` job, CI runs
+`make check` on every change.
+
+## Standard changes
+
+If the issue truly needs a change to a protected file, make it in the same
+work. The factory moves that edit to a proposal branch and files a separate
+Task that reviews and merges it. Then:
+
+- The protected change merges first, so it must work on `main` without the
+  rest of your work. Never have it call a file only your branch has; use a hook
+  that does nothing until the rest lands, such as a `Makefile` target that calls
+  `npm run dist --if-present`, or an npm script that runs an optional step only
+  when it exists.
+- The rest of your work merges after it and may rely on it.
+- End your summary with a line: `Standard change: <why the issue needs it>`.
+- Never change `AGENTS.md`, `docs/agents/` or `.theos.yaml`. No Standard
+  change can.
+- When your own Task is the Standard change, change the paths the issue names.
+  Change another file only where `make check` fails without it, such as a test
+  that checks what those paths produce; change no other protected file, and do
+  not propose another Standard change.
+
+## Go and AWS notes
+
+- Request handling is tested with `go test` by calling it with an
+  `*events.APIGatewayV2HTTPRequest` and a fake store, checking the status
+  code and the body; the rules live in files that import neither the AWS SDK
+  nor `aws-lambda-go`. Keep `src/main.go` to wiring: the SDK's configuration
+  and clients made once in `main`, the environment read once.
+- An AWS service is reached through one type that wraps its SDK client
+  behind an interface of the methods it calls; its tests pass a fake that
+  implements the interface and records the calls. No test calls AWS, opens a
+  socket or needs credentials.
+- The function is the Go module in `src/`: run Go commands there
+  (`cd src && go test ./...`). After `go get`, run `go mod tidy` and commit
+  `src/go.mod` and `src/go.sum`.
+- Infrastructure changes go in the Framework's stacks under `infra/`, in
+  TypeScript, and each gets a `Template.fromStack` assertion in the stack's
+  test: the resource, its key properties, the IAM actions it is granted.
+  `infra/standard.test.ts` checks the Standard's rules on every stack; fix
+  the stack when it fails, never the test.
+- Permissions come from CDK grants, narrowed to the calls the code makes. A
+  new resource is encrypted at rest, its logs kept for a set time, its
+  removal policy explicit (`RETAIN` for data).
+- The stacks take the tier from `defineStacks(app, tier)` and the
+  Container's promises from `infra/operations.ts`. A new resource follows
+  `TIER_RULES` as the ones beside it do: a table's removal policy, deletion
+  protection and point-in-time recovery by tier, its alarms from the
+  stack's `Alarms`. `infra/standard.test.ts` checks both tiers. Never read
+  another context value or an environment variable at synth. The factory
+  renders `infra/operations.ts` from the Container's `spec.operations`:
+  change it only when your issue changes that block, to what the block
+  says, and never delete it.
+- A change to what the stacks keep, or how (a new table or bucket, a new
+  key, another backup), updates `docs/runbook.md`'s steps in the same work,
+  as a Standard change: the runbook is how the data comes back.
+- When CDK Nag reports a finding, fix the resource. Acknowledge it only when
+  the fix is wrong for this system, on the one construct and the one
+  finding, with a reason the reviewer can check, and list it in your
+  summary. Read `docs/well-architected.md` for what each rule protects.
+- Iterate with `cd src && go test ./...`, `npx vitest` and `make synth`
+  (which builds the function with Go); finish with `make check`, which also
+  runs golangci-lint, `go test -race` and `cfn-lint` on what synth wrote.
+- Never run `cdk deploy`, `cdk bootstrap`, `cdk diff` against an account or
+  any AWS CLI call: there is no account here, and none is needed.
+- Tests never measure time: no `time.Sleep` waits, no bounds such as
+  "answers within 500 ms" on `time.Since`. They pass in your sandbox and fail
+  on the shared CI runner.
+- A budget in the issue or the needs ("within 200 ms", "10,000 items") gets
+  a Go benchmark (`func BenchmarkX(b *testing.B)`) on realistic input, not a
+  test; put the numbers and the input size in the summary. A latency budget
+  in AWS (cold start, DynamoDB) can only be measured in an account: say so.
+- Timing logic (timeouts, retries) is tested with a context the test
+  cancels, or a clock the code is given, never by waiting.
+- Say which behaviour needs a person to try in a real AWS account (IAM
+  policies at run time, throttling, cold starts).
+
+## Your summary
+
+Your summary becomes the pull request description, in the shape of
+`.github/PULL_REQUEST_TEMPLATE.md`:
+
+- **Summary:** what changed and why, in two or three sentences.
+- **Each acceptance criterion:** met or not met; where (file and function);
+  the test that proves it (test name).
+- **How it was checked:** `make check`, numbers for any budget, manual runs.
+- **CDK Nag acknowledgements:** each one the change adds, with its rule,
+  resource and reason, or "None".
+- **Could not be verified:** what and why (needs a real AWS account, the
+  network). Never claim what you didn't run.
+- **Follow-ups:** problems you saw outside the issue's scope.

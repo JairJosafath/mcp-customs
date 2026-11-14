@@ -27,13 +27,13 @@ pass, review or block with a report that says why. The Brief,
 [config/samples/brief/mcp-customs.yaml](../brief.yaml),
 is the whole input theos gets; this section is what it means.
 
-| Part | AWS | What it does |
-| --- | --- | --- |
-| Checker | Lambda durable function, Go SDK v1, provided.al2023, arm64 | Runs the fixed checks and the investigation loop durably |
-| Sandbox | Lambda MicroVM | Runs the server under test with canary values and records its network and file activity |
-| Judge | Amazon Bedrock, through a JSON Schema tool | Writes probe arguments, judges behaviour against purpose, picks the next investigation move |
-| Store | DynamoDB, S3 | Checks, verdicts and tool-list snapshots; reports |
-| Web | Go Lambda behind API Gateway, html/template | Submit, watch the run, read the report, Approve or Block |
+| Part    | AWS                                                        | What it does                                                                                |
+| ------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Checker | Lambda durable function, Go SDK v1, provided.al2023, arm64 | Runs the fixed checks and the investigation loop durably                                    |
+| Sandbox | Lambda MicroVM                                             | Runs the server under test with canary values and records its network and file activity     |
+| Judge   | Amazon Bedrock, through a JSON Schema tool                 | Writes probe arguments, judges behaviour against purpose, picks the next investigation move |
+| Store   | DynamoDB, S3                                               | Checks, verdicts and tool-list snapshots; reports                                           |
+| Web     | Go Lambda behind API Gateway, html/template                | Submit, watch the run, read the report, Approve or Block                                    |
 
 Code decides everything that code can; the model only judges. This is the
 "one move at a time" loop from
@@ -43,14 +43,14 @@ known. A static plan from a model was dropped on 2026-11-14: every branch
 it chose (hash known, tool list changed, canary left) is a fact code
 already has.
 
-| | Code | Model |
-| --- | --- | --- |
-| Resolve, hash lookup, tool-list compare | ✓ | |
-| Start the sandbox, list tools, run probes | ✓ | |
-| Probe arguments from each tool's schema and description, canaries planted | | ✓ |
-| Does the behaviour match the stated purpose; do descriptions instruct the model | | ✓ |
-| Investigate, one registered action per turn, at most 8 turns | | ✓ |
-| Verdict rules; the model may only make a verdict stricter | ✓ | |
+|                                                                                 | Code | Model |
+| ------------------------------------------------------------------------------- | ---- | ----- |
+| Resolve, hash lookup, tool-list compare                                         | ✓    |       |
+| Start the sandbox, list tools, run probes                                       | ✓    |       |
+| Probe arguments from each tool's schema and description, canaries planted       |      | ✓     |
+| Does the behaviour match the stated purpose; do descriptions instruct the model |      | ✓     |
+| Investigate, one registered action per turn, at most 8 turns                    |      | ✓     |
+| Verdict rules; the model may only make a verdict stricter                       | ✓    |       |
 
 Four submissions, one handler:
 
@@ -76,18 +76,18 @@ Four submissions, one handler:
 On 2026-11-14 a review by a subagent briefed as an MCP security researcher
 (sources below) changed the design. Its findings, and what we did:
 
-| Finding | Change |
-| --- | --- |
-| "Records outbound connections" sees hosts, not the canary inside HTTPS | The harness intercepts TLS with its own CA, logs DNS, and matches each canary plain, base64, hex and URL-encoded. Traffic it can't decrypt, to an unexpected host, is review |
-| Open egress tips the attacker off, from AWS addresses | Deny by default: hosts the model expects for the purpose pass, others get fake answers so a second stage still shows |
-| The MicroVM is easy to fingerprint; canary formats can be recognised | Strip Lambda variables, plant a developer's `$HOME`, a common client name, the server as an unprivileged user; fresh canaries per run in real formats with valid checksums, matched at the proxy |
-| Tool results, full schemas, resources and prompts carry injections too | All server text is scanned by code and judged by the model, not only descriptions |
-| The judge reads attacker text, and on the "new and fine" path its judgement is the pass gate | Code findings the model can't clear (hidden characters, a canary leaving, writes to agent configs or shell startup files, unexplained sampling or elicitation); attacker text fenced as evidence; a judge error or running out of turns gives review; the approval page shows server text escaped |
-| `readOnlyHint` is the attacker's own claim | Any tool, not only "read-only" ones: a canary leaving is block or a human |
-| A tarball hash doesn't bind transitive dependencies | Hash the whole resolved dependency set; the verdict carries an install spec to copy |
-| A remote server can show us a clean list and others a poisoned one, and fetching it from the Checker is SSRF into our account | Reach it from the sandbox only, lint its OAuth metadata, and say at most "attested": this list, at this time |
-| Package versions are immutable, so a 24-hour timer re-checks nothing | Re-check when a new version is published or a remote tool list changes; the one-minute timer is only demo framing |
-| Delayed and conditional triggers outrun eight turns | The investigation can run again with the clock moved forward; the report says dynamic analysis gives a lower bound |
+| Finding                                                                                                                       | Change                                                                                                                                                                                                                                                                                            |
+| ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "Records outbound connections" sees hosts, not the canary inside HTTPS                                                        | The harness intercepts TLS with its own CA, logs DNS, and matches each canary plain, base64, hex and URL-encoded. Traffic it can't decrypt, to an unexpected host, is review                                                                                                                      |
+| Open egress tips the attacker off, from AWS addresses                                                                         | Deny by default: hosts the model expects for the purpose pass, others get fake answers so a second stage still shows                                                                                                                                                                              |
+| The MicroVM is easy to fingerprint; canary formats can be recognised                                                          | Strip Lambda variables, plant a developer's `$HOME`, a common client name, the server as an unprivileged user; fresh canaries per run in real formats with valid checksums, matched at the proxy                                                                                                  |
+| Tool results, full schemas, resources and prompts carry injections too                                                        | All server text is scanned by code and judged by the model, not only descriptions                                                                                                                                                                                                                 |
+| The judge reads attacker text, and on the "new and fine" path its judgement is the pass gate                                  | Code findings the model can't clear (hidden characters, a canary leaving, writes to agent configs or shell startup files, unexplained sampling or elicitation); attacker text fenced as evidence; a judge error or running out of turns gives review; the approval page shows server text escaped |
+| `readOnlyHint` is the attacker's own claim                                                                                    | Any tool, not only "read-only" ones: a canary leaving is block or a human                                                                                                                                                                                                                         |
+| A tarball hash doesn't bind transitive dependencies                                                                           | Hash the whole resolved dependency set; the verdict carries an install spec to copy                                                                                                                                                                                                               |
+| A remote server can show us a clean list and others a poisoned one, and fetching it from the Checker is SSRF into our account | Reach it from the sandbox only, lint its OAuth metadata, and say at most "attested": this list, at this time                                                                                                                                                                                      |
+| Package versions are immutable, so a 24-hour timer re-checks nothing                                                          | Re-check when a new version is published or a remote tool list changes; the one-minute timer is only demo framing                                                                                                                                                                                 |
+| Delayed and conditional triggers outrun eight turns                                                                           | The investigation can run again with the clock moved forward; the report says dynamic analysis gives a lower bound                                                                                                                                                                                |
 
 Left for later, and said so in the write-up: a runtime gateway that pins the
 approved tool-list hash on every session (the only real answer to cloaking
@@ -142,35 +142,34 @@ Choices made, and why:
 
 ## Steps
 
-| When | Who | Step |
-| --- | --- | --- |
-| Sat | orchestrator | The model in `model/`, validated against theos's CRDs; the first issues on each Container repository ([kickoff.md](kickoff.md)) |
-| Sat | implementer and reviewer sessions | The weather-tool demo end to end first: sandbox with egress proxy, code findings, Checker, web page |
-| Sun | orchestrator, owner's AWS access | First deploy to us-east-2; one real check end to end |
-| Sun | sessions | The rug-pull demo, the "new and fine" path; a recorded demo run |
-| Mon AM | orchestrator, then owner | Diagram, write-up, results; the owner uploads the video and submits before 13:00 PT |
-| After | owner | The same Brief in the real factory, compared with this build |
+| When   | Who                               | Step                                                                                                                             |
+| ------ | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Sat    | orchestrator                      | Scaffold this repository with theos's `aws-lambda-go` + `aws-standard` + `dynamodb`; file the issues; start the foundation issue |
+| Sat    | implementer and reviewer sessions | The weather-tool demo end to end first: foundation, sandbox with egress proxy, code findings, Checker, web page                  |
+| Sun    | orchestrator, owner's AWS access  | First deploy to us-east-2; one real check end to end                                                                             |
+| Sun    | sessions                          | The rug-pull demo, the "new and fine" path; a recorded demo run                                                                  |
+| Mon AM | orchestrator, then owner          | Write-up, results; the owner uploads the video and submits before 13:00 PT                                                       |
+| After  | owner                             | The same Brief in the real factory, compared with this build                                                                     |
 
-### The cloud route
+### The cloud route, in one repository
 
-The owner wants no manual work and cloud sessions only, so for the weekend
-theos's operator is played by an orchestrator session and its Crew roles by
-cloud sessions (decided 2026-11-14). theos's own parts are used unchanged:
+The owner wants no manual work, cloud sessions only, and the simplest thing
+that can win (decided 2026-11-14). So theos's operator is played by an
+orchestrator session, its Crew roles by cloud sessions, and the whole
+system lives in this one repository:
 
-| theos | Here |
-| --- | --- |
-| Planner turns the Brief into the model and issues | The orchestrator writes `model/`, validated offline against theos's CRDs and CEL, and files issues with acceptance criteria |
-| Operator scaffolds each Container | theos's `hack/render` rendered each repository as the operator would (`aws-lambda-go`, `aws-standard`, `dynamodb` for the Checker, GitHub Actions) |
-| Implementer in a sandbox | One cloud session per issue, following the repository's `AGENTS.md` and `docs/agents/implementer.md` |
-| CI's required check | The Standard's `make check`, run by implementer and reviewer, until the GitHub check can run |
-| Reviewer | A fresh session per pull request, following `docs/agents/reviewer.md` |
-| Operator merges, rounds, cost | The orchestrator, by hand; cost and rounds in `docs/runs.md` |
+| theos                            | Here                                                                                                                                                                    |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One repository per Container     | One repository: the three Containers of docs/c4.html are packages under `src/`, deployed by one CDK app ([theos#270](https://github.com/JairJosafath/theos/issues/270)) |
+| Operator scaffolds the Container | theos's `hack/render` scaffolded this repository with `aws-lambda-go`, `aws-standard` and `dynamodb`, GitHub Actions as the CI                                          |
+| Implementer in a sandbox         | One cloud session per issue, following `AGENTS.md` and `docs/agents/implementer.md`                                                                                     |
+| CI's required check              | The Standard's `make check`, in GitHub Actions and run by every session                                                                                                 |
+| Reviewer                         | A fresh session per pull request, following `docs/agents/reviewer.md`                                                                                                   |
+| Operator merges, rounds, cost    | The orchestrator; cost and rounds in `docs/runs.md`                                                                                                                     |
 
-What theos learns: whether its templates, Standards, CRDs and role guides
-hold up on a real project. What it doesn't: the operator (the Task loop,
-the fence, checkpoints, cost records, scheduling, merge rules). That comes
-after the deadline, when the real factory builds the same Brief and its
-result is compared with this one.
+What theos learns: whether its template, Standard and role guides hold up
+on a real project. What it doesn't: the operator. That comes after the
+deadline, when the real factory builds the same Brief.
 
 Rules for the weekend:
 
@@ -194,12 +193,14 @@ Rules for the weekend:
 
 One row per thing that went wrong or needed a person. Newest last.
 
-| # | When | What happened | Where in theos | Blocker? | Fix or issue |
-| --- | --- | --- | --- | --- | --- |
-| 1 | Fri | Known before starting: no AWS deploy | `aws-deploy.md`, not built | no (deploy by hand) | existing plan |
-| 2 | Fri | Known before starting: no template knows durable functions or MicroVMs; the Crew must add both to a CDK app | `templates/aws-lambda-go` | to be seen | |
-| 3 | Fri | Known before starting: the repositories live in the in-cluster Gitea; the entry needs them public | [github-host.md](https://github.com/JairJosafath/theos/blob/main/docs/plans/github-host.md) | no (mirror by hand) | |
-| 4 | Fri | No Standard limits Go function size, complexity or file length, and a project can't add limits itself | `templates/go-standard/.golangci.yml` | no | [theos#262](https://github.com/JairJosafath/theos/issues/262) |
-| 5 | Sat | Agents can't be told to use subagents per role, and no agent outside the cluster can fill a Crew spot | the Standards' role guides; `Agent.spec.harness` | no | [theos#259](https://github.com/JairJosafath/theos/issues/259), [theos#260](https://github.com/JairJosafath/theos/issues/260) |
-| 6 | Sat | A repository rendered for GitHub can't run its check: the workflow needs an Actions variable only the operator sets, naming a private image | `.theos/ci/` GitHub workflow | no (`make check` in the sessions is the gate) | [theos#263](https://github.com/JairJosafath/theos/issues/263) |
-| 7 | Sat | `hack/render` writes `project: webshop`, `softwareSystem: shop` into `.theos.yaml`; edited by hand to `mcp-customs` | `hack/render` | no | [theos#264](https://github.com/JairJosafath/theos/issues/264) |
+| #   | When | What happened                                                                                                                               | Where in theos                                                                              | Blocker?                                      | Fix or issue                                                                                                                 |
+| --- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Fri  | Known before starting: no AWS deploy                                                                                                        | `aws-deploy.md`, not built                                                                  | no (deploy by hand)                           | existing plan                                                                                                                |
+| 2   | Fri  | Known before starting: no template knows durable functions or MicroVMs; the Crew must add both to a CDK app                                 | `templates/aws-lambda-go`                                                                   | to be seen                                    |                                                                                                                              |
+| 3   | Fri  | Known before starting: the repositories live in the in-cluster Gitea; the entry needs them public                                           | [github-host.md](https://github.com/JairJosafath/theos/blob/main/docs/plans/github-host.md) | no (mirror by hand)                           |                                                                                                                              |
+| 4   | Fri  | No Standard limits Go function size, complexity or file length, and a project can't add limits itself                                       | `templates/go-standard/.golangci.yml`                                                       | no                                            | [theos#262](https://github.com/JairJosafath/theos/issues/262)                                                                |
+| 5   | Sat  | Agents can't be told to use subagents per role, and no agent outside the cluster can fill a Crew spot                                       | the Standards' role guides; `Agent.spec.harness`                                            | no                                            | [theos#259](https://github.com/JairJosafath/theos/issues/259), [theos#260](https://github.com/JairJosafath/theos/issues/260) |
+| 6   | Sat  | A repository rendered for GitHub can't run its check: the workflow needs an Actions variable only the operator sets, naming a private image | `.theos/ci/` GitHub workflow                                                                | no (`make check` in the sessions is the gate) | [theos#263](https://github.com/JairJosafath/theos/issues/263)                                                                |
+| 7   | Sat  | `hack/render` writes `project: webshop`, `softwareSystem: shop` into `.theos.yaml`; edited by hand to `mcp-customs`                         | `hack/render`                                                                               | no                                            | [theos#264](https://github.com/JairJosafath/theos/issues/264)                                                                |
+| 8   | Sat  | theos allows only one repository per Container; the owner wanted one repository for a small system                                          | design.md, "no monorepos"                                                                   | no (one Container, three in the diagram)      | [theos#270](https://github.com/JairJosafath/theos/issues/270)                                                                |
+| 9   | Sat  | Without the operator, the rendered GitHub check can't run; this repository's workflow installs the toolchain itself instead                 | `.github/workflows/check.yaml`                                                              | no                                            | [theos#263](https://github.com/JairJosafath/theos/issues/263)                                                                |

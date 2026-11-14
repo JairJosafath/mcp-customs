@@ -1,0 +1,320 @@
+import { AssetHashType, CfnOutput, DockerImage, Duration, RemovalPolicy, Stack } from 'aws-cdk-lib';
+import type { StackProps } from 'aws-cdk-lib';
+import { AccessLogFormat } from 'aws-cdk-lib/aws-apigateway';
+import { HttpApi, HttpMethod, LogGroupLogDestination } from 'aws-cdk-lib/aws-apigatewayv2';
+import { HttpIamAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
+import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import { AttributeType, BillingMode, Table, TableEncryption } from 'aws-cdk-lib/aws-dynamodb';
+import { Role, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
+import {
+  Architecture,
+  Code,
+  Function,
+  LoggingFormat,
+  Runtime,
+  Tracing,
+} from 'aws-cdk-lib/aws-lambda';
+import { LogGroup } from 'aws-cdk-lib/aws-logs';
+import { CfnDBCluster } from 'aws-cdk-lib/aws-rds';
+import type { DatabaseCluster } from 'aws-cdk-lib/aws-rds';
+import type { Construct } from 'constructs';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+
+import { Alarms } from './alarms';
+import { Backups } from './backups';
+import { DATA_STORES } from './connectors';
+import type { Connect, DataStore } from './connectors';
+import { TIER_RULES } from './standard';
+import type { Operations, Tier } from './standard';
+
+// The function's Go module: its own go.mod, apart from node_modules/, whose
+// stray .go files would otherwise be part of it.
+const SRC = path.join(import.meta.dirname, '..', 'src');
+
+// The function's time limit, which its duration alarm is a share of.
+const TIMEOUT = Duration.seconds(10);
+
+/**
+ * The stage's access log: a JSON object per request with the request id,
+ * the route, the status, the latencies and the integration's error, in
+ * HTTP API context variables.
+ */
+export const ACCESS_LOG_FIELDS = {
+  requestId: '$context.requestId',
+  requestTime: '$context.requestTime',
+  sourceIp: '$context.identity.sourceIp',
+  caller: '$context.identity.caller',
+  routeKey: '$context.routeKey',
+  protocol: '$context.protocol',
+  status: '$context.status',
+  responseLength: '$context.responseLength',
+  responseLatency: '$context.responseLatency',
+  integrationLatency: '$context.integrationLatency',
+  integrationStatus: '$context.integrationStatus',
+  integrationError: '$context.integrationErrorMessage',
+};
+
+/**
+ * The function's code: `src/` built by the installed Go for Lambda's arm64
+ * Linux into one `bootstrap` binary, the file the provided.al2023 runtime
+ * runs. Never Docker, which CI doesn't have: a failed build fails synth.
+ */
+function goFunctionCode(): Code {
+  return Code.fromAsset(SRC, {
+    // The hash of the binary, what the source builds to: -trimpath and
+    // -buildvcs=false keep it the same from one build to the next.
+    assetHashType: AssetHashType.OUTPUT,
+    bundling: {
+      // Required by the type, never pulled: local bundling always succeeds or throws.
+      image: DockerImage.fromRegistry('public.ecr.aws/docker/library/golang'),
+      local: {
+        tryBundle(outputDir: string): boolean {
+          execFileSync(
+            'go',
+            [
+              'build',
+              '-trimpath',
+              '-buildvcs=false',
+              '-tags',
+              'lambda.norpc',
+              '-ldflags',
+              '-s -w',
+              '-o',
+              path.join(outputDir, 'bootstrap'),
+              '.',
+            ],
+            {
+              cwd: SRC,
+              env: { ...process.env, GOOS: 'linux', GOARCH: 'arm64', CGO_ENABLED: '0' },
+              stdio: ['ignore', 'inherit', 'inherit'],
+            },
+          );
+          return true;
+        },
+      },
+    },
+  });
+}
+
+// Aurora PostgreSQL's max_connections at a Serverless v2 cluster's largest
+// capacity, the lowest column of the table in the Aurora User Guide's
+// "Maximum connections for Aurora Serverless v2", interpolated between its
+// rows: the documented formula, LEAST(DBInstanceClassMemory / 9531392, 5000),
+// counts memory after what the OS keeps, so 2 GiB an ACU overstates it.
+const MAX_CONNECTIONS_BY_ACU: readonly (readonly [number, number])[] = [
+  [1, 189],
+  [4, 823],
+  [8, 1669],
+  [16, 3360],
+  [32, 5000],
+];
+// A cluster whose minimum is 0 or 0.5 ACU stops at 2,000 whatever its largest.
+const LOW_MINIMUM_MAX_CONNECTIONS = 2000;
+
+/** The documented max_connections at `acu`, the first row's below it and the last's above. */
+function documentedMaxConnections(acu: number): number {
+  let previous: readonly [number, number] | undefined;
+  for (const row of MAX_CONNECTIONS_BY_ACU) {
+    const [rowAcu, rowConnections] = row;
+    if (acu >= rowAcu) {
+      previous = row;
+      continue;
+    }
+    if (previous === undefined) {
+      return rowConnections;
+    }
+    const [belowAcu, below] = previous;
+    return Math.floor(below + ((rowConnections - below) * (acu - belowAcu)) / (rowAcu - belowAcu));
+  }
+  return previous === undefined ? 0 : previous[1];
+}
+
+/**
+ * Nine tenths of the connections `cluster` allows at its largest, from the
+ * Serverless v2 scaling configuration its Connector gave it; 1 ACU's when it
+ * has none the stack can read.
+ */
+export function maxConnections(cluster: DatabaseCluster): number {
+  // The configuration is a lazy token until resolved; a provisioned cluster has none.
+  const scaling: unknown = Stack.of(cluster).resolve(
+    (cluster.node.defaultChild as CfnDBCluster).serverlessV2ScalingConfiguration,
+  );
+  const capacity = (name: 'minCapacity' | 'maxCapacity'): number =>
+    typeof scaling === 'object' &&
+    scaling !== null &&
+    name in scaling &&
+    typeof (scaling as Record<string, unknown>)[name] === 'number'
+      ? ((scaling as Record<string, unknown>)[name] as number)
+      : 1;
+  const documented = documentedMaxConnections(capacity('maxCapacity'));
+  const connections =
+    capacity('minCapacity') < 1 ? Math.min(documented, LOW_MINIMUM_MAX_CONNECTIONS) : documented;
+  return Math.floor(connections * 0.9);
+}
+
+/** What the stack is built for. */
+export interface ApiStackProps extends StackProps {
+  /** Where it runs, which decides what it keeps, backs up and traces. */
+  readonly tier: Tier;
+  /** What the Container promises whatever the tier: `OPERATIONS`. */
+  readonly operations: Operations;
+  /** The data stores it connects the function to: `DATA_STORES` unless a test names others. */
+  readonly dataStores?: readonly (readonly [string, Connect])[];
+}
+
+/**
+ * The Container's one stack: an HTTP API whose routes call a Lambda function
+ * that keeps items in a DynamoDB table, and the data stores its Connectors make. Callers sign their requests with IAM
+ * (SigV4); the API refuses everyone else. Every part has alarms, to a topic
+ * the stack outputs with its URL; production keeps and backs up the data.
+ */
+export class ApiStack extends Stack {
+  /** The API's URL, `https://<id>.execute-api.<region>.amazonaws.com/`. */
+  readonly url: string;
+
+  constructor(scope: Construct, id: string, props: ApiStackProps) {
+    super(scope, id, props);
+    const rules = TIER_RULES[props.tier];
+    const { backups, alerts } = props.operations;
+
+    // The table holds data: kept, protected and recoverable where the tier
+    // keeps data, thrown away with the stack where it doesn't.
+    const table = new Table(this, 'Items', {
+      partitionKey: { name: 'id', type: AttributeType.STRING },
+      billingMode: BillingMode.PAY_PER_REQUEST,
+      encryption: TableEncryption.AWS_MANAGED,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: rules.pointInTimeRecovery,
+      },
+      deletionProtection: rules.keepData,
+      removalPolicy: rules.keepData ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+    });
+
+    const functionLogs = new LogGroup(this, 'HandlerLogs', {
+      retention: rules.logRetention,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+    // The function's own role, allowed only to write its log group: the
+    // default role would carry the AWS managed AWSLambdaBasicExecutionRole,
+    // which may write to every log group in the account.
+    const role = new Role(this, 'HandlerRole', {
+      assumedBy: new ServicePrincipal('lambda.amazonaws.com'),
+    });
+    functionLogs.grantWrite(role);
+    const handler = new Function(this, 'Handler', {
+      role,
+      code: goFunctionCode(),
+      handler: 'bootstrap',
+      runtime: Runtime.PROVIDED_AL2023,
+      architecture: Architecture.ARM_64,
+      memorySize: 256,
+      timeout: TIMEOUT,
+      logGroup: functionLogs,
+      loggingFormat: LoggingFormat.JSON,
+      // Lambda traces each call itself; the function adds no subsegments.
+      tracing: rules.tracing ? Tracing.ACTIVE : Tracing.DISABLED,
+      environment: { TABLE_NAME: table.tableName },
+    });
+    // Only the calls the handler makes.
+    table.grant(handler, 'dynamodb:GetItem', 'dynamodb:PutItem');
+    // The DataStores the Container's Relationships name, from their
+    // Connectors: a table or an Aurora cluster each.
+    const stores = (props.dataStores ?? DATA_STORES).map(
+      ([name, connect]) => [name, connect(this, handler, rules)] as const,
+    );
+    const isTable = (store: DataStore): store is Table => store instanceof Table;
+    const tables = stores.flatMap(([name, store]) =>
+      isTable(store) ? [[name, store] as const] : [],
+    );
+    const clusters = stores.flatMap(([name, store]) =>
+      isTable(store) ? [] : [[name, store] as const],
+    );
+
+    const accessLogs = new LogGroup(this, 'ApiAccessLogs', {
+      retention: rules.logRetention,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+    const api = new HttpApi(this, 'Api', {
+      defaultAuthorizer: new HttpIamAuthorizer(),
+      createDefaultStage: false,
+    });
+    api.addStage('DefaultStage', {
+      stageName: '$default',
+      autoDeploy: true,
+      throttle: { rateLimit: 50, burstLimit: 100 },
+      // One JSON object per request, so Logs Insights queries it by field.
+      accessLogSettings: {
+        destination: new LogGroupLogDestination(accessLogs),
+        format: AccessLogFormat.custom(JSON.stringify(ACCESS_LOG_FIELDS)),
+      },
+    });
+    api.addRoutes({
+      path: '/items/{id}',
+      methods: [HttpMethod.GET, HttpMethod.PUT],
+      integration: new HttpLambdaIntegration('Items', handler),
+    });
+    this.url = api.apiEndpoint;
+
+    // Each alarm fires on the first bad five minutes: a server error, a
+    // failed or throttled call, or calls near their time limit.
+    // docs/runbook.md says what each means and what to do first.
+    // tsconfig's exactOptionalPropertyTypes keeps a HttpApi or Table from
+    // passing as the IHttpApi or ITable the monitoring takes (an optional
+    // property they leave undefined), so it gets a reference by id or name.
+    const alarms = new Alarms(this, 'Alarms', alerts.email);
+    alarms.monitoring
+      .monitorApiGatewayV2HttpApi({
+        api: HttpApi.fromHttpApiAttributes(this, 'MonitoredApi', { httpApiId: api.apiId }),
+        alarmFriendlyName: 'Api',
+        add5xxCountAlarm: { Critical: { maxErrorCount: 0 } },
+      })
+      .monitorLambdaFunction({
+        lambdaFunction: handler,
+        alarmFriendlyName: 'Handler',
+        addFaultCountAlarm: { Critical: { maxErrorCount: 0 } },
+        addThrottlesCountAlarm: { Critical: { maxErrorCount: 0 } },
+        addLatencyP99Alarm: {
+          Warning: { maxLatency: Duration.millis(TIMEOUT.toMilliseconds() * 0.8) },
+        },
+      });
+    for (const [name, monitored] of [['Items', table], ...tables] as const) {
+      alarms.monitoring.monitorDynamoTable({
+        table: Table.fromTableName(this, `Monitored${name}`, monitored.tableName),
+        alarmFriendlyName: name,
+        billingMode: BillingMode.PAY_PER_REQUEST,
+        addSystemErrorCountAlarm: { Critical: { maxErrorCount: 0 } },
+        addReadThrottledEventsCountAlarm: { Critical: { maxThrottledEventsThreshold: 0 } },
+        addWriteThrottledEventsCountAlarm: { Critical: { maxThrottledEventsThreshold: 0 } },
+      });
+    }
+
+    // A cluster near its CPU or its connections is one the function will soon
+    // find slow or closed; both alarms page like the function's own (this
+    // Framework deploys with no rollback, so none of its alarms rolls one back).
+    for (const [name, cluster] of clusters) {
+      alarms.monitoring.monitorAuroraCluster({
+        // The cluster itself, not its identifier: the monitoring reads its
+        // ARN to tell a Serverless cluster.
+        cluster,
+        alarmFriendlyName: name,
+        addCpuUsageAlarm: { Critical: { maxUsagePercent: 90 } },
+        addMaxConnectionCountAlarm: { Critical: { maxConnectionCount: maxConnections(cluster) } },
+      });
+    }
+
+    if (rules.backups && backups.retentionDays > 0) {
+      new Backups(this, 'Backups', {
+        retentionDays: backups.retentionDays,
+        copyToRegion: backups.copyToRegion,
+        tables: [table, ...tables.map(([, store]) => store)],
+        clusters: clusters.map(([, cluster]) => cluster),
+      });
+    }
+
+    new CfnOutput(this, 'EntryPoint', {
+      value: this.url,
+      description: 'The URL of the HTTP API.',
+    });
+  }
+}

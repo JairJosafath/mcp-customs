@@ -1,0 +1,38 @@
+{
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ],
+      "settings": {
+        "[go]": {
+          "editor.codeActionsOnSave": {
+            "source.organizeImports": "explicit"
+          },
+          "editor.defaultFormatter": "golang.go"
+        },
+        "editor.codeActionsOnSave": {
+          "source.fixAll.eslint": "explicit"
+        },
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.formatOnSave": true,
+        "go.lintOnSave": "package",
+        "go.lintTool": "golangci-lint-v2",
+        "go.testFlags": [
+          "-race"
+        ],
+        "gopls": {
+          "formatting.gofumpt": true,
+          "ui.semanticTokens": true
+        },
+        "typescript.enablePromptUseWorkspaceTsdk": true,
+        "typescript.tsdk": "node_modules/typescript/lib"
+      }
+    }
+  },
+  "image": "theos/go:1.26",
+  "name": "MCP Customs",
+  "postCreateCommand": "npm ci --no-audit --no-fund && cd src && go mod download"
+}
