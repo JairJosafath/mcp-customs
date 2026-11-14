@@ -23,9 +23,8 @@ type textPiece struct {
 func (l listing) pieces() []textPiece {
 	var out []textPiece
 	for i, t := range l.Tools {
-		var named tool
-		_ = json.Unmarshal(t, &named)
-		out = append(out, textPiece{Where: fmt.Sprintf("tool %d (%q)", i, named.Name), Text: t})
+		// By index: the name is the server's, of any length.
+		out = append(out, textPiece{Where: fmt.Sprintf("tool %d", i), Text: t})
 	}
 	for i, res := range l.Resources {
 		out = append(out, textPiece{Where: fmt.Sprintf("resource %d", i), Text: res})
@@ -59,9 +58,10 @@ func scan(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 
 // probed is one tool's probe: the call's result or error, scanned.
 type probed struct {
-	Tool     string             `json:"tool"`
-	Failed   string             `json:"failed,omitempty"`
-	Findings []findings.Finding `json:"findings"`
+	Tool      string             `json:"tool"`
+	Failed    string             `json:"failed,omitempty"`
+	Findings  []findings.Finding `json:"findings"`
+	Oversized int                `json:"oversized,omitempty"`
 }
 
 // probe calls every tool once with stub arguments, a Map over the tools,
@@ -91,10 +91,13 @@ func probe(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 			if _, err := callHarness(sc, r.deps.Sandbox, r.vm, http.MethodPost, "/call", body, &answer); err != nil {
 				return probed{}, err
 			}
-			p := probed{Tool: t.Name, Findings: scanJSON(fmt.Sprintf("the result of %q", t.Name), answer.Result)}
+			p := probed{Tool: t.Name, Findings: scanJSON(fmt.Sprintf("the result of tool %d", i), answer.Result)}
 			if len(answer.Error) > 0 {
 				p.Failed = string(answer.Error)
-				p.Findings = append(p.Findings, scanJSON(fmt.Sprintf("the error of %q", t.Name), answer.Error)...)
+				p.Findings = append(p.Findings, scanJSON(fmt.Sprintf("the error of tool %d", i), answer.Error)...)
+			}
+			if n := sizeOf(p); n > maxStepResult {
+				return probed{Oversized: n}, r.keepOversized(sc, fmt.Sprintf("call-%d", i), answer)
 			}
 			return p, nil
 		}, noRetry)
@@ -103,7 +106,10 @@ func probe(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 		return outcome{}, err
 	}
 	found := skipped
-	for _, p := range res.Results() {
+	for i, p := range res.Results() {
+		if p.Oversized > 0 {
+			return outcome{}, r.tooLarge(fmt.Sprintf("call-%d", i), p.Oversized)
+		}
 		found = append(found, p.Findings...)
 	}
 	r.probes = res.Results()

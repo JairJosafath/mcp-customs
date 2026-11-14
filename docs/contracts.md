@@ -122,6 +122,14 @@ harness's or the SDK's text), and turns `failed`. A `HASH#` item is written only
 person approves it; its `installSpec` is the JSON
 `{"kind","ref","dependencySha256","toolListSha256"}`.
 
+A check's `META` also keeps `sandboxId`, the MicroVM its `resolve`
+launched, written before anything else, so a failure can end it.
+
+No step keeps more than 200 KB. A tool list, a probe's answer or the
+observations larger than that are kept whole in the bucket as
+`observations/<check-id>-<what>.json` (`list`, `call-<n>`, `observe`), and
+the check fails, with an `oversized` code finding on its `failed` step.
+
 Reports go to the bucket as `reports/<check-id>.json`. Raw observations as
 `observations/<check-id>.json`.
 

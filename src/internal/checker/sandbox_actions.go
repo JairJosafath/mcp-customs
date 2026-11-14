@@ -49,6 +49,11 @@ func resolve(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 		if err != nil {
 			return resolved{}, fmt.Errorf("launch the sandbox: %w", err)
 		}
+		// First, so a failure can end the sandbox even if this step never
+		// finishes.
+		if err := r.deps.Store.UpdateCheck(sc, r.in.CheckID, store.CheckUpdate{SandboxID: vm.ID}); err != nil {
+			return resolved{}, err
+		}
 		res := resolved{VM: vm, Canaries: set}
 		var answer installAnswer
 		body := map[string]any{"kind": r.in.Submission.Kind, "ref": r.in.Submission.Ref, "canaries": set, "allowHosts": []string{}}
@@ -158,6 +163,8 @@ type listing struct {
 	Resources  []json.RawMessage `json:"resources"`
 	Prompts    []json.RawMessage `json:"prompts"`
 	ToolHash   string            `json:"toolHash"`
+	// Oversized is the listing's size when it was too large to keep.
+	Oversized int `json:"oversized,omitempty"`
 }
 
 // list starts the server if nothing started it yet, lists its tools,
@@ -176,11 +183,20 @@ func list(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 			return l, err
 		}
 		hash, err := toolListHash(l.Tools)
+		if err != nil {
+			return l, err
+		}
 		l.ToolHash = hash
-		return l, err
+		if n := sizeOf(l); n > maxStepResult {
+			return listing{Oversized: n}, r.keepOversized(sc, "list", l)
+		}
+		return l, nil
 	}, noRetry)
 	if err != nil {
 		return outcome{}, err
+	}
+	if got.Oversized > 0 {
+		return outcome{}, r.tooLarge("list", got.Oversized)
 	}
 	r.listing, r.listed = got, true
 	return outcome{Summary: fmt.Sprintf("Listed %d tool(s), %d resource(s) and %d prompt(s); the tool list hashes to %s.",
@@ -190,8 +206,9 @@ func list(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 // observed is what observe found: how many observations the run made, and
 // their code findings. The observations themselves go to the bucket.
 type observed struct {
-	Count    int                `json:"count"`
-	Findings []findings.Finding `json:"findings"`
+	Count     int                `json:"count"`
+	Findings  []findings.Finding `json:"findings"`
+	Oversized int                `json:"oversized,omitempty"`
 }
 
 // observe reads every observation of the run, keeps them in the bucket as
@@ -211,10 +228,17 @@ func observe(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 		if err := r.deps.Reports.PutObservations(sc, r.in.CheckID, raw); err != nil {
 			return observed{}, err
 		}
-		return observed{Count: len(all.Observations), Findings: findings.FromObservations(all.Observations, r.canaries)}, nil
+		got := observed{Count: len(all.Observations), Findings: findings.FromObservations(all.Observations, r.canaries)}
+		if n := sizeOf(got); n > maxStepResult {
+			return observed{Oversized: n}, r.keepOversized(sc, "observe", got)
+		}
+		return got, nil
 	})
 	if err != nil {
 		return outcome{}, err
+	}
+	if got.Oversized > 0 {
+		return outcome{}, r.tooLarge("observe", got.Oversized)
 	}
 	return outcome{
 		Summary:  fmt.Sprintf("Read %d observation(s) of the run; code flags %d.", got.Count, len(got.Findings)),

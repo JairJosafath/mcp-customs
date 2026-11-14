@@ -24,7 +24,7 @@ type DynamoAPI interface {
 var (
 	ErrCheckExists = errors.New("the check already exists")
 	ErrNoCheck     = errors.New("there is no such check")
-	ErrEmptyUpdate = errors.New("an update must set a status, a verdict or a callback ID")
+	ErrEmptyUpdate = errors.New("an update must set a status, a verdict, a callback ID or a sandbox ID")
 )
 
 // CheckUpdate is what an update of a check's META sets: only the fields
@@ -33,6 +33,7 @@ type CheckUpdate struct {
 	Status     Status
 	Verdict    string
 	CallbackID string
+	SandboxID  string
 }
 
 // Store keeps checks, their steps and verdicts in one table keyed by pk
@@ -86,6 +87,7 @@ func (s *Store) UpdateCheck(ctx context.Context, id string, u CheckUpdate) error
 		{"status", string(u.Status)},
 		{"verdict", u.Verdict},
 		{"callbackId", u.CallbackID},
+		{"sandboxId", u.SandboxID},
 	} {
 		if field.value == "" {
 			continue

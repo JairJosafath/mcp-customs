@@ -2,6 +2,7 @@ package checker
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -469,4 +470,99 @@ func count(list []string, s string) int {
 		}
 	}
 	return n
+}
+
+// padding is text larger than a step can keep.
+var padding = strings.Repeat("sunny ", 300<<10/6)
+
+func TestAnAnswerTooLargeForAStepFailsTheCheckCleanly(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pad    func(*server)
+		action string
+		kept   string
+	}{
+		"a padded tool list": {
+			func(s *server) {
+				s.tools = []string{strings.Replace(weatherTool, "Gets the weather for a city.", padding, 1)}
+			},
+			"list", "observations/c1-list.json",
+		},
+		"a padded probe error": {
+			func(s *server) {
+				s.errors = map[string]string{"get_weather": `{"code":-32000,"message":"` + padding + `"}`}
+			},
+			"probe", "observations/c1-call-0.json",
+		},
+		"a flood of observations": {
+			func(s *server) {
+				for i := range 12000 {
+					s.observations = append(s.observations, observation(findings.ObservedFile, map[string]any{"path": fmt.Sprintf("/home/dev/.claude/agents/%d/settings.json", i)}))
+				}
+			},
+			"observe", "observations/c1-observe.json",
+		},
+	} {
+		srv := cleanServer()
+		tc.pad(srv)
+		w := newWorld(srv)
+		result, err := durabletest.NewLocalRunner(Handler(w.deps())).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Status != durabletest.Failed || result.Error.Type == "CheckpointError" {
+			t.Errorf("%s: status %s, error %+v; want failed by the check, not the checkpoint", name, result.Status, result.Error)
+		}
+		if got := w.vms.StateOf(sandbox.VM{ID: "mvm-fake-1"}); got != sandbox.StateTerminated {
+			t.Errorf("%s: the sandbox is %s, want terminated", name, got)
+		}
+		if check := w.rec.checks[0]; check.Status != store.StatusFailed {
+			t.Errorf("%s: check %+v, want failed", name, check)
+		}
+		last := w.rec.steps[len(w.rec.steps)-1]
+		if last.Name != "failed" || !strings.HasPrefix(last.Summary, "The check failed during "+tc.action+": ") ||
+			len(last.Findings) != 1 || last.Findings[0].Rule != findings.RuleOversized || !strings.Contains(last.Findings[0].Evidence, tc.kept) {
+			t.Errorf("%s: last step %+v, want failed during %s with an oversized finding naming %s", name, last, tc.action, tc.kept)
+		}
+		if _, ok := w.reports.objects[tc.kept]; !ok {
+			t.Errorf("%s: the whole answer isn't kept at %s", name, tc.kept)
+		}
+		for _, op := range result.Operations {
+			if op.StepDetails != nil && len(op.StepDetails.Result) > maxStepResult {
+				t.Errorf("%s: step %s kept %d bytes", name, op.Name, len(op.StepDetails.Result))
+			}
+		}
+	}
+}
+
+func TestALargeProbeResultIsScannedButNotKept(t *testing.T) {
+	srv := cleanServer()
+	srv.results["get_weather"] = `{"content":[{"type":"text","text":"` + padding + `"}]}`
+	w := newWorld(srv)
+	result, err := durabletest.NewLocalRunner(Handler(w.deps())).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := durabletest.ResultAs[Output](result); err != nil || out.Verdict != verdict.Pass {
+		t.Errorf("output %+v, %v; want a pass: only the result's findings are kept", out, err)
+	}
+}
+
+func TestAResolveCutShortAfterTheLaunchStillEndsItsSandbox(t *testing.T) {
+	srv := cleanServer()
+	srv.hang = true
+	w := newWorld(srv)
+	result, err := durabletest.NewLocalRunner(Handler(w.deps())).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != durabletest.Failed {
+		t.Fatalf("status %s, want failed", result.Status)
+	}
+	// The launch recorded its sandbox on the check before anything else.
+	if check := w.rec.checks[0]; check.SandboxID != "mvm-fake-1" || check.Status != store.StatusFailed {
+		t.Errorf("check %+v, want its sandbox recorded and failed", check)
+	}
+	if got := w.vms.StateOf(sandbox.VM{ID: "mvm-fake-1"}); got != sandbox.StateTerminated {
+		t.Errorf("the sandbox is %s, want terminated", got)
+	}
 }

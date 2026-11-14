@@ -33,6 +33,7 @@ type Recorder interface {
 type Reports interface {
 	PutReport(ctx context.Context, checkID string, report []byte) error
 	PutObservations(ctx context.Context, checkID string, observations []byte) error
+	PutOversized(ctx context.Context, checkID, what string, body []byte) error
 }
 
 // Deps are what the Checker works with.
@@ -92,6 +93,8 @@ type run struct {
 	human    string
 	// current is the action or phase running, for a failure's summary.
 	current string
+	// oversized is the finding of an answer too large to keep, if any.
+	oversized *findings.Finding
 }
 
 // Handler is the Checker's durable handler. Each write and each call is a
@@ -207,21 +210,33 @@ func (r *run) judge(ctx durable.Context) (verdict.Input, error) {
 // unique is fs with each finding once, in order.
 func unique(fs []findings.Finding) []findings.Finding {
 	out := make([]findings.Finding, 0, len(fs))
+	seen := map[findings.Finding]bool{}
 	for _, f := range fs {
-		if !slices.Contains(out, f) {
+		if !seen[f] {
+			seen[f] = true
 			out = append(out, f)
 		}
 	}
 	return out
 }
 
-// endSandbox terminates the check's sandbox, once, in a step.
+// endSandbox terminates the check's sandbox, once, in a step. A resolve
+// that launched one but never finished, such as one the invocation's
+// timeout cut short, left its ID on the check: that one is ended too.
 func (r *run) endSandbox(ctx durable.Context) error {
-	if r.ended || r.vm.ID == "" {
+	if r.ended || (r.vm.ID == "" && r.current != string(ActResolve)) {
 		return nil
 	}
 	if _, err := durable.Step(ctx, "end-sandbox", func(sc durable.StepContext) (bool, error) {
-		return true, r.deps.Sandbox.Terminate(sc, r.vm)
+		vm := r.vm
+		if vm.ID == "" {
+			check, found, err := r.deps.Store.GetCheck(sc, r.in.CheckID)
+			if err != nil || !found || check.SandboxID == "" {
+				return err == nil, err
+			}
+			vm = sandbox.VM{ID: check.SandboxID}
+		}
+		return true, r.deps.Sandbox.Terminate(sc, vm)
 	}); err != nil {
 		return fmt.Errorf("end the sandbox of check %s: %w", r.in.CheckID, err)
 	}
@@ -233,7 +248,7 @@ func (r *run) endSandbox(ctx durable.Context) error {
 // other error that ends one is a durable operation's, which matches
 // *durable.OperationError; the SDK's signal that the invocation is
 // suspending matches neither, and must pass through untouched.
-var terminal = []error{ErrUnknownAction, ErrBadArguments, ErrBadWait}
+var terminal = []error{ErrUnknownAction, ErrBadArguments, ErrBadWait, ErrTooLarge}
 
 // fail closes a check that failed, unless err is the SDK suspending the
 // invocation: it ends the sandbox, records a failed step saying which
@@ -247,8 +262,14 @@ func (r *run) fail(ctx durable.Context, err error) error {
 	errs := []error{err, r.endSandbox(ctx)}
 	// The summary names the action, never the harness's or the SDK's text:
 	// the web page shows it.
-	summary := fmt.Sprintf("The check failed during %s.", r.current)
-	errs = append(errs, r.record(ctx, "failed", outcome{Summary: summary}))
+	failed := outcome{Summary: fmt.Sprintf("The check failed during %s.", r.current)}
+	if r.oversized != nil {
+		failed = outcome{
+			Summary:  fmt.Sprintf("The check failed during %s: the server's answer was larger than a step can keep.", r.current),
+			Findings: []findings.Finding{*r.oversized},
+		}
+	}
+	errs = append(errs, r.record(ctx, "failed", failed))
 	if _, updateErr := durable.Step(ctx, "record-failure", func(sc durable.StepContext) (bool, error) {
 		return true, r.deps.Store.UpdateCheck(sc, r.in.CheckID, store.CheckUpdate{Status: store.StatusFailed})
 	}); updateErr != nil {

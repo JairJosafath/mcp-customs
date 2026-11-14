@@ -59,8 +59,10 @@ var shellStartups = []string{
 // once, however often it was seen.
 func FromObservations(observations []Observation, canaries canary.Set) []Finding {
 	var found []Finding
+	seen := map[Finding]bool{}
 	add := func(f Finding) {
-		if !slices.Contains(found, f) {
+		if !seen[f] {
+			seen[f] = true
 			found = append(found, f)
 		}
 	}

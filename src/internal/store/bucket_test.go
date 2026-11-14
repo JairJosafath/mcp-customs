@@ -66,3 +66,22 @@ func TestBucketRefusesABadCheckIDAndReportsAFailedPut(t *testing.T) {
 		t.Errorf("an outage: %v, want it wrapped, naming the key", err)
 	}
 }
+
+func TestBucketPutsAnOversizedAnswerBesideTheObservations(t *testing.T) {
+	fake := &fakeS3{objects: map[string]string{}, types: map[string]string{}}
+	b := NewBucket(fake, "b")
+	if err := b.PutOversized(t.Context(), "c1", "call-3", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if fake.objects["b/observations/c1-call-3.json"] != `{}` {
+		t.Errorf("objects %v, want observations/c1-call-3.json", fake.objects)
+	}
+	for _, what := range []string{"", "../x", "Call", strings.Repeat("a", 33)} {
+		if err := b.PutOversized(t.Context(), "c1", what, nil); !errors.Is(err, ErrBadWhat) {
+			t.Errorf("%q: %v, want %v", what, err, ErrBadWhat)
+		}
+	}
+	if err := b.PutOversized(t.Context(), "c/1", "list", nil); !errors.Is(err, ErrBadCheckID) {
+		t.Errorf("a bad id: %v", err)
+	}
+}

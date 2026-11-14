@@ -79,6 +79,9 @@ func (m *memoryRecorder) UpdateCheck(_ context.Context, id string, u store.Check
 	if u.CallbackID != "" {
 		c.CallbackID = u.CallbackID
 	}
+	if u.SandboxID != "" {
+		c.SandboxID = u.SandboxID
+	}
 	return nil
 }
 
@@ -136,6 +139,10 @@ func (m *memoryReports) PutObservations(_ context.Context, checkID string, obser
 	return m.put("observations/"+checkID+".json", observations)
 }
 
+func (m *memoryReports) PutOversized(_ context.Context, checkID, what string, body []byte) error {
+	return m.put("observations/"+checkID+"-"+what+".json", body)
+}
+
 func (m *memoryReports) put(key string, body []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -168,10 +175,18 @@ type server struct {
 	observations []findings.Observation
 	// fail answers a path with this status and message instead.
 	fail map[string]int
+	// errors are the JSON-RPC errors tools answer instead of a result.
+	errors map[string]string
+	// hang makes /install never answer: the invocation's timeout cuts the
+	// resolve step short after the launch.
+	hang bool
 	// tokens are the run tokens the calls carried, in order.
 	mu     sync.Mutex
 	tokens []string
 }
+
+// errInterrupted is a call the invocation's timeout cut short.
+var errInterrupted = errors.New("the invocation timed out")
 
 const depsHash = "5f3e0b8e6a4b2c1d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d"
 
@@ -193,6 +208,9 @@ func (s *server) respond(vm sandbox.VM, req sandbox.Request) (sandbox.Response, 
 	if status, ok := s.fail[req.Path]; ok {
 		return answer(status, map[string]any{"message": "the server failed " + req.Path, "observations": []any{}}), nil
 	}
+	if s.hang && req.Path == "/install" {
+		return sandbox.Response{}, errInterrupted
+	}
 	switch req.Path {
 	case "/install":
 		return answer(http.StatusOK, map[string]any{"log": "added 3 packages", "dependencies": "{}", "sha256": s.hash, "observations": orEmpty(s.installObs)}), nil
@@ -207,6 +225,9 @@ func (s *server) respond(vm sandbox.VM, req sandbox.Request) (sandbox.Response, 
 	case "/call":
 		body, _ := req.Body.(map[string]any)
 		name, _ := body["tool"].(string)
+		if e, ok := s.errors[name]; ok {
+			return answer(http.StatusOK, map[string]any{"error": json.RawMessage(e), "observations": []any{}}), nil
+		}
 		return answer(http.StatusOK, map[string]any{"result": json.RawMessage(s.results[name]), "observations": []any{}}), nil
 	case "/observations":
 		all := append(append([]findings.Observation{}, s.installObs...), s.observations...)

@@ -37,6 +37,7 @@ var codeFloors = map[string]Verdict{
 	findings.RuleJudgeError:        Review,
 	findings.RuleJudgeOutOfTurn:    Review,
 	findings.RuleUnprobedTool:      Review,
+	findings.RuleOversized:         Review,
 }
 
 // Input is what a verdict is decided from.

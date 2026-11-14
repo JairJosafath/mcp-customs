@@ -139,7 +139,7 @@ func TestStorePutsAndGetsACheck(t *testing.T) {
 		"a running check": {ID: "c1", Submission: Submission{Kind: "npm", Ref: "weather-mcp@1.0.0"}, Status: StatusRunning, ExecutionARN: "arn:aws:lambda:us-east-1:111122223333:function:checker:$LATEST/durable-execution/c1/x"},
 		"a finished check": {
 			ID: "c2", Submission: Submission{Kind: "remote", Ref: "https://mcp.example.com/"},
-			Status: StatusDone, Verdict: "block", CallbackID: "cb-1",
+			Status: StatusDone, Verdict: "block", CallbackID: "cb-1", SandboxID: "mvm-1",
 		},
 	} {
 		fake := newFakeDynamo()
@@ -396,5 +396,24 @@ func TestStoreRefusesMalformedItems(t *testing.T) {
 		if err := tc.call(New(fake, "customs")); !errors.Is(err, errMalformed) {
 			t.Errorf("%s: %v, want a malformed item", name, err)
 		}
+	}
+}
+
+func TestStoreReadsACheckMadeBeforeItsSandboxIDWasKept(t *testing.T) {
+	fake := newFakeDynamo()
+	store := New(fake, "customs")
+	if err := store.PutCheck(t.Context(), Check{ID: "c1", Status: StatusRunning}); err != nil {
+		t.Fatal(err)
+	}
+	delete(fake.items[[2]string{"CHECK#c1", "META"}], "sandboxId")
+	got, found, err := store.GetCheck(t.Context(), "c1")
+	if err != nil || !found || got.SandboxID != "" || got.Status != StatusRunning {
+		t.Errorf("GetCheck = %+v, %v, %v; want the check, with no sandbox ID", got, found, err)
+	}
+	if err := store.UpdateCheck(t.Context(), "c1", CheckUpdate{SandboxID: "mvm-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.GetCheck(t.Context(), "c1"); got.SandboxID != "mvm-1" || got.Status != StatusRunning {
+		t.Errorf("after the update: %+v, want sandbox mvm-1 and still running", got)
 	}
 }
