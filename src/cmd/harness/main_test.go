@@ -2,6 +2,7 @@ package main
 
 import (
 	"os/user"
+	"slices"
 	"strings"
 	"testing"
 
@@ -34,5 +35,23 @@ func TestAccountForSwitchesToTheUnprivilegedUserAsRoot(t *testing.T) {
 	want := harness.Account{Name: "dev", Home: "/home/dev", UID: 1000, GID: 1000, Switch: true}
 	if err != nil || got != want {
 		t.Errorf("accountFor(dev, 0) = %+v, %v; want %+v", got, err, want)
+	}
+}
+
+func TestTheServerGetsAPathOfItsOwnNotTheHarnesss(t *testing.T) {
+	t.Setenv("PATH", "/root/.local/bin:/root/go/bin:/usr/bin")
+	got := configFor(harness.Account{Name: "dev", Home: "/home/dev"}).Path
+	if got != serverPath {
+		t.Errorf("the server's PATH = %q, want %q, not the harness's", got, serverPath)
+	}
+	for _, dir := range strings.Split(got, ":") {
+		if !strings.HasPrefix(dir, "/usr/") && dir != "/bin" {
+			t.Errorf("the server's PATH holds %s, outside the system's directories", dir)
+		}
+	}
+	for _, want := range []string{"/usr/local/go/bin", "/usr/local/node/bin", "/usr/bin"} {
+		if !slices.Contains(strings.Split(got, ":"), want) {
+			t.Errorf("the server's PATH lacks %s, where the image's toolchains are", want)
+		}
 	}
 }
