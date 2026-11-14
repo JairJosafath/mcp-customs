@@ -111,6 +111,8 @@ type run struct {
 	current string
 	// oversized is the finding of an answer too large to keep, if any.
 	oversized *findings.Finding
+	// sealing says the sandbox's egress is being sealed for the last read.
+	sealing bool
 }
 
 // Handler is the Checker's durable handler. Each write and each call is a
@@ -194,6 +196,9 @@ func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
 	}
 	in, err := r.judge(ctx)
 	if err != nil {
+		return "", err
+	}
+	if err := r.sealAndRead(ctx, &in); err != nil {
 		return "", err
 	}
 	decided := verdict.Decide(in)

@@ -27,6 +27,9 @@ const (
 	ActObserve  Action = "observe"
 	ActAskHuman Action = "ask_human"
 	ActWait     Action = "wait"
+	// ActSeal ends the sandbox's egress before the last read of its
+	// observations.
+	ActSeal Action = "seal"
 	// The investigation's: one tool called again, a source file read, a
 	// download inspected, the clock moved; and the judge's allowlist set.
 	ActCall            Action = "call"
@@ -73,6 +76,7 @@ var registry = map[Action]entry{
 	ActObserve:  {OpStep, observe},
 	ActAskHuman: {OpCallback, askHuman},
 	ActWait:     {OpWait, wait},
+	ActSeal:     {OpStep, seal},
 
 	ActCall:            {OpStep, call},
 	ActReadSource:      {OpStep, readSource},

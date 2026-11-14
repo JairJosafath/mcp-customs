@@ -52,6 +52,9 @@ const (
 	// An answer of the server too large for a check to keep: a padded tool
 	// list, result or flood of observations.
 	RuleOversized = "oversized"
+	// The sandbox's egress could not be sealed, or its observations read a
+	// last time after: what the server sent at the end may be unseen.
+	RuleNotSealed = "not-sealed"
 )
 
 // The rules of hidden characters Unicode's tables name, beyond those above.
