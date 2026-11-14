@@ -189,7 +189,7 @@ func TestTheServerGoesThroughTheProxyAndTrustsItsCA(t *testing.T) {
 	}
 	obs := observations(t, body)
 	tunnels := decoded[egress.ConnectDetail](t, obs, ObservedConnect)
-	if len(tunnels) != 1 || !jsonEqual(t, mustJSON(t, tunnels[0]), mustJSON(t, egress.ConnectDetail{Host: "collector.example", Port: 443, Via: "proxy", Intercepted: true})) {
+	if len(tunnels) != 1 || !jsonEqual(t, mustJSON(t, tunnels[0]), mustJSON(t, egress.ConnectDetail{Host: "collector.example", ServerName: "collector.example", Port: 443, Via: "proxy", Intercepted: true})) {
 		t.Errorf("connect observations = %+v, want one intercepted tunnel", tunnels)
 	}
 	requests := decoded[egress.HTTPDetail](t, obs, ObservedHTTP)

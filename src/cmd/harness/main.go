@@ -61,11 +61,11 @@ func serve(log *slog.Logger) error {
 		return err
 	}
 	goProxy := os.Getenv("GO_PROXY_URL")
-	proxyHosts, err := hostsOf(goProxy)
+	allow, err := installAllowFor(goProxy)
 	if err != nil {
 		return err
 	}
-	eg, stopEgress, err := startEgress(context.Background(), account, append(slices.Clone(egress.RegistryHosts), proxyHosts...))
+	eg, stopEgress, err := startEgress(context.Background(), account, log, allow)
 	if err != nil {
 		return err
 	}
@@ -185,32 +185,44 @@ const firewallChain = "MCP_CUSTOMS"
 // nflogGroup is the NFLOG group the firewall logs refused packets to.
 const nflogGroup = 47
 
-// hostsOf is the hosts of list, a GOPROXY-style list (GO_PROXY_URL, which
-// the stack sets to its demo proxy and the public one): an install may
-// reach them. An empty list has none.
-func hostsOf(list string) ([]string, error) {
+// installAllow is what an install may reach besides the run's allowlist:
+// whole hosts, and URL prefixes it may only GET.
+type installAllow struct {
+	hosts []string
+	gets  []string
+}
+
+// installAllowFor is what an install may reach with GO_PROXY_URL set to
+// list, the stack's demo proxy then the public one: the package
+// registries, whole, and each other proxy of the list for GET under its
+// own path alone, so an install can't call the rest of the stack's API.
+func installAllowFor(list string) (installAllow, error) {
+	allow := installAllow{hosts: slices.Clone(egress.RegistryHosts)}
 	if list == "" {
-		return nil, nil
+		return allow, nil
 	}
 	urls, err := demoproxy.SplitProxyList(list)
 	if err != nil {
-		return nil, fmt.Errorf("GO_PROXY_URL: %w", err)
+		return installAllow{}, fmt.Errorf("GO_PROXY_URL: %w", err)
 	}
-	hosts := make([]string, 0, len(urls))
 	for _, u := range urls {
 		parsed, err := url.Parse(u)
 		if err != nil {
-			return nil, fmt.Errorf("GO_PROXY_URL: %w", err)
+			return installAllow{}, fmt.Errorf("GO_PROXY_URL: %w", err)
 		}
-		hosts = append(hosts, parsed.Hostname())
+		if slices.Contains(egress.RegistryHosts, parsed.Hostname()) {
+			continue
+		}
+		allow.gets = append(allow.gets, strings.TrimSuffix(u, "/")+"/")
 	}
-	return hosts, nil
+	return allow, nil
 }
 
 // startEgress starts the egress proxy and puts up the firewall for uid,
-// allowing installAllow while an install runs. The stop function takes
-// both down.
-func startEgress(ctx context.Context, account harness.Account, installAllow []string) (*egress.Egress, func(), error) {
+// allowing allow while an install runs. The stop function takes both
+// down. If the reader of refused packets stops early, the run's
+// observations say so, and so does log.
+func startEgress(ctx context.Context, account harness.Account, log *slog.Logger, allow installAllow) (*egress.Egress, func(), error) {
 	if err := trustOutside(trustDir, account.Home); err != nil {
 		return nil, nil, err
 	}
@@ -230,11 +242,15 @@ func startEgress(ctx context.Context, account harness.Account, installAllow []st
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := l.HoldBursts(); err != nil {
+		return nil, nil, err
+	}
 	eg := egress.New(egress.Config{
 		CA:           ca,
 		Upstream:     &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second},
 		Resolver:     net.DefaultResolver,
-		InstallAllow: installAllow,
+		InstallAllow: allow.hosts,
+		InstallGet:   allow.gets,
 		ServerEnv:    egress.Env(l.Proxy.Addr().String(), trust),
 	})
 	nflog, err := egress.OpenNFLog(nflogGroup)
@@ -244,7 +260,9 @@ func startEgress(ctx context.Context, account harness.Account, installAllow []st
 	logged := make(chan struct{})
 	go func() {
 		defer close(logged)
-		_ = eg.ServeNFLog(nflog)
+		if err := eg.ServeNFLog(nflog); err != nil {
+			log.Error("The harness stopped reading refused packets.", "error", err.Error())
+		}
 	}()
 	serving := eg.Serve(l, egress.RedirectedFrom)
 	stop := func() {

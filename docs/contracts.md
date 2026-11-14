@@ -62,16 +62,27 @@ and `/allow` are best effort: an error answer is told to the judge, and the
 check goes on.
 
 An observation is `{"at","kind","detail"}`, where `kind` is one of `dns`
-(name, type, answers, `faked`, and the canaries found in the name),
-`connect` (a tunnel through the proxy: host, port, `intercepted`,
-`allowed`; or direct traffic the firewall refused: `via: "direct"`,
-`proto` (tcp, udp, icmp, …), address, port, the canaries in a refused
-packet's payload, `more` on the 1000th, after which only traffic holding
-a canary is recorded, and `dropped` when the kernel lost packets unread),
+(every UDP datagram to port 53, at any address: name, type, answers,
+`faked`, the canaries found anywhere in the datagram or in any question's
+name, and `unanswered`: why it got no answer, when it isn't a query),
+`connect` (a tunnel through the proxy: host, `serverName` (the TLS
+SNI), port, `intercepted`, `allowed`, the canaries in the CONNECT
+request and the whole TLS handshake as sent, and `unscanned` when the
+ClientHello carries an encrypted one; or direct traffic the firewall refused:
+`via: "direct"`, `proto` (tcp, udp, icmp, …), address, port, the
+canaries in a refused packet's payload or the first 64 KiB a refused TCP
+connection sent, `unscanned` when that read was cut short, `more` on the
+1000th, after which only traffic holding a canary is recorded, `dropped`
+when the kernel lost packets unread, refused ones or datagrams to port
+53, and `stopped` when the harness stopped reading refused packets or
+DNS),
 `http`
-(method, host, path, `allowed`, the canaries found in it, with their
-encoding, and `unscanned`: why part of the body went unsearched, when it
-did), `file` (path written), `sampling`, `elicitation`,
+(method, host, path, `allowed`, the canaries found in it, as parsed and
+as sent, trailer and chunk extensions included, with their encoding, and
+`unscanned`: why part of it went unsearched, when it did; bytes the proxy
+couldn't read as a request are an `http` observation of their own, with
+the canaries in them and `unscanned`; a request not read whole within 30
+seconds is recorded as read so far, `unscanned`), `file` (path written), `sampling`, `elicitation`,
 `process`, `hook` (a lifecycle hook called after `/run`: method, path,
 caller, the status it got). Bodies are not returned, only what was found
 in them.

