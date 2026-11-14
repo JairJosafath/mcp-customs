@@ -20,6 +20,8 @@ var rangesFile string
 // An API is the stack's own API: its ID and region, from its
 // execute-api host.
 type API struct {
+	// Host is the API's host as Parse read it, normalized.
+	Host   string
 	ID     string
 	Region string
 	ranges []netip.Prefix
@@ -33,7 +35,7 @@ func Parse(host string) (API, error) {
 	if len(labels) < 4 || labels[0] == "" || labels[1] != "execute-api" || labels[2] == "" {
 		return API{}, fmt.Errorf("%q is not an API Gateway host, <id>.execute-api.<region>.<suffix>", host)
 	}
-	api := API{ID: labels[0], Region: labels[2], ranges: regionRanges(labels[2])}
+	api := API{Host: strings.Join(labels, "."), ID: labels[0], Region: labels[2], ranges: regionRanges(labels[2])}
 	if len(api.ranges) == 0 {
 		return API{}, fmt.Errorf("API Gateway publishes no address ranges for %q, the region of %q", api.Region, host)
 	}
@@ -59,9 +61,9 @@ func (a API) IsHost(host string) bool {
 
 // Serves says whether addr is in API Gateway's published ranges for the
 // API's region: an address the API, or any name for it, may resolve to.
-// An IPv4 address mapped into IPv6 reads as IPv4.
+// An IPv4 address embedded in IPv6 reads as IPv4 (Canonical).
 func (a API) Serves(addr netip.Addr) bool {
-	addr = addr.Unmap().WithZone("")
+	addr = Canonical(addr)
 	for _, p := range a.ranges {
 		if p.Contains(addr) {
 			return true
@@ -74,6 +76,12 @@ func (a API) Serves(addr netip.Addr) bool {
 // trailing dot.
 func NormalHost(host string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+}
+
+// Names are the API's names whose addresses the egress proxy resolves and
+// refuses: the standard one and the dual-stack one.
+func (a API) Names() []string {
+	return []string{a.Host, a.ID + ".execute-api." + a.Region + ".api.aws"}
 }
 
 // regionRanges are the published ranges for region.

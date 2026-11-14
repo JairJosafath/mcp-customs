@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"slices"
+
+	"github.com/JairJosafath/mcp-customs/src/internal/ownapi"
 )
 
 // ErrRefusedAddress is the error of a connection Guard refuses.
@@ -16,7 +17,11 @@ var ErrRefusedAddress = errors.New("the address is refused")
 // the host once, refuses the connection if any address it resolves to is
 // refused, and dials the address it checked, never the name again, so a
 // DNS answer that changes in between (rebinding) can't reach a refused
-// address. Use its DialContext as the Upstream transport's.
+// address. Use its DialContext as the Upstream transport's. The one
+// connection it doesn't check is one dialed for an install's GET under an
+// InstallGet prefix, such as the stack's demo Go proxy on the API itself:
+// the proxy marks those requests and keeps none of their
+// connections, so nothing else is sent on them.
 type Guard struct {
 	// Resolver resolves the hosts dialed.
 	Resolver Resolver
@@ -25,10 +30,6 @@ type Guard struct {
 	// RefusedNames are names whose addresses, resolved at each dial, are
 	// refused too.
 	RefusedNames []string
-	// Exempt are names whose addresses are not checked: the install's Go
-	// proxy on the stack's own API, which the proxy holds to GETs under its
-	// prefix while an install runs.
-	Exempt []string
 	// Dial connects to an address, as net.Dialer.DialContext does.
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
 }
@@ -44,7 +45,7 @@ func (g Guard) DialContext(ctx context.Context, network, address string) (net.Co
 	if err != nil {
 		return nil, fmt.Errorf("resolving %s: %w", host, err)
 	}
-	if !slices.Contains(g.Exempt, normalHost(host)) {
+	if !isInstallGet(ctx) {
 		if a, refused := g.refused(ctx, addrs); refused {
 			return nil, fmt.Errorf("%s resolves to %s: %w", host, a, ErrRefusedAddress)
 		}
@@ -82,14 +83,29 @@ func (g Guard) refused(ctx context.Context, addrs []netip.Addr) (netip.Addr, boo
 	for _, name := range g.RefusedNames {
 		got, _ := g.Resolver.LookupNetIP(ctx, "ip", name)
 		for _, a := range got {
-			deny[a.Unmap().WithZone("")] = true
+			deny[ownapi.Canonical(a)] = true
 		}
 	}
 	for _, a := range addrs {
-		a = a.Unmap().WithZone("")
+		a = ownapi.Canonical(a)
 		if deny[a] || (g.Refused != nil && g.Refused(a)) {
 			return a, true
 		}
 	}
 	return netip.Addr{}, false
+}
+
+// installGetKey marks a request's context as an install's GET under an
+// InstallGet prefix.
+type installGetKey struct{}
+
+// withInstallGet marks ctx as an install's GET under an InstallGet prefix.
+func withInstallGet(ctx context.Context) context.Context {
+	return context.WithValue(ctx, installGetKey{}, true)
+}
+
+// isInstallGet says whether ctx was marked by withInstallGet.
+func isInstallGet(ctx context.Context) bool {
+	on, _ := ctx.Value(installGetKey{}).(bool)
+	return on
 }

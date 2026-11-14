@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log/slog"
+	"net"
+	"net/http"
 	"net/netip"
 	"os/user"
 	"slices"
@@ -118,21 +122,48 @@ func TestServeRefusesToStartWithoutTheStacksOwnAPIHost(t *testing.T) {
 	}
 }
 
-func TestTheProxysGuardRefusesTheAPIsAddressesButForTheDemoProxy(t *testing.T) {
-	const apiHost = "abc.execute-api.eu-west-1.amazonaws.com"
-	api, err := ownapi.Parse(apiHost)
+func TestTheProxysGuardRefusesTheAPIsNamesAndRanges(t *testing.T) {
+	api, err := ownapi.Parse("abc.execute-api.eu-west-1.amazonaws.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	allow, err := installAllowFor("https://" + apiHost + "/goproxy,https://proxy.golang.org")
-	if err != nil {
-		t.Fatal(err)
-	}
-	g := guardFor(api, apiHost, allow)
-	if !slices.Equal(g.Exempt, []string{apiHost}) || !slices.Equal(g.RefusedNames, []string{apiHost}) {
-		t.Errorf("exempt %v, refused names %v; want the demo proxy's host, and the API host", g.Exempt, g.RefusedNames)
+	g := guardFor(api)
+	if !slices.Equal(g.RefusedNames, []string{"abc.execute-api.eu-west-1.amazonaws.com", "abc.execute-api.eu-west-1.api.aws"}) {
+		t.Errorf("refused names %v, want the API's standard and dual-stack names", g.RefusedNames)
 	}
 	if g.Refused == nil || !g.Refused(netip.MustParseAddr("3.248.245.10")) || g.Refused(netip.MustParseAddr("198.51.100.7")) {
 		t.Error("the guard must refuse API Gateway's ranges for the API's region, and nothing else")
+	}
+}
+
+// fixedResolver answers every name with one address.
+type fixedResolver struct{ addr netip.Addr }
+
+func (r fixedResolver) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
+	return []netip.Addr{r.addr}, nil
+}
+
+func (fixedResolver) LookupTXT(context.Context, string) ([]string, error) { return nil, nil }
+
+func TestTheProxysUpstreamDialsThroughTheGuard(t *testing.T) {
+	var dialed []string
+	guard := egress.Guard{
+		Resolver: fixedResolver{netip.MustParseAddr("198.51.100.7")},
+		Refused:  func(a netip.Addr) bool { return a == netip.MustParseAddr("3.248.245.10") },
+		Dial: func(_ context.Context, _, address string) (net.Conn, error) {
+			dialed = append(dialed, address)
+			return nil, errors.New("no network in tests")
+		},
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.weather.example/forecast", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := upstreamFor(guard).RoundTrip(req)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+	if !slices.Equal(dialed, []string{"198.51.100.7:80"}) {
+		t.Errorf("dialed %v, want the guard to dial the address it resolved", dialed)
 	}
 }

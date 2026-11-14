@@ -41,7 +41,6 @@ func testGuard(answers map[string][][]string, dialed *[]string) Guard {
 		Resolver:     &tableResolver{answers: answers, calls: map[string]int{}},
 		Refused:      apiRange.Contains,
 		RefusedNames: []string{"abc123.execute-api.eu-west-1.amazonaws.com"},
-		Exempt:       []string{"abc123.execute-api.eu-west-1.amazonaws.com"},
 		Dial: func(_ context.Context, _, address string) (net.Conn, error) {
 			*dialed = append(*dialed, address)
 			c, s := net.Pipe()
@@ -58,6 +57,8 @@ func TestGuardRefusesEveryConnectionToTheAPIsAddresses(t *testing.T) {
 		"in-range.attacker.net":                      {{"198.51.100.8", "3.248.245.99"}},
 		"api-v6.attacker.net":                        {{"2a05:d018::10"}},
 		"mapped.attacker.net":                        {{"::ffff:3.248.245.10"}},
+		"nat64.attacker.net":                         {{"64:ff9b::3.248.245.10"}},
+		"compat.attacker.net":                        {{"::3.248.245.10"}},
 		"rebinding.attacker.net":                     {{"198.51.100.9"}, {"3.248.245.10"}},
 	}
 	for host, want := range map[string]string{
@@ -65,8 +66,10 @@ func TestGuardRefusesEveryConnectionToTheAPIsAddresses(t *testing.T) {
 		"in-range.attacker.net:443":                      "",
 		"api-v6.attacker.net:443":                        "",
 		"mapped.attacker.net:443":                        "",
+		"nat64.attacker.net:443":                         "",
+		"compat.attacker.net:443":                        "",
 		"3.248.245.10:443":                               "",
-		"abc123.execute-api.eu-west-1.amazonaws.com:443": "3.248.245.10:443",
+		"abc123.execute-api.eu-west-1.amazonaws.com:443": "",
 	} {
 		var dialed []string
 		conn, err := testGuard(answers, &dialed).DialContext(t.Context(), "tcp", host)
@@ -97,4 +100,18 @@ func TestGuardRefusesANameThatDoesNotResolve(t *testing.T) {
 	if _, err := testGuard(nil, &dialed).DialContext(t.Context(), "tcp", "nowhere.example:443"); err == nil || len(dialed) != 0 {
 		t.Errorf("err %v, dialed %v; want an error, nothing dialed", err, dialed)
 	}
+}
+
+func TestGuardReachesTheAPIOnlyForARequestMarkedAsAnInstallsGet(t *testing.T) {
+	answers := map[string][][]string{"abc123.execute-api.eu-west-1.amazonaws.com": {{"3.248.245.10"}}}
+	const api = "abc123.execute-api.eu-west-1.amazonaws.com:443"
+	var dialed []string
+	if _, err := testGuard(answers, &dialed).DialContext(t.Context(), "tcp", api); !errors.Is(err, ErrRefusedAddress) || len(dialed) != 0 {
+		t.Errorf("unmarked, by the API's own name: err %v, dialed %v; want refused", err, dialed)
+	}
+	conn, err := testGuard(answers, &dialed).DialContext(withInstallGet(t.Context()), "tcp", api)
+	if err != nil || !slices.Equal(dialed, []string{"3.248.245.10:443"}) {
+		t.Fatalf("marked as an install's GET: err %v, dialed %v; want the API's address", err, dialed)
+	}
+	_ = conn.Close()
 }

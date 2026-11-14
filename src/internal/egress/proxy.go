@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/JairJosafath/mcp-customs/src/internal/ownapi"
 )
 
 // Bounds on what the proxy reads and waits for.
@@ -245,9 +247,9 @@ func (e *Egress) forward(w http.ResponseWriter, r *http.Request, scheme, hostpor
 		unscanned = "the body could not be read whole; what was read was searched"
 	}
 	target, err := upstreamURL(scheme, host, port, r.URL)
-	done, allowed := func() {}, false
+	done, allowed, installGet := func() {}, false, false
 	if err == nil && readErr == nil {
-		done, allowed = e.admit(r.Method, host, r.URL)
+		done, allowed, installGet = e.admit(r.Method, host, r.URL)
 	}
 	defer done()
 	if allowed && e.afterAdmit != nil {
@@ -273,7 +275,7 @@ func (e *Egress) forward(w http.ResponseWriter, r *http.Request, scheme, hostpor
 		_, _ = io.WriteString(w, fakeBody)
 		return
 	}
-	e.pass(w, r, target, body)
+	e.pass(w, r, target, body, installGet)
 }
 
 // recordNotProxied records a request sent to the proxy as if it were the
@@ -298,10 +300,11 @@ func (e *Egress) recordNotProxied(r *http.Request) {
 }
 
 // upstreamURL is where an allowed request goes: built from the host and
-// port the proxy checked, never from the raw Host header.
+// port the proxy checked, never from the raw Host header, and only for a
+// plain ASCII host name, which the transport can't map onto another.
 func upstreamURL(scheme, host string, port int, u *url.URL) (string, error) {
-	if host == "" || strings.ContainsAny(host, "@/?#[] ") {
-		return "", fmt.Errorf("%q is not a host", host)
+	if err := ownapi.ValidHost(host); err != nil {
+		return "", err
 	}
 	hostport := host
 	if port != 0 {
@@ -311,10 +314,15 @@ func upstreamURL(scheme, host string, port int, u *url.URL) (string, error) {
 	return out.String(), nil
 }
 
-// pass sends r on to target and copies the answer back.
-func (e *Egress) pass(w http.ResponseWriter, r *http.Request, target string, body io.Reader) {
+// pass sends r on to target and copies the answer back. An install's GET
+// under an InstallGet prefix is marked so for Guard, and
+// its connection is never kept for another request.
+func (e *Egress) pass(w http.ResponseWriter, r *http.Request, target string, body io.Reader, installGet bool) {
 	ctx, stop := e.untilSealed(r.Context())
 	defer stop()
+	if installGet {
+		ctx = withInstallGet(ctx)
+	}
 	if ctx.Err() != nil {
 		http.Error(w, "egress is sealed", http.StatusBadGateway)
 		return
@@ -329,6 +337,7 @@ func (e *Egress) pass(w http.ResponseWriter, r *http.Request, target string, bod
 		out.Header.Del(h)
 	}
 	out.ContentLength = r.ContentLength
+	out.Close = installGet
 	resp, err := e.cfg.Upstream.RoundTrip(out)
 	if err != nil {
 		http.Error(w, "upstream unreachable", http.StatusBadGateway)

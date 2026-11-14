@@ -73,7 +73,7 @@ func serve(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	eg, stopEgress, err := startEgress(context.Background(), account, log, allow, guardFor(ownAPI, apiHost, allow))
+	eg, stopEgress, err := startEgress(context.Background(), account, log, allow, guardFor(ownAPI))
 	if err != nil {
 		return err
 	}
@@ -228,25 +228,24 @@ func installAllowFor(list string) (installAllow, error) {
 }
 
 // guardFor is the egress proxy's dialer: it never connects to an address
-// API Gateway serves the API's region from, or the API host resolves to,
-// whatever name was asked for, but for the hosts of the install's GET-only
-// prefixes, such as the stack's demo Go proxy on the API itself, which the
-// proxy holds to GETs under them while an install runs.
-func guardFor(api ownapi.API, apiHost string, allow installAllow) egress.Guard {
-	var exempt []string
-	for _, prefix := range allow.gets {
-		if u, err := url.Parse(prefix); err == nil {
-			exempt = append(exempt, ownapi.NormalHost(u.Hostname()))
-		}
-	}
+// API Gateway serves the API's region from, or the API's standard or
+// dual-stack name resolves to, whatever name was asked for. The one
+// exception is an install's GET under its GET-only prefixes, such as the
+// stack's demo Go proxy on the API itself, which the proxy marks itself.
+func guardFor(api ownapi.API) egress.Guard {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	return egress.Guard{
 		Resolver:     net.DefaultResolver,
 		Refused:      api.Serves,
-		RefusedNames: []string{apiHost},
-		Exempt:       exempt,
+		RefusedNames: api.Names(),
 		Dial:         dialer.DialContext,
 	}
+}
+
+// upstreamFor is the transport the egress proxy sends allowed requests on,
+// every connection dialed through guard.
+func upstreamFor(guard egress.Guard) *http.Transport {
+	return &http.Transport{Proxy: nil, DialContext: guard.DialContext, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second}
 }
 
 // startEgress starts the egress proxy and puts up the firewall for uid,
@@ -279,7 +278,7 @@ func startEgress(ctx context.Context, account harness.Account, log *slog.Logger,
 	}
 	eg := egress.New(egress.Config{
 		CA:           ca,
-		Upstream:     &http.Transport{Proxy: nil, DialContext: guard.DialContext, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second},
+		Upstream:     upstreamFor(guard),
 		Resolver:     net.DefaultResolver,
 		InstallAllow: allow.hosts,
 		InstallGet:   allow.gets,

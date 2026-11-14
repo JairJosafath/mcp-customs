@@ -15,7 +15,9 @@ import (
 // net.Resolver.LookupHost does.
 type LookupHost func(ctx context.Context, host string) ([]string, error)
 
-// ownAPIRefusal says why hosts may not be allowed: one of them names the
+// ownAPIRefusal says why hosts may not be allowed: one of them is not a
+// plain ASCII host name (ownapi.ValidHost), which a transport could map onto
+// the API's own name, or it names the
 // stack's own API, in any of its forms, or resolves into API Gateway's
 // published ranges for its region. The ranges are fixed, so a host gets the
 // same answer from run to run however the API's own addresses rotate. It is
@@ -24,6 +26,11 @@ type LookupHost func(ctx context.Context, host string) ([]string, error)
 // API host that isn't API Gateway's refuses every host, since nothing could
 // be told apart from it.
 func ownAPIRefusal(ctx context.Context, apiHost string, lookup LookupHost, hosts []string) string {
+	for _, h := range hosts {
+		if err := ownapi.ValidHost(h); err != nil {
+			return fmt.Sprintf("the judge asked to allow %q, which no layer could tell apart from the stack's own API: %v", h, err)
+		}
+	}
 	if ownapi.NormalHost(apiHost) == "" || len(hosts) == 0 {
 		return ""
 	}

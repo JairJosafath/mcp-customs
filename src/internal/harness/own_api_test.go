@@ -37,10 +37,15 @@ func TestAllowAndInstallRefuseEveryFormOfTheStacksOwnAPIHost(t *testing.T) {
 	}
 }
 
-func TestAllowAndInstallRefuseIPAddresses(t *testing.T) {
+func TestAllowAndInstallRefuseIPAddressesAndNamesThatArentPlainASCII(t *testing.T) {
 	for _, host := range []string{
 		"3.248.245.10", "3.248.245.10.", "127.1", "2130706433", "0x7f.0.0.1", "0x7f000001",
 		"[2001:db8::10]", "2001:db8::10",
+		"abc\u00ad123.execute-api.eu-west-1.amazonaws.com",
+		"abc123\u3002execute-api\u3002eu-west-1\u3002amazonaws\u3002com",
+		"\uff41bc123.execute-api.eu-west-1.amazonaws.com",
+		"xn--abc123-dja.execute-api.eu-west-1.amazonaws.com",
+		"a..example", "example..",
 	} {
 		eg := &fakeEgress{}
 		run := newTestRunWith(t, func(c *Config) { c.Egress = eg })
