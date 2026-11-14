@@ -15,6 +15,13 @@ Every user-visible change, newest first. The format follows
   `--scene` records one scene to its own file. `demo/script.md` is its narration and `docs/results.md` the
   write-up's skeleton. `src/cmd/webstub` serves the web page with a fake
   store and Checker, for the recorder's test; it is never deployed.
+- The web stub plays the steps the Checker writes for each demo scene
+  (`src/internal/demoscene`), and a Checker test runs each scene through
+  the Checker with its fakes and fails on any difference, so the stub
+  can't drift (#46): it now shows the `allow`, `seal` and last `observe`
+  steps, tools numbered from 0, and the verdict's model findings. A scene
+  that ends at another verdict fails with
+  `scene <name>: expected <verdict>, got <verdict>`.
 
 ### Fixed
 
