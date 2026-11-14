@@ -64,10 +64,17 @@ type probed struct {
 	Oversized int                `json:"oversized,omitempty"`
 }
 
+// listedTool is a tool to probe and its index in the listing, which
+// findings name it by, as scan's do.
+type listedTool struct {
+	Tool  tool
+	Index int
+}
+
 // probe calls every tool once with stub arguments, a Map over the tools,
 // each call one step, and scans each result: a result is server text too.
 func probe(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
-	tools := make([]tool, 0, len(r.listing.Tools))
+	tools := make([]listedTool, 0, len(r.listing.Tools))
 	var skipped []findings.Finding
 	for i, raw := range r.listing.Tools {
 		var t tool
@@ -78,23 +85,23 @@ func probe(ctx durable.Context, r *run, _ json.RawMessage) (outcome, error) {
 			})
 			continue
 		}
-		tools = append(tools, t)
+		tools = append(tools, listedTool{Tool: t, Index: i})
 	}
-	res, err := durable.Map(ctx, string(ActProbe), tools, func(mc durable.Context, t tool, i int) (probed, error) {
+	res, err := durable.Map(ctx, string(ActProbe), tools, func(mc durable.Context, t listedTool, i int) (probed, error) {
 		// Named by index: a tool's name is the server's to choose.
 		return durable.Step(mc, fmt.Sprintf("call-%d", i), func(sc durable.StepContext) (probed, error) {
 			var answer struct {
 				Result json.RawMessage `json:"result"`
 				Error  json.RawMessage `json:"error"`
 			}
-			body := map[string]any{"tool": t.Name, "arguments": stubArguments(t)}
+			body := map[string]any{"tool": t.Tool.Name, "arguments": stubArguments(t.Tool)}
 			if _, err := callHarness(sc, r.deps.Sandbox, r.vm, http.MethodPost, "/call", body, &answer); err != nil {
 				return probed{}, err
 			}
-			p := probed{Tool: t.Name, Findings: scanJSON(fmt.Sprintf("the result of tool %d", i), answer.Result)}
+			p := probed{Tool: t.Tool.Name, Findings: scanJSON(fmt.Sprintf("the result of tool %d", t.Index), answer.Result)}
 			if len(answer.Error) > 0 {
 				p.Failed = string(answer.Error)
-				p.Findings = append(p.Findings, scanJSON(fmt.Sprintf("the error of tool %d", i), answer.Error)...)
+				p.Findings = append(p.Findings, scanJSON(fmt.Sprintf("the error of tool %d", t.Index), answer.Error)...)
 			}
 			if n := sizeOf(p); n > maxStepResult {
 				return probed{Oversized: n}, r.keepOversized(sc, fmt.Sprintf("call-%d", i), answer)
