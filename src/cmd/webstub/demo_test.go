@@ -16,8 +16,15 @@ import (
 
 // apiCheck is the part of GET /api/checks/<id> the tests read.
 type apiCheck struct {
-	Status   string `json:"status"`
-	Verdict  string `json:"verdict"`
+	Status    string `json:"status"`
+	Verdict   string `json:"verdict"`
+	DecidedBy string `json:"decidedBy"`
+	Steps     []struct {
+		Name string `json:"name"`
+	} `json:"steps"`
+	RecheckOf *struct {
+		CheckID string `json:"checkId"`
+	} `json:"recheckOf"`
 	Findings []struct {
 		Rule     string `json:"rule"`
 		Evidence string `json:"evidence"`
@@ -47,13 +54,19 @@ func settle(t *testing.T, h http.Handler, kind, ref string) (string, apiCheck) {
 		t.Fatalf("POST /checks answered %d: %s", rec.Code, rec.Body)
 	}
 	id := strings.TrimPrefix(rec.Header().Get("Location"), "/checks/")
+	return id, settled(t, h, id)
+}
+
+// settled reads check id until it stops running.
+func settled(t *testing.T, h http.Handler, id string) apiCheck {
+	t.Helper()
 	for range 50 {
 		if c := read(t, h, id); c.Status != "running" {
-			return id, c
+			return c
 		}
 	}
-	t.Fatalf("check %s of %s still runs after 50 reads", id, ref)
-	return "", apiCheck{}
+	t.Fatalf("check %s still runs after 50 reads", id)
+	return apiCheck{}
 }
 
 func newStub() http.Handler {
@@ -85,7 +98,13 @@ func TestEachDemoServerEndsAsItsScriptSays(t *testing.T) {
 				if rec := serve(t, h, http.MethodPost, "/checks/"+id+"/decision", form); rec.Code != http.StatusSeeOther {
 					t.Fatalf("the decision answered %d: %s", rec.Code, rec.Body)
 				}
-				c = read(t, h, id)
+				c = settled(t, h, id)
+				if c.DecidedBy != "a person blocked" {
+					t.Errorf("decidedBy = %q, want the Checker's \"a person blocked\"", c.DecidedBy)
+				}
+				if names := stepNames(c); !strings.HasSuffix(names, "ask_human verdict") {
+					t.Errorf("steps = %s, want ask_human then verdict after the decision", names)
+				}
 			}
 			if c.Status != "done" || c.Verdict != tt.verdict {
 				t.Fatalf("status, verdict = %q, %q; want done, %q", c.Status, c.Verdict, tt.verdict)
@@ -117,6 +136,37 @@ func hasFinding(c apiCheck, rule, evidence string) bool {
 		}
 	}
 	return false
+}
+
+func stepNames(c apiCheck) string {
+	names := make([]string, len(c.Steps))
+	for i, s := range c.Steps {
+		names[i] = s.Name
+	}
+	return strings.Join(names, " ")
+}
+
+func TestV101AfterAnApprovedV100IsARecheckLinkedToIt(t *testing.T) {
+	h := newStub()
+	approvedID, _ := settle(t, h, "npm", "mail-mcp@1.0.0")
+	_, c := settle(t, h, "npm", "mail-mcp@1.0.1")
+	if c.RecheckOf == nil || c.RecheckOf.CheckID != approvedID {
+		t.Errorf("recheckOf = %+v, want check %s", c.RecheckOf, approvedID)
+	}
+	if !strings.Contains(stepNames(c), "scan compare write_probes") {
+		t.Errorf("steps = %s, want compare after scan, as the Checker writes it", stepNames(c))
+	}
+}
+
+func TestAStalledCheckNeverSettles(t *testing.T) {
+	h := newStub()
+	rec := serve(t, h, http.MethodPost, "/checks", url.Values{"kind": {"npm"}, "ref": {"stall-mcp@1.0.0"}}.Encode())
+	id := strings.TrimPrefix(rec.Header().Get("Location"), "/checks/")
+	for range 20 {
+		if c := read(t, h, id); c.Status != "running" {
+			t.Fatalf("status = %q, want running for ever", c.Status)
+		}
+	}
 }
 
 func TestTheAdapterPassesMethodPathHeadersAndBodyAsAPIGatewayWould(t *testing.T) {
