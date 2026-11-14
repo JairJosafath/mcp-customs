@@ -80,4 +80,4 @@ the deadline. Cost and tokens come from each session's own report.
 | #40   | reviewer    | session_01SZoxcnnfLVoY5ak97Kt9CN | 2026-11-14 14:29 | 1      | running                                                                                               |                     |
 | #43   | reviewer    | session_01SZoxcjrUhG8Wy8Uihr7FZc | 2026-11-14 14:29 | 1      | running                                                                                               |                     |
 | #38   | merge       |                                  | 2026-11-14 14:37 |        | PR #41 merged; follow-up #46                                                                          |                     |
-| #20   | implementer | (started 14:37)                  | 2026-11-14 14:37 | 1      | running                                                                                               |                     |
+| #20   | implementer | session_01SZoxcoVmNRtPQ6aHfcC38n | 2026-11-14 14:37 | 1      | running                                                                                               |                     |
