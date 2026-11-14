@@ -32,7 +32,9 @@ Every user-visible change, newest first. The format follows
   refuses IP addresses in `/allow` and `/install` with 400, and ends an
   install's registry access even when the installer panics; its egress
   proxy refuses any connection to the API's addresses, DNS rebinding
-  included.
+  included, but for an install's GET of the demo Go proxy. Every layer
+  allows only plain ASCII host names, so a soft hyphen, an ideographic
+  full stop, a fullwidth letter or punycode can't spell the API's name.
 - The server under test can never be allowed to reach MCP Customs' own
   API (#53). The Checker refuses an allowlist holding the stack's API host,
   or a name that resolves to it, as an `allow-own-api` code finding that
