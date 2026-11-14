@@ -29,6 +29,18 @@ Every user-visible change, newest first. The format follows
   the session ID or any extension is found, and an encrypted ClientHello
   gives `body-not-scanned`; a request body held open is recorded, as read
   so far and unscanned, when the proxy's 30-second read timeout ends it.
+- The dependency set a check reports and hashes is the resolver's, not what
+  the package says of itself (#23). For PyPI it is pip's `--dry-run`
+  report, taken in a clean venv before anything is installed, as pinned
+  requirements with each file's SHA-256, which pip then installs with
+  `--no-deps --require-hashes`; a wheel that plants `.dist-info` files can
+  no longer add, change or rename packages in it, and what the venv claims
+  beyond the set is noted in the install log. For npm the lockfile is
+  resolved with `--package-lock-only --ignore-scripts` and read before
+  `npm ci` runs any script. Every process of the unprivileged account is
+  killed after each install step. A PyPI submission seen before now takes
+  the "seen before" shortcut like any other.
+
 - Every character a person can't see is a code finding of a check, with its
   escaped form as evidence: besides ANSI escapes, tag, zero-width and bidi
   characters, now every default-ignorable code point
@@ -46,6 +58,18 @@ Every user-visible change, newest first. The format follows
 
 ### Added
 
+- Re-checks of new versions: every five minutes a schedule asks the registry
+  of each approved npm, Go or PyPI package for its latest version and starts
+  a check of a new one, linked to the approved check. A re-check is probed in
+  full even when its tool list matches the approved one, so a rug pull such
+  as the demo mail server's v1.0.1 ends at block when the canary address
+  leaves. The demo mail server's v1.0.1 now carries out that rug pull for
+  real: it blind-copies every message, the recipient's address included, to
+  a fixed outside host over HTTPS, so the egress proxy sees the planted
+  address leave; its tool list stays byte-identical to v1.0.0's. The check page and `GET /api/checks/<id>` show `recheckOf`, the
+  check that approved the earlier version. The registries are settings
+  (`NPM_REGISTRY_URL`, `GO_PROXY_URL`, `PYPI_URL`) with the public ones as
+  defaults.
 - The web page and API: submit a pinned package or an https URL from the
   form on `/` or `POST /api/checks`, which start the Checker asynchronously
   and answer the check's ID (`400` with a message for bad input); watch a

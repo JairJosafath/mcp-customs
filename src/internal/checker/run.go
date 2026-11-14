@@ -28,6 +28,7 @@ type Recorder interface {
 	AppendStep(ctx context.Context, checkID string, step store.Step) error
 	GetVerdict(ctx context.Context, hash string) (store.Verdict, bool, error)
 	PutVerdict(ctx context.Context, v store.Verdict) error
+	PutApproved(ctx context.Context, a store.Approved, conditional bool) error
 }
 
 // Reports is where a check's report and raw observations go: the bucket.
@@ -54,6 +55,9 @@ type Deps struct {
 type Input struct {
 	CheckID    string           `json:"checkId"`
 	Submission store.Submission `json:"submission"`
+	// Recheck, when set, makes this the re-check of a newer version of an
+	// approved package.
+	Recheck *Recheck `json:"recheck,omitempty"`
 }
 
 // Output is what a finished execution answers.
@@ -64,10 +68,7 @@ type Output struct {
 }
 
 // The kinds of server a check takes, as docs/contracts.md's harness API names them.
-var kinds = []string{"go", "npm", kindPyPI, "remote"}
-
-// kindPyPI is a PyPI submission's kind.
-const kindPyPI = "pypi"
+var kinds = []string{"go", "npm", "pypi", "remote"}
 
 // maxRefLength bounds a submission's reference.
 const maxRefLength = 512
@@ -122,11 +123,17 @@ func Handler(deps Deps) durable.Handler[Input, Output] {
 		if !slices.Contains(kinds, in.Submission.Kind) || in.Submission.Ref == "" || len(in.Submission.Ref) > maxRefLength {
 			return Output{}, ErrBadSubmission
 		}
+		if !validRecheck(in.Recheck) {
+			return Output{}, ErrBadRecheck
+		}
 		check := store.Check{
 			ID:           in.CheckID,
 			Submission:   in.Submission,
 			Status:       store.StatusRunning,
 			ExecutionARN: ctx.ExecutionArn(),
+		}
+		if in.Recheck != nil {
+			check.RecheckOf, check.RecheckOfRef = in.Recheck.CheckID, in.Recheck.Ref
 		}
 		if _, err := durable.Step(ctx, "record-check", func(sc durable.StepContext) (bool, error) {
 			return true, recordCheck(sc, deps.Store, check)
@@ -147,8 +154,8 @@ func Handler(deps Deps) durable.Handler[Input, Output] {
 
 // check runs the fixed checks and answers the verdict. A dependency set
 // and tool list an earlier check approved pass after resolve, lookup and
-// list, except a PyPI one, whose reported set the package can still shape
-// (#23); anything else is installed, listed, scanned, probed with the
+// list, except a re-check, which is probed whatever it lists; anything
+// else is installed, listed, scanned, probed with the
 // judge's arguments, observed, judged and investigated, and a verdict
 // short of pass waits for a person.
 func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
@@ -157,7 +164,7 @@ func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
 			return "", err
 		}
 	}
-	if r.approved != nil && r.in.Submission.Kind != kindPyPI {
+	if r.approved != nil && r.in.Recheck == nil {
 		if err := r.do(ctx, ActList, nil); err != nil {
 			return "", err
 		}
@@ -173,6 +180,9 @@ func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
 		if err := r.do(ctx, a, nil); err != nil {
 			return "", err
 		}
+	}
+	if err := r.compare(ctx); err != nil {
+		return "", err
 	}
 	if err := r.writeProbes(ctx); err != nil {
 		return "", err

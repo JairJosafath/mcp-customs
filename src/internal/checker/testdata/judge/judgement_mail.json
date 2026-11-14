@@ -1,0 +1,7 @@
+{
+  "verdict": "pass",
+  "fitsPurpose": true,
+  "instructsModel": false,
+  "findings": [],
+  "expectedHosts": ["smtp.mail.example"]
+}
