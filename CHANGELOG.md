@@ -37,6 +37,11 @@ Every user-visible change, newest first. The format follows
   key in Secrets Manager, so no execution's history keeps it.
   A tool list, probe answer or set of observations over 200 KB is kept
   whole in the bucket and fails the check with an `oversized` finding.
+  So are what the install was seen doing, and the server's `initialize`
+  result and start, over the same bound. A step's record keeps at most 20
+  findings of each rule and counts the rest, so a server with many
+  findings still gets its verdict; and every finding names a tool by its
+  place in the listing.
 - The Checker, a Lambda durable function (`src/cmd/checker`); the web function
   (`src/cmd/web`), which serves `GET /` and `GET /api/health`, open to the
   public; the shared store of checks, steps and verdicts

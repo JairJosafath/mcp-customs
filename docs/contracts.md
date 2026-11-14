@@ -136,10 +136,20 @@ person approves it; its `installSpec` is the JSON
 A check's `META` also keeps `sandboxId`, the MicroVM its `resolve`
 launched, written before anything else, so a failure can end it.
 
-No step keeps more than 200 KB. A tool list, a probe's answer or the
-observations larger than that are kept whole in the bucket as
-`observations/<check-id>-<what>.json` (`list`, `call-<n>`, `observe`), and
-the check fails, with an `oversized` code finding on its `failed` step.
+No step keeps more than 200 KB. What the install was seen doing, the
+server's `initialize` result and its start, a tool list, a probe's answer
+or the observations larger than that are kept whole in the bucket as
+`observations/<check-id>-<what>.json` (`resolve`, `install`, `list`,
+`call-<n>`, `observe`), and the check fails, with an `oversized` code
+finding on its `failed` step.
+
+No `STEP#` item is larger than DynamoDB's 400 KB: a step keeps at most 20
+findings of each rule and 200 in all, each rule cut to 64 bytes and its
+evidence to 512, and one finding per rule saying how many more it left
+off (`more-findings` counts those of rules it kept none of). The verdict
+is decided from every finding, and the report keeps them all. Findings
+name a tool by its place in the listing (`tool 3`, `the result of tool
+3`), whichever step made them.
 
 Reports go to the bucket as `reports/<check-id>.json`. Raw observations as
 `observations/<check-id>.json`.
