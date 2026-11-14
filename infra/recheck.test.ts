@@ -89,8 +89,9 @@ describe('Recheck', () => {
     expect(statements).toContain(
       JSON.stringify({
         Action: ['dynamodb:Query', 'dynamodb:UpdateItem'],
+        Condition: { 'ForAllValues:StringEquals': { 'dynamodb:LeadingKeys': ['APPROVED'] } },
         Effect: 'Allow',
-        Resource: [{ 'Fn::GetAtt': [table, 'Arn'] }],
+        Resource: { 'Fn::GetAtt': [table, 'Arn'] },
       }),
     );
     expect(statements).toContain(

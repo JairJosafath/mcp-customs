@@ -33,6 +33,9 @@ export const POLLER_ENVIRONMENT = {
 /** The table calls the poller makes: it reads every APPROVED item and marks one polled. */
 export const POLLER_TABLE_ACTIONS = ['dynamodb:Query', 'dynamodb:UpdateItem'] as const;
 
+/** The one partition the poller touches: the approved packages (docs/contracts.md, "Store"). */
+export const APPROVED_PARTITION = 'APPROVED';
+
 /** What the re-check of new versions works with. */
 export interface RecheckProps {
   /** The table of checks, verdicts and approved packages. */
@@ -71,7 +74,22 @@ export class Recheck extends Construct {
     });
     this.poller.addEnvironment(POLLER_ENVIRONMENT.table, table.tableName);
     this.poller.addEnvironment(POLLER_ENVIRONMENT.checker, `${checker.functionArn}:$LATEST`);
-    table.grant(this.poller, ...POLLER_TABLE_ACTIONS);
+    // Only the APPROVED partition: a bug in the poller can't reach a check
+    // or a verdict. dynamodb:LeadingKeys holds every Query and UpdateItem to
+    // items whose partition key is APPROVED.
+    this.poller.role?.attachInlinePolicy(
+      new Policy(this, 'ReadApproved', {
+        statements: [
+          new PolicyStatement({
+            actions: [...POLLER_TABLE_ACTIONS],
+            resources: [table.tableArn],
+            conditions: {
+              'ForAllValues:StringEquals': { 'dynamodb:LeadingKeys': [APPROVED_PARTITION] },
+            },
+          }),
+        ],
+      }),
+    );
     this.poller.role?.attachInlinePolicy(
       new Policy(this, 'StartChecks', {
         statements: [
