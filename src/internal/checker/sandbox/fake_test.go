@@ -59,8 +59,9 @@ func TestFakeRefusesWhatTheRealClientRefuses(t *testing.T) {
 		t.Errorf("Launch without canaries = %v, want ErrBadLaunch", err)
 	}
 	stranger := VM{ID: "mvm-other"}
-	if err := f.Terminate(ctx, stranger); !errors.Is(err, ErrUnknownVM) {
-		t.Errorf("Terminate of an unknown VM = %v, want ErrUnknownVM", err)
+	// The real client takes a VM Lambda doesn't know as already ended.
+	if err := f.Terminate(ctx, stranger); err != nil || f.StateOf(stranger) != "" {
+		t.Errorf("Terminate of an unknown VM = %v, state %q; want nil and still unknown", err, f.StateOf(stranger))
 	}
 	if _, err := f.Call(ctx, stranger, Request{Method: http.MethodGet, Path: "/observations"}); !errors.Is(err, ErrUnknownVM) {
 		t.Errorf("Call to an unknown VM = %v, want ErrUnknownVM", err)
