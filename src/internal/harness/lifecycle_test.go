@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -226,25 +225,23 @@ func filesUnder(t *testing.T, dir string) []string {
 	return files
 }
 
-func TestTwoRacingRunsStartTheRunOnceAndTheLoserIsObserved(t *testing.T) {
-	run := newIdleRun(t, &fakeInstaller{})
-	statuses := make(chan int, 2)
-	for _, token := range []string{testToken, "attacker-token"} {
-		body := runHookRequest(t, token, testCanaries)
-		go func() {
-			raw, _ := json.Marshal(body)
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, HooksPrefix+"run", bytes.NewReader(raw))
-			rec := httptest.NewRecorder()
-			run.h.Hooks().ServeHTTP(rec, req)
-			statuses <- rec.Code
-		}()
-	}
-	got := []int{<-statuses, <-statuses}
-	if !slices.Contains(got, http.StatusOK) || !slices.Contains(got, http.StatusConflict) {
-		t.Fatalf("two racing /runs = %v, want one 200 and one 409", got)
-	}
-	obs := run.h.obs.all()
-	if len(obs) != 1 || obs[0].Kind != ObservedHook {
-		t.Errorf("observations = %+v, want the refused /run", obs)
+func TestAHookIsObservedOnceTheRunStartedOrWhenARacingRunLost(t *testing.T) {
+	for _, tc := range []struct {
+		after  bool
+		path   string
+		status int
+		want   bool
+	}{
+		{false, HooksPrefix + "run", http.StatusOK, false},         // Lambda's own /run
+		{false, HooksPrefix + "ready", http.StatusOK, false},       // Lambda's /ready at build
+		{false, HooksPrefix + "run", http.StatusBadRequest, false}, // a bad payload, no run yet
+		{false, HooksPrefix + "run", http.StatusConflict, true},    // lost a race to another /run
+		{true, HooksPrefix + "run", http.StatusConflict, true},
+		{true, HooksPrefix + "ready", http.StatusOK, true},
+		{true, "/elsewhere", http.StatusNotFound, true},
+	} {
+		if got := observeHook(tc.after, tc.path, tc.status); got != tc.want {
+			t.Errorf("observeHook(%v, %s, %d) = %v, want %v", tc.after, tc.path, tc.status, got, tc.want)
+		}
 	}
 }

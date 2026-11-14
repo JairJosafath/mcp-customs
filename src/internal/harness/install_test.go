@@ -105,12 +105,12 @@ func TestToolchainInstallsEachEcosystemAsTheAccount(t *testing.T) {
 		"a PyPI package": {
 			pkg: Package{EcosystemPyPI, "weather-mcp", "1.0.0"},
 			outputs: map[string]string{
-				"/w/venv/bin/pip freeze": "httpx==0.27.0\nweather-mcp==1.0.0\n",
+				"python3 -I": "httpx==0.27.0\nweather-mcp==1.0.0\n",
 			},
 			wantRan: [][]string{
 				{"python3", "-m", "venv", "/w/venv"},
 				{"/w/venv/bin/pip", "install", "--disable-pip-version-check", "weather-mcp==1.0.0"},
-				{"/w/venv/bin/pip", "freeze", "--all", "--disable-pip-version-check"},
+				{"python3", "-I", "-c", venvDistributions, "/w/venv"},
 			},
 			resolved: "httpx==0.27.0\nweather-mcp==1.0.0\n",
 			command:  []string{"/w/venv/bin/weather-mcp"},

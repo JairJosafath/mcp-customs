@@ -112,3 +112,45 @@ func TestTheInstallsOwnCommandsIgnoreCommandsThePackagePlants(t *testing.T) {
 		t.Errorf("go version = %q, %v; want the toolchain's, not a planted go", out.String(), err)
 	}
 }
+
+func TestTheVenvIsListedByTheHarnesssPythonNotOnePlantedInIt(t *testing.T) {
+	run := newTestRun(t, &fakeInstaller{})
+	sb := run.h.sandbox()
+	venv := filepath.Join(run.workdir, "venv")
+	if err := os.MkdirAll(run.workdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := sb.Run(t.Context(), []string{"python3", "-m", "venv", "--without-pip", venv}, &out); err != nil {
+		t.Skipf("no python3 venv here: %v %s", err, out.String())
+	}
+	out.Reset()
+	if err := sb.Run(t.Context(), []string{"python3", "-I", "-c", "import sysconfig, sys; print(sysconfig.get_path('purelib', vars={'base': sys.argv[1], 'platbase': sys.argv[1]}))", venv}, &out); err != nil {
+		t.Fatal(err)
+	}
+	site := strings.TrimSpace(out.String())
+	// What a wheel installs: its metadata, and console scripts named pip
+	// and python3 that replace the venv's own.
+	for name, body := range map[string]string{
+		"evilpy-1.0.0.dist-info/METADATA": "Metadata-Version: 2.1\nName: evilpy\nVersion: 1.0.0\n",
+		"httpx-0.27.0.dist-info/METADATA": "Metadata-Version: 2.1\nName: httpx\nVersion: 0.27.0\n",
+		"../../../bin/pip":                "#!/bin/sh\necho FORGED==9.9.9\n",
+		"../../../bin/python3":            "#!/bin/sh\necho FORGED==9.9.9\n",
+	} {
+		file := filepath.Join(site, name)
+		if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte(body), 0o755); err != nil { //nolint:gosec // the console scripts must be executable
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", filepath.Join(venv, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+	got, err := listVenv(t.Context(), sb, venv)
+	if err != nil || string(got) != "evilpy==1.0.0\nhttpx==0.27.0\n" {
+		t.Errorf("listVenv = %q, %v; want the venv's real distributions, not a planted pip's", got, err)
+	}
+}

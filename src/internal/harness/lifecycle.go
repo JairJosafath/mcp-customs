@@ -97,11 +97,17 @@ func (h *Harness) Hooks() http.Handler {
 		after := h.life.started()
 		rec := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		mux.ServeHTTP(rec, r)
-		// A /run refused because another won the race is observed too.
-		if after || (r.URL.Path == HooksPrefix+"run" && rec.status == http.StatusConflict) {
+		if observeHook(after, r.URL.Path, rec.status) {
 			h.obs.add(ObservedHook, HookDetail{Method: r.Method, Path: r.URL.Path, From: r.RemoteAddr, Status: rec.status})
 		}
 	})
+}
+
+// observeHook says whether a hook call is observed: every call made once
+// the run had started, and a /run refused because another /run won a race
+// while this one waited.
+func observeHook(after bool, path string, status int) bool {
+	return after || (path == HooksPrefix+"run" && status == http.StatusConflict)
 }
 
 // ready answers Lambda's /ready hook at image build: 200 once the Harness

@@ -227,11 +227,32 @@ func installPyPI(ctx context.Context, p Package, sb Sandbox, log io.Writer) (Ins
 	if err := step(ctx, sb, log, pip, "install", "--disable-pip-version-check", p.Name+"=="+p.Version); err != nil {
 		return Installed{}, err
 	}
-	var frozen bytes.Buffer
-	if err := sb.Run(ctx, []string{pip, "freeze", "--all", "--disable-pip-version-check"}, &frozen); err != nil {
-		return Installed{}, fmt.Errorf("list what pip resolved: %w", err)
+	resolved, err := listVenv(ctx, sb, venv)
+	if err != nil {
+		return Installed{}, err
 	}
-	return Installed{Resolved: frozen.Bytes(), Command: []string{filepath.Join(venv, "bin", p.Name)}}, nil
+	return Installed{Resolved: resolved, Command: []string{filepath.Join(venv, "bin", p.Name)}}, nil
+}
+
+// venvDistributions prints the distributions in the site-packages of the
+// venv named by its argument, one "name==version" a line, sorted. It reads
+// their metadata only, with the standard library: no code of the venv runs.
+const venvDistributions = `import importlib.metadata as m, sys, sysconfig
+site = sysconfig.get_path("purelib", vars={"base": sys.argv[1], "platbase": sys.argv[1]})
+names = {d.metadata["Name"] + "==" + d.version for d in m.distributions(path=[site]) if d.metadata["Name"]}
+print("".join(n + "\n" for n in sorted(names, key=str.lower)), end="")
+`
+
+// listVenv is what pip resolved into venv, read by the harness's own
+// python3 (isolated, found on the trusted PATH), never by a file in the
+// venv: the package can replace venv/bin/pip and venv/bin/python3 with
+// console scripts of its own.
+func listVenv(ctx context.Context, sb Sandbox, venv string) ([]byte, error) {
+	var out bytes.Buffer
+	if err := sb.Run(ctx, []string{"python3", "-I", "-c", venvDistributions, venv}, &out); err != nil {
+		return nil, fmt.Errorf("list what pip resolved: %w", err)
+	}
+	return out.Bytes(), nil
 }
 
 // step runs one install command, logging it and its output.
