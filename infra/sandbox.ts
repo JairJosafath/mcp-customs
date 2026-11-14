@@ -1,4 +1,4 @@
-import { AssetHashType, DockerImage, RemovalPolicy, Stack } from 'aws-cdk-lib';
+import { ArnFormat, AssetHashType, DockerImage, RemovalPolicy, Stack } from 'aws-cdk-lib';
 import { Policy, PolicyStatement, Role, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
 import { CfnMicrovmImage } from 'aws-cdk-lib/aws-lambda';
 import type { Function as LambdaFunction } from 'aws-cdk-lib/aws-lambda';
@@ -20,6 +20,9 @@ export const HOOKS_PORT = 9000;
 
 /** The memory a sandbox starts with, in MiB: 2 GB and 1 vCPU, up to four times that at peak. */
 export const SANDBOX_MEMORY_MIB = 2048;
+
+/** The environment variable that names the Go proxies to the harness and the poller. */
+export const GO_PROXY_URL = 'GO_PROXY_URL';
 
 /** The Lambda-managed base image the harness image is built on, and its pinned version. */
 export const BASE_IMAGE = 'al2023-1';
@@ -52,6 +55,8 @@ export const PASS_CONNECTOR_ACTION = 'lambda:PassNetworkConnector';
 export interface SandboxProps {
   /** How long the image's build logs are kept, as the tier keeps logs. */
   readonly logRetention: RetentionDays;
+  /** The GOPROXY-style list Go installs resolve through, the harness's `GO_PROXY_URL`. */
+  readonly goProxy: string;
 }
 
 /**
@@ -83,8 +88,22 @@ export class Sandbox extends Construct {
       retention: props.logRetention,
       removalPolicy: RemovalPolicy.DESTROY,
     });
+    // Only Lambda building this account's image may assume the build role.
+    // Lambda documents neither source key for it: the account is required,
+    // and the image's ARN is held to whenever Lambda names one.
+    const imageArn = stack.formatArn({
+      service: 'lambda',
+      resource: 'microvm-image',
+      resourceName: imageName,
+      arnFormat: ArnFormat.COLON_RESOURCE_NAME,
+    });
     const buildRole = new Role(this, 'BuildRole', {
-      assumedBy: new ServicePrincipal('lambda.amazonaws.com'),
+      assumedBy: new ServicePrincipal('lambda.amazonaws.com', {
+        conditions: {
+          StringEquals: { 'aws:SourceAccount': stack.account },
+          ArnLikeIfExists: { 'aws:SourceArn': [imageArn, `${imageArn}:*`] },
+        },
+      }),
       description: `Builds the ${imageName} MicroVM image: reads its code zip and writes its build logs.`,
     });
     buildRole.addToPolicy(
@@ -115,7 +134,9 @@ export class Sandbox extends Construct {
       // The build downloads the toolchains; at run time the Checker names
       // the connectors each MicroVM gets.
       egressNetworkConnectors: [this.egressConnectorArn],
-      environmentVariables: [],
+      // The same for every MicroVM, so nothing per run: the Go proxies
+      // installs resolve through, the stack's demo proxy first.
+      environmentVariables: [{ key: GO_PROXY_URL, value: props.goProxy }],
       // Lambda filters no hosts, so the harness enforces deny-by-default
       // itself with iptables rules on the server's user (src/internal/egress),
       // which need CAP_NET_ADMIN; Lambda grants that only with ALL.

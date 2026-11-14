@@ -10,10 +10,14 @@ import (
 	"net/url"
 	"strings"
 	"unicode"
+
+	"github.com/JairJosafath/mcp-customs/src/internal/demoproxy"
 )
 
 // Registries are the base URLs the poller asks for each kind's latest
-// version: an npm registry, a Go module proxy and a PyPI index.
+// version: an npm registry, Go module proxies and a PyPI index. Go is a
+// GOPROXY-style list, the proxies asked in turn, each after the one before
+// answered 404 or 410: the stack's demo proxy, then the public one.
 type Registries struct {
 	NPM  string
 	Go   string
@@ -41,7 +45,13 @@ var ErrBadRegistry = errors.New("a registry must be an https:// URL with a host,
 // getenv, each one unset keeping its default.
 func RegistriesFrom(getenv func(string) string) (Registries, error) {
 	r := DefaultRegistries
-	for name, field := range map[string]*string{EnvNPMRegistry: &r.NPM, EnvGoProxy: &r.Go, EnvPyPI: &r.PyPI} {
+	if value := getenv(EnvGoProxy); value != "" {
+		if _, err := demoproxy.SplitProxyList(value); err != nil {
+			return Registries{}, fmt.Errorf("%s: %w: %w", EnvGoProxy, ErrBadRegistry, err)
+		}
+		r.Go = value
+	}
+	for name, field := range map[string]*string{EnvNPMRegistry: &r.NPM, EnvPyPI: &r.PyPI} {
 		value := getenv(name)
 		if value == "" {
 			continue
@@ -80,21 +90,24 @@ var ErrUnknownKind = errors.New("no registry for this kind")
 // Latest answers the latest version of package name of kind.
 func (r *HTTPRegistry) Latest(ctx context.Context, kind, name string) (string, error) {
 	var (
-		u       string
+		urls    []string
 		version func([]byte) (string, error)
 	)
 	switch kind {
 	case "npm":
 		// A scoped name's slash is escaped: @scope%2Fname.
-		u, version = strings.TrimSuffix(r.bases.NPM, "/")+"/"+url.PathEscape(name)+"/latest", field("version")
+		urls, version = []string{strings.TrimSuffix(r.bases.NPM, "/") + "/" + url.PathEscape(name) + "/latest"}, field("version")
 	case "go":
-		u, version = strings.TrimSuffix(r.bases.Go, "/")+"/"+escapeModule(name)+"/@latest", field("Version")
+		for base := range strings.SplitSeq(r.bases.Go, ",") {
+			urls = append(urls, strings.TrimSuffix(base, "/")+"/"+escapeModule(name)+"/@latest")
+		}
+		version = field("Version")
 	case "pypi":
-		u, version = strings.TrimSuffix(r.bases.PyPI, "/")+"/pypi/"+url.PathEscape(name)+"/json", pypiVersion
+		urls, version = []string{strings.TrimSuffix(r.bases.PyPI, "/") + "/pypi/" + url.PathEscape(name) + "/json"}, pypiVersion
 	default:
 		return "", fmt.Errorf("%q: %w", kind, ErrUnknownKind)
 	}
-	body, err := r.get(ctx, u)
+	body, err := r.first(ctx, urls)
 	if err != nil {
 		return "", err
 	}
@@ -103,6 +116,18 @@ func (r *HTTPRegistry) Latest(ctx context.Context, kind, name string) (string, e
 		return "", fmt.Errorf("read the latest version of %s package %s: %w", kind, name, err)
 	}
 	return v, nil
+}
+
+// first answers the body of the first of urls that has the package, as
+// the go command reads GOPROXY: the next is asked only after a 404 or 410.
+func (r *HTTPRegistry) first(ctx context.Context, urls []string) ([]byte, error) {
+	for _, u := range urls {
+		body, err := r.get(ctx, u)
+		if !errors.Is(err, ErrNotPublished) {
+			return body, err
+		}
+	}
+	return nil, ErrNotPublished
 }
 
 // get answers the body of u, and ErrNotPublished for a 404 or a 410.

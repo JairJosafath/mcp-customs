@@ -99,14 +99,14 @@ func (f *Fake) Resume(_ context.Context, vm VM) error {
 	return f.move(vm, StateSuspended, StateRunning)
 }
 
-// Terminate ends a fake VM; ending one twice is not an error.
+// Terminate ends a fake VM. Ending one twice, or one it never launched, is
+// not an error: the real client takes a VM Lambda doesn't know as ended.
 func (f *Fake) Terminate(_ context.Context, vm VM) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if _, ok := f.states[vm.ID]; !ok {
-		return fmt.Errorf("terminate %s: %w", vm.ID, ErrUnknownVM)
+	if _, ok := f.states[vm.ID]; ok {
+		f.states[vm.ID] = StateTerminated
 	}
-	f.states[vm.ID] = StateTerminated
 	return nil
 }
 

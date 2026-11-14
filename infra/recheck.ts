@@ -12,6 +12,7 @@ import { Construct } from 'constructs';
 
 import type { Alarms } from './alarms';
 import { goFunction } from './go_function';
+import { GO_PROXY_URL } from './sandbox';
 import type { TierRules } from './standard';
 
 /**
@@ -43,6 +44,8 @@ export interface RecheckProps {
   /** The Checker, which the poller starts a re-check on. */
   readonly checker: LambdaFunction;
   readonly rules: TierRules;
+  /** The GOPROXY-style list the poller asks a Go module's latest version of. */
+  readonly goProxy: string;
 }
 
 /** How long the dead-letter queue keeps a poll the Scheduler could not deliver. */
@@ -74,6 +77,7 @@ export class Recheck extends Construct {
     });
     this.poller.addEnvironment(POLLER_ENVIRONMENT.table, table.tableName);
     this.poller.addEnvironment(POLLER_ENVIRONMENT.checker, `${checker.functionArn}:$LATEST`);
+    this.poller.addEnvironment(GO_PROXY_URL, props.goProxy);
     // Only the APPROVED partition: a bug in the poller can't reach a check
     // or a verdict. dynamodb:LeadingKeys holds every Query and UpdateItem to
     // items whose partition key is APPROVED.

@@ -20,6 +20,7 @@ import type { Construct } from 'constructs';
 
 import { Alarms } from './alarms';
 import { Backups } from './backups';
+import { DEMO_VERSIONS_FILE, DemoProxy, GO_PROXY_PREFIX } from './demo_proxy';
 import { goFunction } from './go_function';
 import { Recheck, POLLER_TIMEOUT } from './recheck';
 import { RecheckOutcomes } from './recheck_outcomes';
@@ -57,7 +58,14 @@ export const WEB_ROUTES = [
   ['GET', '/static/{file}'],
   ['GET', '/api/{proxy+}'],
   ['POST', '/api/checks'],
+  ['GET', '/goproxy/{proxy+}'],
 ] as const;
+
+/** The time limit CDK sets on the function that copies the demo proxy's files. */
+export const DEMO_PROXY_TIMEOUT = Duration.minutes(15);
+
+/** The public Go module proxy, asked after the demo proxy answers 404. */
+export const PUBLIC_GO_PROXY = 'https://proxy.golang.org';
 
 /** The environment variable that names the judge's model to the Checker. */
 export const JUDGE_MODEL_ID = 'JUDGE_MODEL_ID';
@@ -139,6 +147,8 @@ export interface ApiStackProps extends StackProps {
   readonly tier: Tier;
   /** What the Container promises whatever the tier: `OPERATIONS`. */
   readonly operations: Operations;
+  /** The file of the demo versions the demo Go module proxy serves; `DEMO_VERSIONS_FILE` when unset. */
+  readonly demoVersionsFile?: string;
 }
 
 /**
@@ -215,8 +225,6 @@ export class ApiStack extends Stack {
     this.grantRunTokenKey(checker, rules);
     this.grantDurableExecution(checker);
     this.grantJudge(checker);
-    // One MicroVM per check, from the harness image.
-    new Sandbox(this, 'Sandbox', { logRetention: rules.logRetention }).grantLaunch(checker);
     // The web function starts checks asynchronously, and a durable
     // execution keeps its own failures.
     Validations.of(checker).acknowledge({
@@ -235,14 +243,28 @@ export class ApiStack extends Stack {
 
     const api = this.httpApi(web, rules);
     this.url = api.apiEndpoint;
+    // The demo servers' versions, served by the stack itself, then every
+    // other Go module from the public proxy (docs/contracts.md, "The demo proxy").
+    const goProxy = `${api.apiEndpoint}/goproxy,${PUBLIC_GO_PROXY}`;
 
-    const recheck = new Recheck(this, 'Recheck', { table, checker, rules });
+    // One MicroVM per check, from the harness image.
+    new Sandbox(this, 'Sandbox', { logRetention: rules.logRetention, goProxy }).grantLaunch(
+      checker,
+    );
+
+    const recheck = new Recheck(this, 'Recheck', { table, checker, rules, goProxy });
     const outcomes = new RecheckOutcomes(this, 'RecheckOutcomes', { checker });
+    const demoProxy = new DemoProxy(this, 'DemoProxy', {
+      bucket: reports,
+      versionsFile: props.demoVersionsFile ?? DEMO_VERSIONS_FILE,
+      rules,
+    });
 
     const alarms = this.addAlarms(alerts.email, api, [
       ['Checker', checker, CHECKER_TIMEOUT],
       ['Web', web, WEB_TIMEOUT],
       ['Poller', recheck.poller, POLLER_TIMEOUT],
+      ['DemoProxyDeployment', demoProxy.handler, DEMO_PROXY_TIMEOUT],
       ...(emptier === undefined
         ? []
         : [['ReportsAutoDelete', emptier, AUTO_DELETE_TIMEOUT] as const]),
@@ -318,7 +340,8 @@ export class ApiStack extends Stack {
 
   /**
    * Lets `web` do only what it does: read a check's META (GetItem) and its
-   * steps (Query), read a check's report under `reports/`, start the Checker
+   * steps (Query), read a check's report under `reports/` and the demo
+   * proxy's files under `GO_PROXY_PREFIX`, start the Checker
    * at `$LATEST` asynchronously, send a waiting check's callback, and read
    * the reviewer key a person enters to Approve or Block, once at start.
    */
@@ -347,7 +370,17 @@ export class ApiStack extends Stack {
       statements: [
         new PolicyStatement({
           actions: ['s3:GetObject'],
-          resources: [reports.arnForObjects('reports/*')],
+          resources: [
+            reports.arnForObjects('reports/*'),
+            reports.arnForObjects(`${GO_PROXY_PREFIX}*`),
+          ],
+        }),
+        // Without it, S3 answers a missing proxy file 403, not 404, and a
+        // 404 is what sends the go command on to the public proxy.
+        new PolicyStatement({
+          actions: ['s3:ListBucket'],
+          resources: [reports.bucketArn],
+          conditions: { StringLike: { 's3:prefix': [`${GO_PROXY_PREFIX}*`] } },
         }),
         new PolicyStatement({
           actions: ['lambda:InvokeFunction'],
@@ -375,6 +408,11 @@ export class ApiStack extends Stack {
       id: `AwsSolutions-IAM5[Resource::<${this.getLogicalId(cfnBucket)}.Arn>/reports/*]`,
       reason:
         'The web function reads the report of the check a page shows, reports/<check-id>.json, a key known only per request; the wildcard reaches only that prefix of the reports bucket, and only to get.',
+    });
+    Validations.of(policy).acknowledge({
+      id: `AwsSolutions-IAM5[Resource::<${this.getLogicalId(cfnBucket)}.Arn>/${GO_PROXY_PREFIX}*]`,
+      reason:
+        'The web function serves the demo Go module proxy, goproxy/<module>/@v/<version>.zip and its kin, whose keys are the module paths and versions a request names; the wildcard reaches only that prefix of the reports bucket, and only to get. Nothing in the stack writes it.',
     });
     Validations.of(policy).acknowledge({
       id: `AwsSolutions-IAM5[Resource::<${this.getLogicalId(cfnChecker)}.Arn>:*]`,
@@ -519,7 +557,7 @@ export class ApiStack extends Stack {
         Validations.of(route).acknowledge({
           id: 'AwsSolutions-APIG4',
           reason:
-            'MCP Customs is a public service: anyone may submit a server and read its check, as the demo, the judges and agent platforms do, without an AWS identity. The stage is throttled; Approve and Block take the reviewer key, which the web function checks before it sends a callback.',
+            'MCP Customs is a public service: anyone may submit a server and read its check, as the demo, the judges and agent platforms do, without an AWS identity. The stage is throttled; Approve and Block take the reviewer key, which the web function checks before it sends a callback. The demo Go module proxy under /goproxy/ is read-only, and read by the go command in the sandbox and the poller, neither of which signs a request.',
         });
       }
     }

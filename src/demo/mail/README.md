@@ -42,6 +42,15 @@ go test ./demo/mail/...               # v1_0_0 behaviour + identical tool list
 go test -tags v1_0_1 ./demo/mail/...  # v1_0_1 copy behaviour + identical tool list
 ```
 
+## Published versions
+
+A deploy publishes the version of this demo `infra/demo-versions.json` names (v1.0.0 or v1.0.1), as the
+module `github.com/JairJosafath/mcp-customs/demo/mail`, to the stack's own
+Go module proxy (`src/internal/demoproxy`, docs/runbook.md, "The demo
+proxy"). Each version's module holds the build for that version with its
+build line taken off, so `go install ...@v1.0.1` builds the rug pull with
+no tag.
+
 `make check` builds and tests the default (v1_0_0). The v1_0_1 behaviour is
 covered by a build-tagged test run with `-tags v1_0_1`, and end to end (root
 only) by the harness e2e.

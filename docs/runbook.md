@@ -31,14 +31,14 @@ restore fits the RTO only a drill shows: see [Drills](#drills).
 
 ## What the stack keeps
 
-| Resource                | Holds                                                           | When the stack is deleted         |
-| ----------------------- | --------------------------------------------------------------- | --------------------------------- |
-| `Table` table           | checks, their steps and verdicts (`pk`, `sk`)                   | kept; deletion protection is on   |
-| `Reports` bucket        | reports and observations, with their earlier versions           | kept, with every object in it     |
-| backup vault and key    | the daily backups of the table                                  | kept, with every backup in it     |
-| log groups              | the Checker's and web function's logs and the API's access logs | deleted; kept one year until then |
-| alarm topic and its key | nothing                                                         | deleted                           |
-| `RecheckDeadLetters`    | polls the re-check schedule could not deliver, 14 days at most  | deleted                           |
+| Resource                | Holds                                                                                                                         | When the stack is deleted         |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| `Table` table           | checks, their steps and verdicts (`pk`, `sk`)                                                                                 | kept; deletion protection is on   |
+| `Reports` bucket        | reports and observations, with their earlier versions; the demo Go module proxy under `goproxy/`, which a deploy writes again | kept, with every object in it     |
+| backup vault and key    | the daily backups of the table                                                                                                | kept, with every backup in it     |
+| log groups              | the Checker's and web function's logs and the API's access logs                                                               | deleted; kept one year until then |
+| alarm topic and its key | nothing                                                                                                                       | deleted                           |
+| `RecheckDeadLetters`    | polls the re-check schedule could not deliver, 14 days at most                                                                | deleted                           |
 
 The physical names are in the stack:
 `aws cloudformation describe-stack-resources --stack-name mcp-customs`.
@@ -141,25 +141,62 @@ email AWS sends it. The dashboard `mcp-customs` shows each alarm's metric. Each
 alarm fires on one bad five-minute period and clears itself when the next
 one is good. An alarm's name is the stack's, `mcp-customs-`, then the name below.
 
-| Alarm                                                   | Means                                                                                          | First                                                                                                                                                                                                             |
-| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Api-Fault-Count-Critical`                              | the API answered 5xx: the web function failed or timed out                                     | read the web function's logs for `The request failed.` and the request id; roll back if a deploy just went out                                                                                                    |
-| `Web-Fault-Count-Critical`                              | the web function failed or timed out, outside `web.Answer`'s handling                          | read its logs around the time; an error at start-up means a broken deploy                                                                                                                                         |
-| `Checker-Fault-Count-Critical`                          | a Checker invocation failed or timed out                                                       | read the Checker's logs, then the execution (`aws lambda get-durable-execution --durable-execution-arn <the check's executionArn>`); an error at start-up (a missing `DYNAMODB_TABLE_NAME`) means a broken deploy |
-| `Web-Throttled-Count-Critical`, `Checker-`, `Poller-`   | Lambda refused calls: the account's or function's concurrency is used up                       | check the account's concurrent executions; a burst from one client is the stage's throttle's to stop                                                                                                              |
-| `Web-Latency-P99-Warning`                               | the slowest web calls take over 8 of their 10 seconds                                          | check DynamoDB's latency on the dashboard and the function's duration in its logs; a timeout is next                                                                                                              |
-| `Checker-Latency-P99-Warning`                           | the slowest Checker invocations take over 240 of their 300 seconds                             | read which step ran long in its logs; a timeout is next, which the durable execution retries from its last checkpoint                                                                                             |
-| `Table-Read-Throttled-Events-Critical`, `-Write-`       | DynamoDB throttled reads or writes: a hot key or a burst past on-demand's limits               | find the key in the logs; on-demand adapts within minutes, a hot key needs a change to the key design                                                                                                             |
-| `Table-SystemError-Count-Critical`                      | DynamoDB failed requests on its side                                                           | check the AWS Health Dashboard for DynamoDB in the region; the SDK retries, so watch whether clients see errors                                                                                                   |
-| `Poller-Fault-Count-Critical`                           | a poll for new versions of approved packages failed: a registry, the table or the Checker      | read the poller's logs for `A package could not be polled.`, which names the package; the next poll, minutes later, tries again, and a re-check is started once whatever the retries                              |
-| `Poller-Latency-P99-Warning`                            | the slowest polls take over 48 of their 60 seconds                                             | a registry is slow, or there are many approved packages: the poller polls them concurrently (at most 8 at once), so one slow registry does not block the rest, and each slow package is logged with its error     |
-| `RecheckDeadLetters-Queue-Message-Count-Max-Critical`   | the Scheduler could not invoke the poller, after its retries                                   | read a message in `RecheckDeadLetters` for its error (often the poller's permission or a deleted function); the poll needs no replay: purge the queue once the next one runs                                      |
-| `RecheckSchedule-Dropped-Critical`, `-NotDeadLettered-` | the Scheduler dropped a poll, or could not put it in the dead-letter queue                     | check the schedule (`aws scheduler get-schedule`) and its role; the next poll runs on time                                                                                                                        |
-| `RecheckFailedTwice-Critical`                           | a re-check of a newer version failed, and its one retry failed too: the version is not checked | read the Checker's logs for `A re-check failed twice.`, which names the retry and the approved check, then that check's page and the execution; once the cause is fixed, submit the version by hand               |
+| Alarm                                                   | Means                                                                                     | First                                                                                                                                                                                                             |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Api-Fault-Count-Critical`                              | the API answered 5xx: the web function failed or timed out                                | read the web function's logs for `The request failed.` and the request id; roll back if a deploy just went out                                                                                                    |
+| `Web-Fault-Count-Critical`                              | the web function failed or timed out, outside `web.Answer`'s handling                     | read its logs around the time; an error at start-up means a broken deploy                                                                                                                                         |
+| `Checker-Fault-Count-Critical`                          | a Checker invocation failed or timed out                                                  | read the Checker's logs, then the execution (`aws lambda get-durable-execution --durable-execution-arn <the check's executionArn>`); an error at start-up (a missing `DYNAMODB_TABLE_NAME`) means a broken deploy |
+| `Web-Throttled-Count-Critical`, `Checker-`, `Poller-`   | Lambda refused calls: the account's or function's concurrency is used up                  | check the account's concurrent executions; a burst from one client is the stage's throttle's to stop                                                                                                              |
+| `Web-Latency-P99-Warning`                               | the slowest web calls take over 8 of their 10 seconds                                     | check DynamoDB's latency on the dashboard and the function's duration in its logs; a timeout is next                                                                                                              |
+| `Checker-Latency-P99-Warning`                           | the slowest Checker invocations take over 240 of their 300 seconds                        | read which step ran long in its logs; a timeout is next, which the durable execution retries from its last checkpoint                                                                                             |
+| `Table-Read-Throttled-Events-Critical`, `-Write-`       | DynamoDB throttled reads or writes: a hot key or a burst past on-demand's limits          | find the key in the logs; on-demand adapts within minutes, a hot key needs a change to the key design                                                                                                             |
+| `Table-SystemError-Count-Critical`                      | DynamoDB failed requests on its side                                                      | check the AWS Health Dashboard for DynamoDB in the region; the SDK retries, so watch whether clients see errors                                                                                                   |
+| `Poller-Fault-Count-Critical`                           | a poll for new versions of approved packages failed: a registry, the table or the Checker | read the poller's logs for `A package could not be polled.`, which names the package; the next poll, minutes later, tries again, and a re-check is started once whatever the retries                              |
+| `Poller-Latency-P99-Warning`                            | the slowest polls take over 48 of their 60 seconds                                        | a registry is slow, or there are many approved packages: the poller polls them concurrently (at most 8 at once), so one slow registry does not block the rest, and each slow package is logged with its error     |
+| `RecheckDeadLetters-Queue-Message-Count-Max-Critical`   | the Scheduler could not invoke the poller, after its retries                              | read a message in `RecheckDeadLetters` for its error (often the poller's permission or a deleted function); the poll needs no replay: purge the queue once the next one runs                                      |
+| `RecheckSchedule-Dropped-Critical`, `-NotDeadLettered-` | the Scheduler dropped a poll, or could not put it in the dead-letter queue                | check the schedule (`aws scheduler get-schedule`) and its role; the next poll runs on time                                                                                                                        |
 
 When an alarm fires, note the time, what you saw and what you did; when it
 has fired before for the same cause, that cause needs a fix, not another
 note.
+
+## The demo proxy
+
+The stack serves the demo servers' versions itself, as a Go module proxy:
+the files under the `Reports` bucket's `goproxy/` prefix, read by the web
+function at `<EntryPoint>/goproxy/` and by nothing else. The poller and
+the sandbox's `go install` ask it first and the public proxy after it
+(`GO_PROXY_URL`); the sandbox skips the checksum database for the demo
+modules, `github.com/JairJosafath/mcp-customs/demo/...`, alone, and may
+only GET under `/goproxy/` of the stack's API while an install runs. Only
+the deploy writes the prefix: the `DemoProxy` deployment copies the files
+synth built, and prunes the ones it no longer publishes. A missing file
+answers 404, which sends the go command on to the public proxy.
+
+What a deploy publishes is what `infra/demo-versions.json`, a committed
+file, names for each demo, with every earlier version: `mail` v1.0.0 and
+v1.0.1, `weather` v1.0.0, each a module whose default build is that
+version. Synth reads the file; no context value or variable changes it.
+`make demo-build` writes the same files into `cdk.out/demo-proxy` to look
+at, without AWS.
+
+The live rug pull:
+
+1. Deploy as usual (`cdk deploy -c tier=<tier>`). The committed file names
+   `"mail": "v1.0.0"`, so the proxy serves v1.0.0.
+2. Check it is served:
+   `curl '<EntryPoint>/goproxy/github.com/!jair!josafath/mcp-customs/demo/mail/@v/list'`
+   answers `v1.0.0`.
+3. Submit `github.com/JairJosafath/mcp-customs/demo/mail@v1.0.0` as a Go
+   module, and let it pass (or Approve it).
+4. Publish the rug pull: a one-line commit to `infra/demo-versions.json`,
+   `"mail": "v1.0.1"`, merged and deployed. Within five minutes
+   (`RECHECK_INTERVAL`) the poller sees v1.0.1 and starts its re-check,
+   linked to the v1.0.0 check, which ends in block.
+
+Setting the file back to `v1.0.0` and deploying takes v1.0.1 off the
+proxy. A re-check of v1.0.1 starts once per stack, since its ID comes from
+the version, so to show the rug pull again, use a fresh development stack.
 
 ## What the account provides
 
