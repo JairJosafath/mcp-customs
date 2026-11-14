@@ -45,15 +45,21 @@ func (r *run) compare(ctx durable.Context) error {
 }
 
 // approval is the APPROVED item a pass of a package writes, so the poller
-// re-checks the package's next version; false for a remote server, which
-// has no versions, or a ref that names none.
-func approval(report Report) (store.Approved, bool) {
+// re-checks the package's next version, and the earlier approval a re-check
+// advances from (empty for a fresh submission), so a re-check that finished
+// after a newer version was approved doesn't pull the approval back. It is
+// false for a remote server, which has no versions, or a ref that names none.
+func approval(report Report) (a store.Approved, fromCheckID string, ok bool) {
 	name, version, ok := store.SplitRef(report.Submission.Ref)
 	if !ok || report.Submission.Kind == "remote" {
-		return store.Approved{}, false
+		return store.Approved{}, "", false
 	}
-	return store.Approved{
+	a = store.Approved{
 		Kind: report.Submission.Kind, Name: name, Version: version,
 		CheckID: report.CheckID, ToolListHash: report.InstallSpec.ToolListHash,
-	}, true
+	}
+	if report.Recheck != nil {
+		fromCheckID = report.Recheck.CheckID
+	}
+	return a, fromCheckID, true
 }

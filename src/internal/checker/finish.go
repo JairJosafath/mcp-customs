@@ -64,8 +64,8 @@ func (r *run) writeVerdict(sc durable.StepContext, report Report) error {
 		}); err != nil {
 			return err
 		}
-		if a, ok := approval(report); ok {
-			if err := r.deps.Store.PutApproved(sc, a); err != nil {
+		if a, from, ok := approval(report); ok {
+			if err := r.deps.Store.PutApproved(sc, a, from); err != nil {
 				return err
 			}
 		}

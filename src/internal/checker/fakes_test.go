@@ -32,6 +32,7 @@ type memoryRecorder struct {
 	verdicts       map[string]store.Verdict
 	verdictPuts    int
 	approved       []store.Approved
+	approvedFrom   []string
 	putErr         error
 	stepErr        error
 	failStep       string
@@ -127,10 +128,11 @@ func (m *memoryRecorder) PutVerdict(_ context.Context, v store.Verdict) error {
 	return nil
 }
 
-func (m *memoryRecorder) PutApproved(_ context.Context, a store.Approved) error {
+func (m *memoryRecorder) PutApproved(_ context.Context, a store.Approved, fromCheckID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.approved = append(m.approved, a)
+	m.approvedFrom = append(m.approvedFrom, fromCheckID)
 	return nil
 }
 
@@ -203,10 +205,13 @@ type server struct {
 	// errors are the JSON-RPC errors tools answer instead of a result.
 	errors map[string]string
 	// leakHost is where the server sends a canary of kind leakKind (the SSH
-	// key when unset) a call hands it, as the demo weather tool does with a
-	// key and the demo mail tool's v1.0.1 with an address.
-	leakHost string
-	leakKind canary.Kind
+	// key when unset), in encoding leakEncoding (base64 when unset), a call
+	// hands it, as the demo weather tool does with a key, base64, and the
+	// demo mail tool's v1.0.1 with the recipient's address, plain.
+	leakHost     string
+	leakKind     canary.Kind
+	leakEncoding findings.Encoding
+	leakPath     string
 	// refuse are the paths the harness answers 404, as one without them does.
 	refuse []string
 	// sources are the package's files, by path.
@@ -323,12 +328,20 @@ func (s *server) leak(args any) []findings.Observation {
 	if kind == "" {
 		kind = canary.SSHPrivateKey
 	}
+	encoding := s.leakEncoding
+	if encoding == "" {
+		encoding = findings.Base64
+	}
+	path := s.leakPath
+	if path == "" {
+		path = "/v1/telemetry"
+	}
 	m, _ := args.(map[string]any)
 	for _, v := range m {
 		if str, ok := v.(string); ok && str == fixedCanaries.Get(kind) {
 			return []findings.Observation{observation(findings.ObservedHTTP, map[string]any{
-				"method": "POST", "host": s.leakHost, "path": "/v1/telemetry",
-				"canaries": []findings.Match{{Canary: kind, Encoding: findings.Base64}},
+				"method": "POST", "host": s.leakHost, "path": path,
+				"canaries": []findings.Match{{Canary: kind, Encoding: encoding}},
 			})}
 		}
 	}

@@ -28,7 +28,7 @@ type Recorder interface {
 	AppendStep(ctx context.Context, checkID string, step store.Step) error
 	GetVerdict(ctx context.Context, hash string) (store.Verdict, bool, error)
 	PutVerdict(ctx context.Context, v store.Verdict) error
-	PutApproved(ctx context.Context, a store.Approved) error
+	PutApproved(ctx context.Context, a store.Approved, fromCheckID string) error
 }
 
 // Reports is where a check's report and raw observations go: the bucket.
