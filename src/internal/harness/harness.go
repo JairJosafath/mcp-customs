@@ -191,6 +191,9 @@ func (h *Harness) handle(fn func(*http.Request) (int, answer)) http.HandlerFunc 
 		} else {
 			status, body = fn(r)
 		}
+		if m, ok := body["message"].(string); ok {
+			body["message"] = cutHead(m, maxAnswerMessage)
+		}
 		if status >= http.StatusInternalServerError {
 			h.log.ErrorContext(r.Context(), "A call failed.", "call", r.Method+" "+r.URL.Path, "status", status, "error", body["message"])
 		}
@@ -252,6 +255,7 @@ func (h *Harness) install(r *http.Request) (int, answer) {
 	// From here on, files written outside the working directory are observed,
 	// the install's own included.
 	h.run = &run{files: files, command: installed.Command, source: installed.Source, written: map[string]bool{}}
+	installed.Log = boundLog(installed.Log)
 	if err != nil {
 		status, body := problem(http.StatusUnprocessableEntity, "The install failed: "+err.Error())
 		body["log"] = installed.Log
@@ -260,7 +264,7 @@ func (h *Harness) install(r *http.Request) (int, answer) {
 	sum := sha256.Sum256(installed.Resolved)
 	return http.StatusOK, answer{
 		"log":          installed.Log,
-		"dependencies": string(installed.Resolved),
+		"dependencies": h.bounded("the resolved dependency set", string(installed.Resolved), maxDependencies),
 		"sha256":       hex.EncodeToString(sum[:]),
 	}
 }
@@ -350,7 +354,7 @@ func (h *Harness) start(r *http.Request) (int, answer) {
 	}
 	srv.initial = result
 	h.srv = srv
-	return http.StatusOK, answer{"initialize": result}
+	return http.StatusOK, answer{"initialize": h.bounded("the server's initialize result", result, maxInitialize)}
 }
 
 func (h *Harness) list(r *http.Request) (int, answer) {
@@ -368,6 +372,7 @@ func (h *Harness) list(r *http.Request) (int, answer) {
 	}
 	_ = json.Unmarshal(h.srv.initial, &caps)
 	body := answer{}
+	cut := false
 	for _, l := range []struct{ capability, method, field string }{
 		{"tools", "tools/list", "tools"},
 		{"resources", "resources/list", "resources"},
@@ -378,13 +383,14 @@ func (h *Harness) list(r *http.Request) (int, answer) {
 			body[l.field] = []json.RawMessage{}
 			continue
 		}
-		items, err := h.srv.conn.list(ctx, l.method, l.field)
+		items, more, err := h.srv.conn.list(ctx, l.method, l.field, maxLists)
 		if err != nil {
 			return h.serverFailed(l.method, err)
 		}
 		body[l.field] = items
+		cut = cut || more
 	}
-	return http.StatusOK, body
+	return http.StatusOK, h.boundLists(body, cut)
 }
 
 type callRequest struct {
@@ -415,12 +421,12 @@ func (h *Harness) call(r *http.Request) (int, answer) {
 	defer cancel()
 	result, err := h.srv.conn.call(ctx, "tools/call", map[string]any{"name": req.Tool, "arguments": args})
 	if rpcErr, ok := errors.AsType[*RPCError](err); ok {
-		return http.StatusOK, answer{"error": rpcErr}
+		return http.StatusOK, answer{"error": h.bounded("the error of tools/call", rpcErr, maxCallResult)}
 	}
 	if err != nil {
 		return h.serverFailed("tools/call", err)
 	}
-	return http.StatusOK, answer{"result": result}
+	return http.StatusOK, answer{"result": h.bounded("the result of tools/call", result, maxCallResult)}
 }
 
 // serverFailed answers a request the server didn't answer: it stopped, sent

@@ -102,7 +102,7 @@ func field(name string) func(json.RawMessage) string {
 		if json.Unmarshal(raw, &m) != nil {
 			return ""
 		}
-		return jsonStrings(m[name])
+		return findings.JSONStrings(m[name])
 	}
 }
 
@@ -169,7 +169,7 @@ func inspectDownload(ctx durable.Context, r *run, args json.RawMessage) (outcome
 	if !path.IsAbs(a.Path) || len(a.Path) > 512 || path.Clean(a.Path) != a.Path {
 		return outcome{}, fmt.Errorf("%w: a download's path is absolute, clean, and at most 512 characters", ErrBadArguments)
 	}
-	got, err := r.harnessStep(ctx, ActInspectDownload, "/download", map[string]any{"path": a.Path}, jsonStrings)
+	got, err := r.harnessStep(ctx, ActInspectDownload, "/download", map[string]any{"path": a.Path}, findings.JSONStrings)
 	if err != nil {
 		return outcome{}, err
 	}

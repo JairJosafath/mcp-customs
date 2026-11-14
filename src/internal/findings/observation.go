@@ -28,6 +28,7 @@ const (
 	ObservedElicitation = "elicitation"
 	ObservedProcess     = "process"
 	ObservedTruncated   = "truncated"
+	ObservedOversized   = "oversized"
 )
 
 // agentConfigs are files an agent reads its servers or instructions from:
@@ -56,8 +57,9 @@ var shellStartups = []string{
 // FromObservations makes the code findings of what the server was seen
 // doing: a canary in any network observation, a write to an agent's
 // config or a shell's startup file, and every sampling or elicitation
-// request, and every kind the harness stopped recording, which the judge
-// may explain but not clear. Each finding is made
+// request, every kind the harness stopped recording, and every answer of
+// the server the harness cut, with what the harness's scans found in the
+// whole of it, which the judge may explain but not clear. Each finding is made
 // once, however often it was seen.
 func FromObservations(observations []Observation, canaries canary.Set) []Finding {
 	var found []Finding
@@ -87,6 +89,10 @@ func FromObservations(observations []Observation, canaries canary.Set) []Finding
 			add(Finding{Source: Code, Rule: RuleElicitation, Evidence: requestMethod(o.Detail, "elicitation/create")})
 		case ObservedTruncated:
 			add(Finding{Source: Code, Rule: RuleTruncated, Evidence: truncatedWhy(o.Detail)})
+		case ObservedOversized:
+			for _, f := range oversizedFindings(o.Detail) {
+				add(f)
+			}
 		}
 	}
 	return found
@@ -214,4 +220,25 @@ func truncatedWhy(raw json.RawMessage) string {
 		return "the harness stopped recording observations"
 	}
 	return "the harness stopped recording " + detail.Kind + " observations: " + detail.Why
+}
+
+// oversizedFindings are the findings of an answer the harness cut: one
+// oversized finding, and those its scans found in the whole answer, each
+// a code finding whatever the detail says of its source.
+func oversizedFindings(raw json.RawMessage) []Finding {
+	var d struct {
+		What     string    `json:"what"`
+		Bytes    int       `json:"bytes"`
+		SHA256   string    `json:"sha256"`
+		Findings []Finding `json:"findings"`
+	}
+	if json.Unmarshal(raw, &d) != nil || d.What == "" {
+		return []Finding{{Source: Code, Rule: RuleOversized, Evidence: "the harness cut an answer of the server"}}
+	}
+	found := []Finding{{Source: Code, Rule: RuleOversized, Evidence: fmt.Sprintf("the harness cut %s: %d bytes, SHA-256 %s", d.What, d.Bytes, d.SHA256)}}
+	for _, f := range d.Findings {
+		f.Source = Code
+		found = append(found, f)
+	}
+	return found
 }

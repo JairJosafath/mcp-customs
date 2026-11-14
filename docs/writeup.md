@@ -146,16 +146,18 @@ data; development throws it away.
 What isn't built yet:
 
 - Remote servers. The form takes an `https://` URL, but the sandbox
-  doesn't connect to one yet, so such a check ends at review without
-  running. Checking a remote server from several identities comes after
-  that.
+  refuses to install one yet, so such a check fails without running
+  and without a verdict. Checking a remote server from several
+  identities comes after that.
 - A runtime gateway that pins the approved tool-list hash on every
   session.
 - Argument fuzzing for command injection, SSRF and path traversal in tool
   handlers.
 
 Dynamic analysis gives a lower bound: a trigger that waits long enough
-can be missed, though the model can move the sandbox's clock forward.
+can be missed, though the model can move the sandbox's clock forward
+for a server whose runtime sees the move (not a Go or static binary,
+which the demo servers are).
 
 Only a real account verifies the MicroVM's firewall and egress, the
 durable Checker's replay and week-long callback, the judge on real
