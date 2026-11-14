@@ -4,43 +4,45 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
-	"strings"
 
 	"github.com/aws/aws-durable-execution-sdk-go/durable"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/findings"
+	"github.com/JairJosafath/mcp-customs/src/internal/ownapi"
 )
 
 // LookupHost resolves a host name to its addresses, as
 // net.Resolver.LookupHost does.
 type LookupHost func(ctx context.Context, host string) ([]string, error)
 
-// ownAPIRefusal says why hosts may not be allowed: one of them is the
-// stack's own API host, or resolves to one of its addresses. It is empty
-// when none does, or when there is no API host to keep out. A name that
-// doesn't resolve reaches nothing, so it is not refused; if the API host
-// itself doesn't resolve, nothing can be compared, so every host is.
+// ownAPIRefusal says why hosts may not be allowed: one of them names the
+// stack's own API, in any of its forms, or resolves into API Gateway's
+// published ranges for its region. The ranges are fixed, so a host gets the
+// same answer from run to run however the API's own addresses rotate. It is
+// empty when no host is refused, or when there is no API host to keep out.
+// A name that doesn't resolve reaches nothing, so it is not refused; an
+// API host that isn't API Gateway's refuses every host, since nothing could
+// be told apart from it.
 func ownAPIRefusal(ctx context.Context, apiHost string, lookup LookupHost, hosts []string) string {
-	api := normalHost(apiHost)
-	if api == "" || len(hosts) == 0 {
+	if ownapi.NormalHost(apiHost) == "" || len(hosts) == 0 {
 		return ""
 	}
+	api, err := ownapi.Parse(apiHost)
+	if err != nil {
+		return "no host could be told apart from the stack's own API: " + err.Error()
+	}
 	for _, h := range hosts {
-		if normalHost(h) == api {
-			return fmt.Sprintf("the judge asked to allow %q, the stack's own API host", h)
+		if api.IsHost(h) {
+			return fmt.Sprintf("the judge asked to allow %q, a name of the stack's own API", h)
 		}
 	}
 	if lookup == nil {
 		return ""
 	}
-	apiAddrs := addresses(ctx, lookup, api)
-	if len(apiAddrs) == 0 {
-		return "the stack's own API host did not resolve, so no host could be told apart from it"
-	}
 	for _, h := range hosts {
-		for a := range addresses(ctx, lookup, normalHost(h)) {
-			if apiAddrs[a] {
-				return fmt.Sprintf("the judge asked to allow %q, which resolves to %s, an address of the stack's own API", h, a)
+		for _, a := range addresses(ctx, lookup, ownapi.NormalHost(h)) {
+			if api.Serves(a) {
+				return fmt.Sprintf("the judge asked to allow %q, which resolves to %s, in API Gateway's published ranges for %s, where the stack's own API is served", h, a, api.Region)
 			}
 		}
 	}
@@ -65,23 +67,17 @@ func (r *run) refuseOwnAPI(refusal string) outcome {
 	}
 }
 
-// normalHost is a host name as DNS compares it: lowercase, without a
-// trailing dot.
-func normalHost(h string) string {
-	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
-}
-
-// addresses are the addresses host resolves to, an IPv4 address mapped
+// addresses are the addresses host resolves to, in order, an IPv4 address mapped
 // into IPv6 read as IPv4; none when it doesn't resolve.
-func addresses(ctx context.Context, lookup LookupHost, host string) map[netip.Addr]bool {
+func addresses(ctx context.Context, lookup LookupHost, host string) []netip.Addr {
 	got, err := lookup(ctx, host)
 	if err != nil {
 		return nil
 	}
-	out := map[netip.Addr]bool{}
+	out := make([]netip.Addr, 0, len(got))
 	for _, s := range got {
 		if a, err := netip.ParseAddr(s); err == nil {
-			out[a.Unmap().WithZone("")] = true
+			out = append(out, a.Unmap().WithZone(""))
 		}
 	}
 	return out
