@@ -42,7 +42,7 @@ invocation and no execution history keeps it. JSON in and out; every response ca
 | `POST /install`     | `{"kind":"go"\|"npm"\|"pypi"\|"remote","ref":"name@version or URL","allowHosts":[...]}` | install log, resolved dependency set and its SHA-256       |
 | `POST /start`       | `{"command":[...]}` (empty: the kind's default)                                         | the server's `initialize` result                           |
 | `POST /list`        | `{}`                                                                                    | tools (whole schemas), resources, prompts, as raw JSON     |
-| `POST /call`        | `{"tool":"name","arguments":{...}}`                                                     | the raw result                                             |
+| `POST /call`        | `{"tool":"name","arguments":{...}}`                                                     | the raw result, or a cut one past its bound (below)        |
 | `POST /allow`       | `{"hosts":[...]}`                                                                       | the egress allowlist now in force                          |
 | `POST /seal`        | `{}`                                                                                    | `{"hosts":[]}`: egress ended for good                      |
 | `POST /clock`       | `{"offset":"720h"}`, a move forward                                                     | the clock now in force: `{"offset","now","applies","why"}` |
@@ -83,9 +83,13 @@ change nothing of egress.
   install or when the binary can't be read; `why` says which, naming
   only the command's own base name. The command is the server's to point
   anywhere, so the harness reads only a regular file the account could
-  read itself (its own, or world-readable), looked at before it is opened,
-  so no device or FIFO is opened and nothing of a file the account can't
-  read reaches the judge. The Checker
+  read itself, by the owner's, the account's own group's or others' bits
+  as the kernel picks them (the account keeps no supplementary groups),
+  looked at before it is opened, so no device or FIFO is opened and
+  nothing of a file the account can't read reaches the judge. Nothing
+  under `/proc`, or on any procfs however it is reached, is read: no
+  server command lives there, and the harness's own files there would
+  open to its thread. The Checker
   tells the judge, which then reads nothing into what the server does
   after a move it can't see. It is advice, not a control: a server can
   clear `LD_PRELOAD` or set its own clock, and can tell it is tested (the
@@ -194,7 +198,41 @@ with a padded path, is kept compact rather than dropped:
 and the canaries found in the whole of it. A run makes at most 32
 `truncated` observations, each naming the kind and why in the harness's
 words, at most 64 and 256 bytes, never the server's text. So every
-answer's observations together stay under 10.1 MiB, every byte escaped. When the run ends, every process of the unprivileged
+answer's observations together stay under 10.1 MiB, every byte escaped.
+
+What an answer holds of the server is bounded too, so that with its
+observations it stays under the 16 MiB the Checker reads and no answer
+fails a check without a code finding. Each bound is counted as the
+harness encodes it, every byte escaped:
+
+- a tool's `result`, or its `error`, 64 KiB: under the 200 KB a step of
+  the Checker keeps, so a probe of a cut result still reaches a verdict;
+- the `initialize` result, 64 KiB, which a step keeps too;
+- `/list`'s tools, resources and prompts together, 4 MiB, far above a
+  real server's: pages stop being read once they hold more, and the
+  items that fit are answered, in order, with `cut: true` (still over
+  what a step keeps, so a cut list never passes as a whole one);
+- `/install`'s `dependencies`, 1 MiB; its `sha256` is always of the whole
+  set;
+- an answer's `message`, which may quote the server, 4 KiB.
+
+A value over its bound is answered as `{"cut":true,"bytes","sha256",
+"excerpt"}`: its size and SHA-256 as encoded, and the first 8 KiB of its
+strings as the Checker reads them. Every scan runs on the whole value
+before it is cut, and the cut is an `oversized` observation:
+`{"what","bytes","sha256","findings"}`, the harness's own name for what
+was cut and what `ScanText` found in all of it (at most 24 findings,
+each evidence cut to 128 bytes). Each is an `oversized` code finding, at
+least review, with those findings beside it, and it is kept past every
+cap, as an observation that would block is.
+
+`/install`'s `log` is kept as it is written: its first 16 KiB, its last
+64 KiB, where an install says what failed, and, from the lines cut
+between them, up to 64 KiB of those naming a failure (`error`, `fail`,
+`fatal`, `denied`, `panic`, `ERR!`), each line at most 4 KiB, with one
+line saying how much was cut. A cut log is no finding: a large build
+prints a lot. `/source` (64 KB), `/download` (a 4 KiB excerpt), `/clock`
+and the server's `stderr` (its last 64 KiB) are bounded already. When the run ends, every process of the unprivileged
 account is killed, those that left the server's process group or session
 included.
 

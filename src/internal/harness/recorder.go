@@ -196,8 +196,12 @@ func (r *recorder) overLocked(kind ObservationKind, size int) string {
 }
 
 // tellsLocked says whether an observation would raise a block finding: a
-// canary leaving, or a write to an agent's config or a shell's startup.
+// canary leaving, or a write to an agent's config or a shell's startup. An
+// oversized one tells too: the scans of what was cut are nowhere else.
 func (r *recorder) tellsLocked(kind ObservationKind, raw json.RawMessage) bool {
+	if kind == ObservedOversized {
+		return true
+	}
 	found := findings.FromObservations([]findings.Observation{{Kind: string(kind), Detail: raw}}, r.canaries)
 	return slices.ContainsFunc(found, func(f findings.Finding) bool { return slices.Contains(blockRules, f.Rule) })
 }

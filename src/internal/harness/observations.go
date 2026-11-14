@@ -21,6 +21,9 @@ const (
 	// ObservedTruncated says the harness stopped recording a kind, once per
 	// kind: what the server did of it after may be unseen.
 	ObservedTruncated ObservationKind = "truncated"
+	// ObservedOversized says the harness cut an answer of the server to fit
+	// what the Checker reads, with what its scans found in the whole.
+	ObservedOversized ObservationKind = "oversized"
 	// ObservedRequest is never recorded itself: it names, in a truncated
 	// observation, the server's requests the harness stopped answering.
 	ObservedRequest ObservationKind = "request"

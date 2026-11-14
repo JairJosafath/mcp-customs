@@ -283,10 +283,13 @@ func (c *conn) initialize(ctx context.Context) (json.RawMessage, error) {
 // maxPages bounds a paginated list, against a server that never ends one.
 const maxPages = 100
 
-// list collects every page of a list method's items, as the server sent them.
-func (c *conn) list(ctx context.Context, method, field string) ([]json.RawMessage, error) {
+// list collects every page of a list method's items, as the server sent
+// them, until they hold more than budget bytes: then it stops reading
+// pages and says the list was cut.
+func (c *conn) list(ctx context.Context, method, field string, budget int) ([]json.RawMessage, bool, error) {
 	items := []json.RawMessage{}
 	cursor := ""
+	size := 0
 	for range maxPages {
 		params := map[string]any{}
 		if cursor != "" {
@@ -294,17 +297,18 @@ func (c *conn) list(ctx context.Context, method, field string) ([]json.RawMessag
 		}
 		result, err := c.call(ctx, method, params)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		var page map[string]json.RawMessage
 		if err := json.Unmarshal(result, &page); err != nil {
-			return nil, fmt.Errorf("read the answer to %s: %w", method, err)
+			return nil, false, fmt.Errorf("read the answer to %s: %w", method, err)
 		}
 		var some []json.RawMessage
 		if raw, ok := page[field]; ok {
 			if err := json.Unmarshal(raw, &some); err != nil {
-				return nil, fmt.Errorf("read the %s of %s: %w", field, method, err)
+				return nil, false, fmt.Errorf("read the %s of %s: %w", field, method, err)
 			}
+			size += len(raw)
 		}
 		items = append(items, some...)
 		cursor = ""
@@ -312,8 +316,11 @@ func (c *conn) list(ctx context.Context, method, field string) ([]json.RawMessag
 			_ = json.Unmarshal(raw, &cursor)
 		}
 		if cursor == "" {
-			return items, nil
+			return items, false, nil
+		}
+		if size > budget {
+			return items, true, nil
 		}
 	}
-	return items, fmt.Errorf("%s did not end after %d pages", method, maxPages)
+	return items, false, fmt.Errorf("%s did not end after %d pages", method, maxPages)
 }
