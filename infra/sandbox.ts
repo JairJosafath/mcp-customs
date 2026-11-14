@@ -116,8 +116,10 @@ export class Sandbox extends Construct {
       // the connectors each MicroVM gets.
       egressNetworkConnectors: [this.egressConnectorArn],
       environmentVariables: [],
-      // The standard Linux capabilities only.
-      additionalOsCapabilities: [],
+      // Lambda filters no hosts, so the harness enforces deny-by-default
+      // itself with iptables rules on the server's user (src/internal/egress),
+      // which need CAP_NET_ADMIN; Lambda grants that only with ALL.
+      additionalOsCapabilities: ['ALL'],
       hooks: {
         port: HOOKS_PORT,
         microvmImageHooks: { ready: 'ENABLED', readyTimeoutInSeconds: 120 },

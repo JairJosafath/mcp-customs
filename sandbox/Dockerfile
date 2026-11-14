@@ -19,9 +19,10 @@ ARG LIBFAKETIME_VERSION=v0.9.13
 ARG LIBFAKETIME_COMMIT=86b37fde2fed7336ea2d0c17928e3015a55d9b4a
 
 # util-linux gives the harness `setpriv`, which starts the server under test
-# with no_new_privs set.
+# with no_new_privs set. iptables-nft gives it the firewall that holds the
+# server's traffic to the egress proxy.
 RUN dnf install -y --setopt=install_weak_deps=False \
-      ca-certificates findutils git gzip shadow-utils tar util-linux xz \
+      ca-certificates findutils git gzip iptables-nft shadow-utils tar util-linux xz \
     && dnf clean all
 
 # libfaketime, for the fake clock (POST /clock): the server under test is

@@ -32,12 +32,19 @@ const (
 	RuleSensitivePath     = "injection-sensitive-path"
 	RuleSecretResend      = "injection-secret-resend"
 	RuleCanaryLeft        = "canary-left"
-	RuleAgentConfig       = "agent-config-write"
-	RuleShellStartup      = "shell-startup-write"
-	RuleSampling          = "unexplained-sampling"
-	RuleElicitation       = "unexplained-elicitation"
-	RuleJudgeError        = "judge-error"
-	RuleJudgeOutOfTurn    = "judge-out-of-turns"
+	// Traffic the egress proxy couldn't read: TLS a client wouldn't let it
+	// intercept, to a host not allowed, and a body it couldn't search whole.
+	RuleTLSNotIntercepted = "tls-not-intercepted"
+	RuleBodyUnscanned     = "body-not-scanned"
+	// Direct traffic refused but not all recorded: more than a run records,
+	// or packets the kernel dropped before the harness could read them.
+	RuleDirectUnrecorded = "direct-traffic-unrecorded"
+	RuleAgentConfig      = "agent-config-write"
+	RuleShellStartup     = "shell-startup-write"
+	RuleSampling         = "unexplained-sampling"
+	RuleElicitation      = "unexplained-elicitation"
+	RuleJudgeError       = "judge-error"
+	RuleJudgeOutOfTurn   = "judge-out-of-turns"
 	// A listed tool the Checker could not probe: its JSON or its name.
 	RuleUnprobedTool = "unprobed-tool"
 	// An answer of the server too large for a check to keep: a padded tool

@@ -72,6 +72,9 @@ func FromObservations(observations []Observation, canaries canary.Set) []Finding
 			for _, f := range networkFindings(o, canaries) {
 				add(f)
 			}
+			if f, ok := unreadFinding(o); ok {
+				add(f)
+			}
 		case ObservedFile:
 			if f, ok := fileFinding(o.Detail); ok {
 				add(f)
@@ -104,6 +107,37 @@ func networkFindings(o Observation, canaries canary.Set) []Finding {
 		found = append(found, f)
 	}
 	return found
+}
+
+// unreadFinding is the finding of traffic the egress proxy couldn't read:
+// a tunnel to a host not allowed whose TLS the client wouldn't let it
+// intercept, as a client pinning its own roots does, a request body it
+// couldn't search whole, or refused direct traffic it couldn't record all
+// of. What it couldn't read may hold a canary.
+func unreadFinding(o Observation) (Finding, bool) {
+	var d struct {
+		Host        string `json:"host"`
+		Via         string `json:"via"`
+		Intercepted bool   `json:"intercepted"`
+		Allowed     bool   `json:"allowed"`
+		Unscanned   string `json:"unscanned"`
+		More        bool   `json:"more"`
+		Dropped     int    `json:"dropped"`
+	}
+	if json.Unmarshal(o.Detail, &d) != nil {
+		return Finding{}, false
+	}
+	switch {
+	case o.Kind == ObservedConnect && d.Via == "proxy" && !d.Intercepted && !d.Allowed:
+		return Finding{Source: Code, Rule: RuleTLSNotIntercepted, Evidence: "TLS to " + d.Host + " the proxy could not read"}, true
+	case o.Kind == ObservedConnect && d.Via == "direct" && d.Dropped > 0:
+		return Finding{Source: Code, Rule: RuleDirectUnrecorded, Evidence: "the kernel dropped refused packets before the harness could read them; any of them may hold a canary"}, true
+	case o.Kind == ObservedConnect && d.Via == "direct" && d.More:
+		return Finding{Source: Code, Rule: RuleDirectUnrecorded, Evidence: "more direct traffic was refused than a run records; only what held a canary was recorded after"}, true
+	case o.Kind == ObservedHTTP && d.Unscanned != "":
+		return Finding{Source: Code, Rule: RuleBodyUnscanned, Evidence: d.Host + ": " + d.Unscanned}, true
+	}
+	return Finding{}, false
 }
 
 // fileFinding is the finding of a file write, if the file is an agent's

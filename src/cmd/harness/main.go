@@ -11,6 +11,11 @@
 // and HOOKS_PORT (9000 by default). It must run as root, and refuses to
 // start otherwise: it runs the server as the unprivileged user, never as
 // itself.
+//
+// Before it answers anything it starts the egress proxy, writes the proxy
+// CA's certificate (never its key) to /etc/mcp-customs, and puts up the
+// firewall that holds the unprivileged user's traffic to the proxy; it
+// refuses to start if any of that fails.
 package main
 
 import (
@@ -25,9 +30,11 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/JairJosafath/mcp-customs/src/internal/egress"
 	"github.com/JairJosafath/mcp-customs/src/internal/harness"
 )
 
@@ -48,7 +55,14 @@ func serve(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	h, err := harness.New(configFor(account), log)
+	eg, stopEgress, err := startEgress(context.Background(), account)
+	if err != nil {
+		return err
+	}
+	defer stopEgress()
+	cfg := configFor(account)
+	cfg.Egress = eg
+	h, err := harness.New(cfg, log)
 	if err != nil {
 		return err
 	}
@@ -138,6 +152,82 @@ func accountFor(u *user.User, euid int) (harness.Account, error) {
 		UID:    uint32(uid),
 		GID:    uint32(gid),
 		Switch: true,
+	}, nil
+}
+
+// trustDir is where the server finds the proxy CA's certificate.
+const trustDir = "/etc/mcp-customs"
+
+// trustOutside refuses a trust directory inside the account's home, where
+// the server under test could replace what the harness writes.
+func trustOutside(dir, home string) error {
+	rel, err := filepath.Rel(filepath.Clean(home), filepath.Clean(dir))
+	if err != nil || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+		return fmt.Errorf("the proxy's trust directory %s is inside %s, the server's home", dir, home)
+	}
+	return nil
+}
+
+// firewallChain names the netfilter chains of the firewall.
+const firewallChain = "MCP_CUSTOMS"
+
+// nflogGroup is the NFLOG group the firewall logs refused packets to.
+const nflogGroup = 47
+
+// startEgress starts the egress proxy and puts up the firewall for uid. The
+// stop function takes both down.
+func startEgress(ctx context.Context, account harness.Account) (*egress.Egress, func(), error) {
+	if err := trustOutside(trustDir, account.Home); err != nil {
+		return nil, nil, err
+	}
+	ca, err := egress.NewCA(time.Now)
+	if err != nil {
+		return nil, nil, err
+	}
+	roots, err := egress.SystemRoots()
+	if err != nil {
+		return nil, nil, err
+	}
+	trust, err := egress.WriteTrust(trustDir, ca, roots)
+	if err != nil {
+		return nil, nil, err
+	}
+	l, err := egress.Listen(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	eg := egress.New(egress.Config{
+		CA:           ca,
+		Upstream:     &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second},
+		Resolver:     net.DefaultResolver,
+		InstallAllow: egress.RegistryHosts,
+		ServerEnv:    egress.Env(l.Proxy.Addr().String(), trust),
+	})
+	nflog, err := egress.OpenNFLog(nflogGroup)
+	if err != nil {
+		return nil, nil, err
+	}
+	logged := make(chan struct{})
+	go func() {
+		defer close(logged)
+		_ = eg.ServeNFLog(nflog)
+	}()
+	serving := eg.Serve(l, egress.RedirectedFrom)
+	stop := func() {
+		serving()
+		_ = nflog.Close()
+		<-logged
+	}
+	proxy, dns, catch := l.Ports()
+	fw := egress.Firewall{Chain: firewallChain, UID: account.UID, ProxyPort: proxy, DNSPort: dns, CatchPort: catch, NFLogGroup: nflogGroup}
+	fw.Down(ctx, egress.Exec) // what an earlier harness left
+	if err := fw.Up(ctx, egress.Exec); err != nil {
+		stop()
+		return nil, nil, err
+	}
+	return eg, func() {
+		fw.Down(context.Background(), egress.Exec)
+		stop()
 	}, nil
 }
 
