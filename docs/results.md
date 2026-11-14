@@ -4,7 +4,7 @@ The write-up of MCP Customs for the AWS Builder Center weekend challenge
 "No Pipeline, No Problem". A skeleton until the stack is deployed: every
 place that needs deploy output says `TODO(deploy)`. Numbers come from the
 repository's files, as of commit `fc2b5cd` (2026-11-14, 17:19 UTC), and
-`hack/runs-stats` prints them again at any commit.
+`hack/runs-stats` prints them again at any commit, in a full clone (it refuses a shallow one).
 
 ## The problem
 
@@ -133,7 +133,10 @@ tests, and seeing each fail with its fix removed
 #34's covers its re-check guard, not its approval-condition change), and
 for #28, #41 and #49 no comment says what was checked. #21, #22
 and #24 merged on the round limit with the last review still asking for
-changes; their findings became follow-up issues (#23, #25, #36).
+changes. The orchestrator's
+[note on #24](https://github.com/JairJosafath/mcp-customs/pull/24#issuecomment-6877384416)
+gives the call for all three, with their findings moved to #23, #25 and
+#36; #21 and #22 carry no note of their own.
 
 TODO(deploy): final rows, the cost of the sessions that reported none, and
 the deploy's own time and AWS cost.
