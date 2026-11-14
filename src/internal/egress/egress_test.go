@@ -649,7 +649,7 @@ func TestAnInstallMayOnlyGetUnderAnInstallGetPrefix(t *testing.T) {
 	api := "abc.execute-api.us-east-1.amazonaws.com"
 	e := New(Config{InstallAllow: RegistryHosts, InstallGet: []string{"https://" + api + "/goproxy/"}})
 	mod := "/goproxy/github.com/!jair!josafath/mcp-customs/demo/mail/@v/list"
-	if e.isAllowed(api) || e.requestAllowed(http.MethodGet, api, &url.URL{Path: mod}) {
+	if e.isAllowed(api) || e.requestAllowed(http.MethodGet, "https", api, 0, &url.URL{Path: mod}) {
 		t.Error("the demo proxy is reachable before the install")
 	}
 	e.Installing(true)
@@ -672,20 +672,36 @@ func TestAnInstallMayOnlyGetUnderAnInstallGetPrefix(t *testing.T) {
 		"a GET of a path Go keeps raw": {http.MethodGet, url.URL{Path: mod, RawPath: mod}, true},
 		"the prefix's own name, alone": {http.MethodGet, url.URL{Path: "/goproxyx/a"}, false},
 	} {
-		if got := e.requestAllowed(tc.method, api, &tc.u); got != tc.want {
+		if got := e.requestAllowed(tc.method, "https", api, 0, &tc.u); got != tc.want {
 			t.Errorf("%s: allowed %v, want %v", name, got, tc.want)
 		}
 	}
-	if !e.requestAllowed(http.MethodPost, "proxy.golang.org", &url.URL{Path: "/x"}) {
+	for name, tc := range map[string]struct {
+		scheme string
+		port   int
+		want   bool
+	}{
+		"https on 443":      {"https", 443, true},
+		"plain http":        {"http", 0, false},
+		"plain http on 443": {"http", 443, false},
+		"https on 8443":     {"https", 8443, false},
+		"https on 80":       {"https", 80, false},
+		"another scheme":    {"ftp", 443, false},
+	} {
+		if got := e.requestAllowed(http.MethodGet, tc.scheme, api, tc.port, &url.URL{Path: mod}); got != tc.want {
+			t.Errorf("%s: allowed %v, want %v", name, got, tc.want)
+		}
+	}
+	if !e.requestAllowed(http.MethodPost, "http", "proxy.golang.org", 0, &url.URL{Path: "/x"}) {
 		t.Error("a registry is allowed whole during the install")
 	}
 	e.Installing(false)
-	if e.isAllowed(api) || e.requestAllowed(http.MethodGet, api, &url.URL{Path: mod}) {
+	if e.isAllowed(api) || e.requestAllowed(http.MethodGet, "https", api, 0, &url.URL{Path: mod}) {
 		t.Error("the demo proxy is reachable after the install")
 	}
 	e.Installing(true)
 	e.Seal()
-	if e.isAllowed(api) || e.requestAllowed(http.MethodGet, api, &url.URL{Path: mod}) {
+	if e.isAllowed(api) || e.requestAllowed(http.MethodGet, "https", api, 0, &url.URL{Path: mod}) {
 		t.Error("the demo proxy is reachable after the seal")
 	}
 }
@@ -703,6 +719,13 @@ func TestUpstreamURLsAreBuiltFromTheCheckedHostOnly(t *testing.T) {
 		"userinfo":         {"pypi.org@evil.example", 443, "", false},
 		"a path in a host": {"pypi.org/evil", 0, "", false},
 		"brackets":         {"pypi.org]", 0, "", false},
+		// Names the transport would map onto another through IDNA, or
+		// punycode that spells them, are refused by ValidHost alone.
+		"a non-ASCII host":       {"bücher.example", 0, "", false},
+		"a fullwidth letter":     {"ｐypi.org", 0, "", false},
+		"an ideographic stop":    {"pypi。org", 0, "", false},
+		"a punycode host":        {"xn--bcher-kva.example", 0, "", false},
+		"a punycode label later": {"pypi.xn--p1ai", 443, "", false},
 	} {
 		got, err := upstreamURL("https", tc.host, tc.port, u)
 		if (err == nil) != tc.ok || got != tc.want {
@@ -776,12 +799,20 @@ func TestTheProxyLetsAnInstallOnlyGetTheDemoProxyOfTheStacksAPI(t *testing.T) {
 	api := "abc.execute-api.us-east-1.amazonaws.com"
 	mod := "/goproxy/github.com/!jair!josafath/mcp-customs/demo/mail/@v/list"
 	requests := []struct {
-		method, path  string
-		duringInstall bool
+		method, path     string
+		scheme, hostport string
+		duringInstall    bool
 	}{
-		{http.MethodGet, mod, true},
-		{http.MethodPost, "/api/checks", false},
-		{http.MethodGet, "/api/checks/c1", false},
+		{http.MethodGet, mod, "https", api, true},
+		{http.MethodGet, mod, "https", api + ":443", true},
+		{http.MethodPost, "/api/checks", "https", api, false},
+		{http.MethodGet, "/api/checks/c1", "https", api, false},
+		// The prefix is https on port 443: plain http, or any other port,
+		// is refused even under it.
+		{http.MethodGet, mod, "http", api, false},
+		{http.MethodGet, mod, "http", api + ":443", false},
+		{http.MethodGet, mod, "https", api + ":8443", false},
+		{http.MethodGet, mod, "https", api + ":80", false},
 	}
 	up := &fakeUpstream{}
 	rec := newRecorded()
@@ -792,7 +823,7 @@ func TestTheProxyLetsAnInstallOnlyGetTheDemoProxyOfTheStacksAPI(t *testing.T) {
 	send := func() []bool {
 		before, sent := len(rec.of(KindHTTP)), len(up.got)
 		for _, r := range requests {
-			e.forward(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), r.method, r.path, strings.NewReader("{}")), "https", api)
+			e.forward(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), r.method, r.path, strings.NewReader("{}")), r.scheme, r.hostport)
 		}
 		obs := rec.of(KindHTTP)[before:]
 		if len(obs) != len(requests) {
@@ -811,13 +842,13 @@ func TestTheProxyLetsAnInstallOnlyGetTheDemoProxyOfTheStacksAPI(t *testing.T) {
 	e.Installing(true)
 	for i, allowed := range send() {
 		if allowed != requests[i].duringInstall {
-			t.Errorf("during the install, %s %s: allowed %v, want %v", requests[i].method, requests[i].path, allowed, requests[i].duringInstall)
+			t.Errorf("during the install, %s %s://%s%s: allowed %v, want %v", requests[i].method, requests[i].scheme, requests[i].hostport, requests[i].path, allowed, requests[i].duringInstall)
 		}
 	}
 	e.Seal()
 	for i, allowed := range send() {
 		if allowed {
-			t.Errorf("after the seal, %s %s went on to the host", requests[i].method, requests[i].path)
+			t.Errorf("after the seal, %s %s://%s%s went on to the host", requests[i].method, requests[i].scheme, requests[i].hostport, requests[i].path)
 		}
 	}
 }

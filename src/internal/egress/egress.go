@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -125,7 +126,8 @@ type Config struct {
 	InstallAllow []string
 	// InstallGet are URL prefixes, such as the stack's demo Go module
 	// proxy (https://<host>/goproxy/), an install may only GET (or HEAD)
-	// while it runs: any other method or path on their hosts is refused.
+	// while it runs: any other method, path, scheme or port on their hosts
+	// is refused. Each must be https; its port is 443 unless it names one.
 	InstallGet []string
 	// ServerEnv is what the server's environment needs to go through the
 	// proxy and trust the CA (see Env).
@@ -142,7 +144,7 @@ type Egress struct {
 	mu         sync.Mutex
 	allowed    map[string]bool
 	install    map[string]bool
-	installGet map[string][]string
+	installGet map[string][]installPrefix
 	installing bool
 	canaries   canary.Set
 	observe    Observer
@@ -168,7 +170,7 @@ type Egress struct {
 // New makes the proxy. Nothing is observed until Observe names an observer.
 func New(cfg Config) *Egress {
 	e := &Egress{
-		cfg: cfg, allowed: map[string]bool{}, install: map[string]bool{}, installGet: map[string][]string{},
+		cfg: cfg, allowed: map[string]bool{}, install: map[string]bool{}, installGet: map[string][]installPrefix{},
 		fakes: map[string]string{}, observe: func(string, any) {},
 	}
 	e.sealed, e.seal = context.WithCancel(context.Background())
@@ -183,10 +185,37 @@ func New(cfg Config) *Egress {
 		if err != nil || u.Scheme != "https" || normalHost(u.Hostname()) == "" {
 			continue
 		}
+		port := defaultPort(u.Scheme, 0)
+		if p := u.Port(); p != "" {
+			if port, err = strconv.Atoi(p); err != nil || port < 1 || port > 65535 {
+				continue
+			}
+		}
 		h := normalHost(u.Hostname())
-		e.installGet[h] = append(e.installGet[h], u.Path)
+		e.installGet[h] = append(e.installGet[h], installPrefix{port: port, path: u.Path})
 	}
 	return e
+}
+
+// installPrefix is one InstallGet prefix on its host: always https, on
+// port, under path.
+type installPrefix struct {
+	port int
+	path string
+}
+
+// defaultPort is port, or scheme's own port when port is 0: where a
+// request with no port in its host goes.
+func defaultPort(scheme string, port int) int {
+	switch {
+	case port != 0:
+		return port
+	case scheme == "https":
+		return 443
+	case scheme == "http":
+		return 80
+	}
+	return 0
 }
 
 // Installing says whether an install runs: while it does, InstallAllow's
@@ -260,18 +289,19 @@ func (e *Egress) allowedLocked(host string) bool {
 }
 
 // requestAllowed is requestAllowedLocked, taking e.mu.
-func (e *Egress) requestAllowed(method, host string, u *url.URL) bool {
+func (e *Egress) requestAllowed(method, scheme, host string, port int, u *url.URL) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.requestAllowedLocked(method, host, u)
+	return e.requestAllowedLocked(method, scheme, host, port, u)
 }
 
 // requestAllowedLocked says, with e.mu held, whether a request may go on
-// to host: none once sealed; any request to an allowed host or, while an
-// install runs, a registry; and while an install runs, a GET or HEAD under
-// one of host's InstallGet prefixes, its path clean, as decoded and as
-// sent, so it can't climb out of the prefix.
-func (e *Egress) requestAllowedLocked(method, host string, u *url.URL) bool {
+// to scheme://host:port (port 0 is scheme's own): none once sealed; any
+// request to an allowed host or, while an install runs, a registry; and
+// while an install runs, a GET or HEAD under one of host's InstallGet
+// prefixes, on its scheme and port, its path clean, as decoded and as sent,
+// so it can't climb out of the prefix.
+func (e *Egress) requestAllowedLocked(method, scheme, host string, port int, u *url.URL) bool {
 	if e.isSealed() {
 		return false
 	}
@@ -279,22 +309,28 @@ func (e *Egress) requestAllowedLocked(method, host string, u *url.URL) bool {
 	if e.allowed[h] || (e.installing && e.install[h]) {
 		return true
 	}
-	return e.installGetLocked(method, host, u)
+	return e.installGetLocked(method, scheme, host, port, u)
 }
 
 // installGetLocked says, with e.mu held, whether a request is let through
 // only as an install's GET or HEAD under one of host's InstallGet
 // prefixes: the one kind of request Guard lets reach the stack's own API.
-func (e *Egress) installGetLocked(method, host string, u *url.URL) bool {
+// The prefix's scheme (https) and port must match too: a plain http GET,
+// or one to another port, is refused.
+func (e *Egress) installGetLocked(method, scheme, host string, port int, u *url.URL) bool {
 	h := normalHost(host)
 	if e.isSealed() || !e.installing || (method != http.MethodGet && method != http.MethodHead) || path.Clean(u.Path) != u.Path {
 		return false
 	}
+	if scheme != "https" {
+		return false
+	}
+	port = defaultPort(scheme, port)
 	// The path as sent, too: a module path's capitals are escaped as "!",
 	// which Go keeps as RawPath; an escaped "/" or "." must not reach past
 	// the prefix either.
 	for _, prefix := range e.installGet[h] {
-		if strings.HasPrefix(u.Path, prefix) && strings.HasPrefix(u.EscapedPath(), prefix) {
+		if port == prefix.port && strings.HasPrefix(u.Path, prefix.path) && strings.HasPrefix(u.EscapedPath(), prefix.path) {
 			return true
 		}
 	}
