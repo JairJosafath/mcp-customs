@@ -70,3 +70,5 @@ the deadline. Cost and tokens come from each session's own report.
 | #36   | reviewer    | session_01SZoxcmQRMYVki6cL84aRdx | 2026-11-14 13:38 | 2      | running                                                                                             |                     |
 | #10   | implementer | session_01SZoxcoGEXZmKxE3Gg7XSXH | 2026-11-14 13:39 | 3      | running: merge main, keep re-checks off the shortcut                                                |                     |
 | #38   | reviewer    | session_01SZoxcjnZ4nTH9bgUr6U1NG | 2026-11-14 13:39 | 1      | running                                                                                             |                     |
+| #10   | merge       |                                  | 2026-11-14 13:56 |        | PR #34 merged after round 3, no fourth review; follow-up #42                                        |                     |
+| #40   | implementer | session_01SZoxcnvB2sX9FnxuzXChoA | 2026-11-14 13:56 | 1      | running                                                                                             |                     |
