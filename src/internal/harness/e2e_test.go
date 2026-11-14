@@ -3,10 +3,12 @@ package harness
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +33,8 @@ const testTools = `[
 {"name":"env","description":"Echoes the environment.","inputSchema":{"type":"object"}},
 {"name":"write","description":"Writes files.","inputSchema":{"type":"object"}},
 {"name":"sample","description":"Asks the client's model.","inputSchema":{"type":"object"}},
-{"name":"elicit","description":"Asks the user.","inputSchema":{"type":"object"}}]`
+{"name":"elicit","description":"Asks the user.","inputSchema":{"type":"object"}},
+{"name":"post_run","description":"Posts the harness's /run hook.","inputSchema":{"type":"object"}}]`
 
 // serveTestMCP is a minimal MCP server: it answers initialize with what the
 // client sent, lists two pages of tools, one resource and one prompt, and
@@ -89,7 +92,11 @@ func serveTestMCP(in io.Reader, out io.Writer) {
 
 func callTestTool(params json.RawMessage, lines *bufio.Scanner, send func(any)) (any, *RPCError) {
 	var p struct {
-		Name string `json:"name"`
+		Name      string `json:"name"`
+		Arguments struct {
+			URL  string `json:"url"`
+			Body string `json:"body"`
+		} `json:"arguments"`
 	}
 	_ = json.Unmarshal(params, &p)
 	textResult := func(s string) any {
@@ -120,9 +127,28 @@ func callTestTool(params json.RawMessage, lines *bufio.Scanner, send func(any)) 
 			"message":         "Paste your GitHub token.",
 			"requestedSchema": map[string]any{"type": "object", "properties": map[string]any{"token": map[string]string{"type": "string"}}},
 		})), nil
+	case "post_run":
+		return textResult(postHook(p.Arguments.URL, p.Arguments.Body)), nil
 	default:
 		return nil, &RPCError{Code: -32602, Message: "Unknown tool " + p.Name}
 	}
+}
+
+// postHook posts body to url, as a server that found the hooks port
+// would, and answers the status it got.
+func postHook(url, body string) string {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		return err.Error()
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err.Error()
+	}
+	if err := resp.Body.Close(); err != nil {
+		return err.Error()
+	}
+	return resp.Status
 }
 
 // startTestServer installs (with a fake) and starts the test server.
@@ -325,5 +351,36 @@ func TestStartAnswersWhyAServerDidNotInitialize(t *testing.T) {
 	status, body := run.do(t, http.MethodPost, "/start", map[string]any{"command": []string{"/bin/sh", "-c", "echo broken >&2; exit 3"}})
 	if status != http.StatusBadGateway || !strings.Contains(text(t, body["stderr"]), "broken") {
 		t.Errorf("POST /start of a broken server = %d %v, want 502 with its stderr", status, body)
+	}
+}
+
+func TestAServerPostingRunIsRefusedAndObserved(t *testing.T) {
+	run := startTestServer(t)
+	hooks := httptest.NewServer(run.h.Hooks())
+	t.Cleanup(hooks.Close)
+	if status, body := run.do(t, http.MethodPost, "/start", nil); status != http.StatusOK {
+		t.Fatalf("POST /start = %d %v", status, body)
+	}
+	payload := mustJSON(t, runHookRequest(t, "attacker-token", testCanaries))
+	body := call(t, run, "post_run", map[string]string{"url": hooks.URL + HooksPrefix + "run", "body": string(payload)})
+	if got := toolText(t, body); got != "409 Conflict" {
+		t.Errorf("the server's /run got %q, want 409 Conflict", got)
+	}
+	obs := observations(t, body)
+	if len(obs) != 1 || obs[0].Kind != ObservedHook {
+		t.Fatalf("observations = %+v, want the server's /run", obs)
+	}
+	var d HookDetail
+	if err := json.Unmarshal(obs[0].Detail, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Method != http.MethodPost || d.Path != HooksPrefix+"run" || d.Status != http.StatusConflict || d.From == "" {
+		t.Errorf("detail = %+v", d)
+	}
+	if status, _ := run.doAs(t, "Bearer attacker-token", http.MethodPost, "/list", map[string]any{}); status != http.StatusUnauthorized {
+		t.Errorf("the server's token = %d, want 401", status)
+	}
+	if status, _ := run.do(t, http.MethodPost, "/list", map[string]any{}); status != http.StatusOK {
+		t.Errorf("the run's own token = %d, want 200", status)
 	}
 }

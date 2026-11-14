@@ -59,12 +59,23 @@ type testRun struct {
 	workdir string
 }
 
+// newTestRun is a harness whose run has started: /run has delivered the
+// test token and canaries.
 func newTestRun(t *testing.T, inst Installer) testRun {
+	t.Helper()
+	run := newIdleRun(t, inst)
+	if status, body := run.hook(t, http.MethodPost, HooksPrefix+"run", runHookRequest(t, testToken, testCanaries)); status != http.StatusOK {
+		t.Fatalf("POST /run = %d %s", status, body)
+	}
+	return run
+}
+
+// newIdleRun is a harness as the image's snapshot holds it: no run yet.
+func newIdleRun(t *testing.T, inst Installer) testRun {
 	t.Helper()
 	home := t.TempDir()
 	workdir := filepath.Join(home, "projects", "server")
 	h, err := New(Config{
-		Token:          testToken,
 		Account:        Account{Name: "dev", Home: home},
 		Workdir:        workdir,
 		Path:           os.Getenv("PATH"),
@@ -110,7 +121,7 @@ func (r testRun) doAs(t *testing.T, auth, method, path string, body any) (int, m
 }
 
 func installBody(kind, ref string) map[string]any {
-	return map[string]any{"kind": kind, "ref": ref, "canaries": testCanaries, "allowHosts": []string{}}
+	return map[string]any{"kind": kind, "ref": ref, "allowHosts": []string{}}
 }
 
 // rawObservation is an observation as a client reads it.
@@ -136,13 +147,6 @@ func text(t *testing.T, raw json.RawMessage) string {
 		t.Fatalf("%s is not a string: %v", raw, err)
 	}
 	return s
-}
-
-func TestNewRefusesAnEmptyToken(t *testing.T) {
-	_, err := New(Config{Account: Account{Home: t.TempDir()}, Workdir: "w", Installer: &fakeInstaller{}, Now: time.Now}, slog.New(slog.DiscardHandler))
-	if err == nil {
-		t.Error("New made a harness without a token")
-	}
 }
 
 func TestEveryCallWithoutTheTokenAnswers401(t *testing.T) {
@@ -175,7 +179,7 @@ func TestEveryCallWithoutTheTokenAnswers401(t *testing.T) {
 	}
 }
 
-func TestInstallPlantsTheDeveloperHomeAndAnswersTheLogAndHash(t *testing.T) {
+func TestInstallAnswersTheLogAndHash(t *testing.T) {
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-harness-own")
 	t.Setenv("LAMBDA_TASK_ROOT", "/var/task")
 	t.Setenv("HARNESS_TOKEN", testToken)
@@ -205,29 +209,6 @@ func TestInstallPlantsTheDeveloperHomeAndAnswersTheLogAndHash(t *testing.T) {
 		t.Errorf("installed in %s, want %s", inst.sb.Workdir, run.workdir)
 	}
 	assertDeveloperEnv(t, inst.sb.Env, run.home)
-
-	for file, wants := range map[string][]string{
-		".ssh/id_ed25519":  {testCanaries[3].Value},
-		".aws/credentials": {"aws_access_key_id = " + testCanaries[1].Value, "aws_secret_access_key = " + testCanaries[2].Value},
-		".npmrc":           {"_authToken=" + testCanaries[0].Value},
-		".gitconfig":       {"email = " + testCanaries[4].Value},
-		".bash_history":    {"GITHUB_TOKEN=" + testCanaries[0].Value, testCanaries[5].Value},
-	} {
-		raw, err := os.ReadFile(filepath.Join(run.home, file))
-		if err != nil {
-			t.Errorf("the home lacks %s: %v", file, err)
-			continue
-		}
-		for _, w := range wants {
-			if !strings.Contains(string(raw), w) {
-				t.Errorf("%s lacks %q:\n%s", file, w, raw)
-			}
-		}
-	}
-	info, err := os.Stat(filepath.Join(run.home, ".ssh", "id_ed25519"))
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Errorf("~/.ssh/id_ed25519 is %v, %v; want 0600", info, err)
-	}
 	if obs := observations(t, body); len(obs) != 0 {
 		t.Errorf("planting the home was observed: %v", obs)
 	}
@@ -289,24 +270,19 @@ func TestInstallObservesFilesItWritesOutsideTheWorkdir(t *testing.T) {
 }
 
 func TestInstallRefusesBadInput(t *testing.T) {
-	missing := map[string]any{"kind": "go", "ref": "example.com/x@v1.0.0", "canaries": testCanaries[1:]}
-	unknown := map[string]any{"kind": "go", "ref": "example.com/x@v1.0.0", "canaries": append([]Canary{{"slack-token", "xoxb-1"}}, testCanaries...)}
-	multiline := map[string]any{"kind": "go", "ref": "example.com/x@v1.0.0", "canaries": append(append([]Canary{}, testCanaries[:5]...), Canary{CanaryPassword, "test\npassword"})}
 	extra := installBody("go", "example.com/x@v1.0.0")
 	extra["sudo"] = true
 	for name, body := range map[string]any{
-		"a go module at latest":   installBody("go", "example.com/x@latest"),
-		"an npm range":            installBody("npm", "left-pad@^1.0.0"),
-		"a PyPI wildcard":         installBody("pypi", "requests@2.*"),
-		"no version":              installBody("npm", "left-pad"),
-		"a name that is a flag":   installBody("npm", "--global@1.0.0"),
-		"a remote URL":            installBody("remote", "https://mcp.example.com/sse"),
-		"an unknown kind":         installBody("cargo", "serde@1.0.0"),
-		"a missing canary":        missing,
-		"an unknown canary":       unknown,
-		"a password on two lines": multiline,
-		"an unknown field":        extra,
-		"a host name with a path": map[string]any{"kind": "go", "ref": "example.com/x@v1.0.0", "canaries": testCanaries, "allowHosts": []string{"x.com/a"}},
+		"a go module at latest":         installBody("go", "example.com/x@latest"),
+		"an npm range":                  installBody("npm", "left-pad@^1.0.0"),
+		"a PyPI wildcard":               installBody("pypi", "requests@2.*"),
+		"no version":                    installBody("npm", "left-pad"),
+		"a name that is a flag":         installBody("npm", "--global@1.0.0"),
+		"a remote URL":                  installBody("remote", "https://mcp.example.com/sse"),
+		"an unknown kind":               installBody("cargo", "serde@1.0.0"),
+		"canaries, which /run delivers": map[string]any{"kind": "go", "ref": "example.com/x@v1.0.0", "canaries": testCanaries},
+		"an unknown field":              extra,
+		"a host name with a path":       map[string]any{"kind": "go", "ref": "example.com/x@v1.0.0", "allowHosts": []string{"x.com/a"}},
 	} {
 		inst := &fakeInstaller{}
 		run := newTestRun(t, inst)

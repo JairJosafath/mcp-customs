@@ -35,6 +35,14 @@ Every user-visible change, newest first. The format follows
 
 ### Changed
 
+- The harness starts with no per-run value, as Lambda MicroVMs snapshot it
+  at image build: it serves the `/ready` and `/run` lifecycle hooks on
+  `HOOKS_PORT` (9000), takes the run's token and canaries from `/run`'s
+  payload, exactly once, and plants the developer's home then. Until
+  `/run`, every Harness API call answers `503`; `/install` no longer takes
+  `canaries`, and `HARNESS_TOKEN` is gone. A hook called after `/run` is
+  observed as a `hook`. The server under test and its install start
+  through `setpriv --no-new-privs`, with a PATH of their own.
 - A check is created once: a second create of the same check is refused,
   and its status, verdict and callback ID change only by an update of
   those fields.

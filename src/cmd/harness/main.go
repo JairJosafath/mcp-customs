@@ -2,12 +2,15 @@
 // runs the server under test as an unprivileged user and reports what the
 // server does. Wiring only; the work is in internal/harness.
 //
-// It reads HARNESS_TOKEN (the run's bearer token, required), HARNESS_USER
-// (the unprivileged user, "dev" by default), HARNESS_WORKDIR (the server's
-// working directory, ~/projects/server by default) and PORT (8080 by
-// default). The token is removed from the environment once read. It must
-// run as root, and refuses to start otherwise: it runs the server as the
-// unprivileged user, never as itself.
+// Lambda starts it once, at image build, and snapshots it, so it starts
+// with no per-run value: Lambda's /run hook, on HOOKS_PORT, delivers the
+// run's token and canaries when a MicroVM resumes (docs/contracts.md, "The
+// MicroVM"). It reads HARNESS_USER (the unprivileged user, "dev" by
+// default), HARNESS_WORKDIR (the server's working directory,
+// ~/projects/server by default), PORT (the Harness API's, 8080 by default)
+// and HOOKS_PORT (9000 by default). It must run as root, and refuses to
+// start otherwise: it runs the server as the unprivileged user, never as
+// itself.
 package main
 
 import (
@@ -15,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -36,13 +40,6 @@ func main() {
 }
 
 func serve(log *slog.Logger) error {
-	token := os.Getenv("HARNESS_TOKEN")
-	// This drops the token from Go's copy of the environment, so nothing the
-	// harness starts inherits it. /proc/<pid>/environ still holds it; only
-	// running the server as another user keeps it out of reach.
-	if err := os.Unsetenv("HARNESS_TOKEN"); err != nil {
-		return err
-	}
 	u, err := user.Lookup(envOr("HARNESS_USER", "dev"))
 	if err != nil {
 		return err
@@ -51,40 +48,68 @@ func serve(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	h, err := harness.New(harness.Config{
-		Token:          token,
-		Account:        account,
-		Workdir:        envOr("HARNESS_WORKDIR", filepath.Join(account.Home, "projects", "server")),
-		WatchRoots:     []string{"/tmp", "/var/tmp", "/dev/shm"},
-		Path:           envOr("PATH", "/usr/local/bin:/usr/bin:/bin"),
-		Installer:      harness.Toolchain{},
-		Now:            time.Now,
-		InstallTimeout: 10 * time.Minute,
-		CallTimeout:    time.Minute,
-	}, log)
+	h, err := harness.New(configFor(account), log)
 	if err != nil {
 		return err
 	}
 	defer h.Close()
 
-	srv := &http.Server{
-		Addr:              ":" + envOr("PORT", "8080"),
-		Handler:           h,
-		ReadHeaderTimeout: 10 * time.Second,
+	api, err := net.Listen("tcp", ":"+envOr("PORT", "8080"))
+	if err != nil {
+		return err
 	}
+	hooks, err := net.Listen("tcp", ":"+envOr("HOOKS_PORT", "9000"))
+	if err != nil {
+		_ = api.Close()
+		return err
+	}
+	h.Listening()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	go func() {
-		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+	log.Info("The harness is listening.", "api", api.Addr().String(), "hooks", hooks.Addr().String(), "user", account.Name)
+	errs := make(chan error, 2)
+	servers := []*http.Server{httpServer(h), httpServer(h.Hooks())}
+	for i, ln := range []net.Listener{api, hooks} {
+		go func() { errs <- servers[i].Serve(ln) }()
+	}
+	select {
+	case <-ctx.Done():
+	case err = <-errs:
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, srv := range servers {
 		_ = srv.Shutdown(shutdown)
-	}()
-	log.Info("The harness is listening.", "addr", srv.Addr, "user", account.Name)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// serverPath is the PATH the server under test and its install get after
+// their own commands, and the only one the harness finds its own install
+// commands on: the image's toolchains and the system's, never the
+// harness's own PATH (root's, with /root/.local/bin).
+const serverPath = "/usr/local/bin:/usr/local/go/bin:/usr/local/node/bin:/usr/bin:/bin"
+
+// configFor is the harness's configuration for the account: nothing of it
+// per run, and the server's PATH its own, not the harness's.
+func configFor(account harness.Account) harness.Config {
+	return harness.Config{
+		Account:        account,
+		Workdir:        envOr("HARNESS_WORKDIR", filepath.Join(account.Home, "projects", "server")),
+		WatchRoots:     []string{"/tmp", "/var/tmp", "/dev/shm"},
+		Path:           serverPath,
+		Installer:      harness.Toolchain{},
+		Now:            time.Now,
+		InstallTimeout: 10 * time.Minute,
+		CallTimeout:    time.Minute,
+	}
+}
+
+func httpServer(h http.Handler) *http.Server {
+	return &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
 }
 
 // accountFor is the unprivileged account the server under test runs as.
