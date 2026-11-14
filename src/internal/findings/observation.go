@@ -72,7 +72,7 @@ func FromObservations(observations []Observation, canaries canary.Set) []Finding
 			for _, f := range networkFindings(o, canaries) {
 				add(f)
 			}
-			if f, ok := unreadFinding(o); ok {
+			for _, f := range unreadFindings(o) {
 				add(f)
 			}
 		case ObservedFile:
@@ -109,35 +109,48 @@ func networkFindings(o Observation, canaries canary.Set) []Finding {
 	return found
 }
 
-// unreadFinding is the finding of traffic the egress proxy couldn't read:
-// a tunnel to a host not allowed whose TLS the client wouldn't let it
-// intercept, as a client pinning its own roots does, a request body it
-// couldn't search whole, or refused direct traffic it couldn't record all
-// of. What it couldn't read may hold a canary.
-func unreadFinding(o Observation) (Finding, bool) {
+// unreadFindings are the findings of traffic the egress proxy couldn't
+// read: a tunnel to a host not allowed whose TLS the client wouldn't let it
+// intercept, as a client pinning its own roots does, a request, handshake
+// or direct connection it couldn't search whole, or refused direct traffic
+// it couldn't record all of, or stopped reading. What it couldn't read may
+// hold a canary.
+func unreadFindings(o Observation) []Finding {
 	var d struct {
 		Host        string `json:"host"`
+		Address     string `json:"address"`
 		Via         string `json:"via"`
 		Intercepted bool   `json:"intercepted"`
 		Allowed     bool   `json:"allowed"`
 		Unscanned   string `json:"unscanned"`
 		More        bool   `json:"more"`
 		Dropped     int    `json:"dropped"`
+		Stopped     string `json:"stopped"`
 	}
 	if json.Unmarshal(o.Detail, &d) != nil {
-		return Finding{}, false
+		return nil
+	}
+	var found []Finding
+	direct := o.Kind == ObservedConnect && d.Via == "direct"
+	if o.Kind == ObservedConnect && d.Via == "proxy" && !d.Intercepted && !d.Allowed {
+		found = append(found, Finding{Source: Code, Rule: RuleTLSNotIntercepted, Evidence: "TLS to " + d.Host + " the proxy could not read"})
 	}
 	switch {
-	case o.Kind == ObservedConnect && d.Via == "proxy" && !d.Intercepted && !d.Allowed:
-		return Finding{Source: Code, Rule: RuleTLSNotIntercepted, Evidence: "TLS to " + d.Host + " the proxy could not read"}, true
-	case o.Kind == ObservedConnect && d.Via == "direct" && d.Dropped > 0:
-		return Finding{Source: Code, Rule: RuleDirectUnrecorded, Evidence: "the kernel dropped refused packets before the harness could read them; any of them may hold a canary"}, true
-	case o.Kind == ObservedConnect && d.Via == "direct" && d.More:
-		return Finding{Source: Code, Rule: RuleDirectUnrecorded, Evidence: "more direct traffic was refused than a run records; only what held a canary was recorded after"}, true
-	case o.Kind == ObservedHTTP && d.Unscanned != "":
-		return Finding{Source: Code, Rule: RuleBodyUnscanned, Evidence: d.Host + ": " + d.Unscanned}, true
+	case direct && d.Stopped != "":
+		found = append(found, Finding{Source: Code, Rule: RuleDirectUnrecorded, Evidence: "the harness stopped reading refused packets (" + d.Stopped + "); any refused after may hold a canary"})
+	case direct && d.Dropped > 0:
+		found = append(found, Finding{Source: Code, Rule: RuleDirectUnrecorded, Evidence: "the kernel dropped refused packets before the harness could read them; any of them may hold a canary"})
+	case direct && d.More:
+		found = append(found, Finding{Source: Code, Rule: RuleDirectUnrecorded, Evidence: "more direct traffic was refused than a run records; only what held a canary was recorded after"})
 	}
-	return Finding{}, false
+	if d.Unscanned != "" {
+		where := d.Host
+		if where == "" {
+			where = d.Address
+		}
+		found = append(found, Finding{Source: Code, Rule: RuleBodyUnscanned, Evidence: where + ": " + d.Unscanned})
+	}
+	return found
 }
 
 // fileFinding is the finding of a file write, if the file is an agent's
