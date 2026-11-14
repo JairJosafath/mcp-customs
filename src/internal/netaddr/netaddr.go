@@ -12,29 +12,38 @@ import (
 
 // notPublic are the address ranges a remote server can't be at: what a
 // request from the sandbox would turn into a request inside a network
-// rather than to the internet.
+// rather than to the internet. Its IPv6 ranges are each of IANA's
+// special-purpose ranges that isn't globally reachable, but the
+// documentation ones (2001:db8::/32, 3fff::/20), which no network routes.
 var notPublic = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),      // this network
-	netip.MustParsePrefix("10.0.0.0/8"),     // private
-	netip.MustParsePrefix("100.64.0.0/10"),  // shared (carrier-grade NAT)
-	netip.MustParsePrefix("127.0.0.0/8"),    // loopback
-	netip.MustParsePrefix("169.254.0.0/16"), // link-local, and the instance metadata at .169.254
-	netip.MustParsePrefix("172.16.0.0/12"),  // private
-	netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments
-	netip.MustParsePrefix("192.168.0.0/16"), // private
-	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking
-	netip.MustParsePrefix("224.0.0.0/3"),    // multicast and reserved, and broadcast
-	netip.MustParsePrefix("::/128"),         // unspecified
-	netip.MustParsePrefix("::1/128"),        // loopback
-	netip.MustParsePrefix("::/96"),          // IPv4-compatible, such as ::127.0.0.1
-	netip.MustParsePrefix("64:ff9b::/96"),   // IPv4 translated, which can reach the ranges above
-	netip.MustParsePrefix("64:ff9b:1::/48"), // IPv4 translated for local use
-	netip.MustParsePrefix("2001::/32"),      // Teredo, which carries an IPv4 address
-	netip.MustParsePrefix("2002::/16"),      // 6to4, which carries an IPv4 address
-	netip.MustParsePrefix("fc00::/7"),       // unique local, and the instance metadata at fd00:ec2::254
-	netip.MustParsePrefix("fe80::/10"),      // link-local
-	netip.MustParsePrefix("fec0::/10"),      // site-local, deprecated but still routed inside some networks
-	netip.MustParsePrefix("ff00::/8"),       // multicast
+	netip.MustParsePrefix("0.0.0.0/8"),       // this network
+	netip.MustParsePrefix("10.0.0.0/8"),      // private
+	netip.MustParsePrefix("100.64.0.0/10"),   // shared (carrier-grade NAT)
+	netip.MustParsePrefix("127.0.0.0/8"),     // loopback
+	netip.MustParsePrefix("169.254.0.0/16"),  // link-local, and the instance metadata at .169.254
+	netip.MustParsePrefix("172.16.0.0/12"),   // private
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
+	netip.MustParsePrefix("192.168.0.0/16"),  // private
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking
+	netip.MustParsePrefix("224.0.0.0/3"),     // multicast and reserved, and broadcast
+	netip.MustParsePrefix("::/128"),          // unspecified
+	netip.MustParsePrefix("::1/128"),         // loopback
+	netip.MustParsePrefix("::/96"),           // IPv4-compatible, such as ::127.0.0.1
+	netip.MustParsePrefix("::ffff:0:0:0/96"), // IPv4-translated (SIIT), such as ::ffff:0:a9fe:a9fe
+	netip.MustParsePrefix("64:ff9b::/96"),    // IPv4 translated, which can reach the ranges above
+	netip.MustParsePrefix("64:ff9b:1::/48"),  // IPv4 translated for local use
+	netip.MustParsePrefix("100::/64"),        // discard-only
+	netip.MustParsePrefix("100:0:0:1::/64"),  // dummy prefix
+	netip.MustParsePrefix("2001:2::/48"),     // benchmarking
+	netip.MustParsePrefix("2001:10::/28"),    // ORCHID, deprecated
+	netip.MustParsePrefix("2001:20::/28"),    // ORCHIDv2
+	netip.MustParsePrefix("2001::/32"),       // Teredo, which carries an IPv4 address
+	netip.MustParsePrefix("2002::/16"),       // 6to4, which carries an IPv4 address
+	netip.MustParsePrefix("5f00::/16"),       // SRv6 segment identifiers, routed inside one network
+	netip.MustParsePrefix("fc00::/7"),        // unique local, and the instance metadata at fd00:ec2::254
+	netip.MustParsePrefix("fe80::/10"),       // link-local
+	netip.MustParsePrefix("fec0::/10"),       // site-local, deprecated but still routed inside some networks
+	netip.MustParsePrefix("ff00::/8"),        // multicast
 }
 
 // Public says whether addr is outside every range a request inside a
