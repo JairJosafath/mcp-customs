@@ -45,6 +45,20 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- Follow-ups from the reviews of #66 and #70 (#74). A re-check whose pass
+  committed but was answered as an error no longer asks for a retry or
+  shows a failure; one that ended short of a pass and couldn't mark its
+  approved check superseded still does. A pass whose superseded mark
+  can't be lifted raises the `LiftFailedAfterPass-Warning` alarm. A
+  combining mark on a letter no longer splits an injection pattern. Each
+  try of a judge call has a 60-second deadline, so four slow tries and
+  their backoff end inside the Checker's five minutes, and a failed wait
+  keeps the API error before it. The IPv4-translated (SIIT) range and
+  IANA's other IPv6 ranges that aren't globally reachable count as not
+  public. pip resolves and installs from PyPI's index only, so a
+  dependency with a direct reference fails the resolve before it is
+  built.
+
 - Follow-ups from #64 and #65 (#67). The judge tries a call again after
   the transient errors the SDK used to retry (`InternalServerException`,
   `ModelTimeoutException`, a 5xx, a connection reset), so one of them no
