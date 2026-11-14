@@ -56,39 +56,6 @@ func approvedSK(kind, name string) (string, error) {
 	return kind + "#" + name, nil
 }
 
-// PutApproved writes a's APPROVED item with Polled set to its version. A
-// fresh approval (conditional false) is written whatever was there before.
-// A re-check's approval (conditional true) is written only while the
-// package's newest polled version — the version the poller started this
-// re-check for — is still a's version, or the package has no approval yet.
-// So, of several re-checks racing from one approval, only the one for the
-// newest version the poller has seen wins, whichever finishes first; an
-// older version's late pass, or a re-check overtaken by a newer poll, is a
-// no-op, not an overwrite and not an error. The gate is the version, held
-// in `polled`, which the poller only ever advances (MarkPolled), not the
-// order the re-checks finished in.
-func (s *Store) PutApproved(ctx context.Context, a Approved, conditional bool) error {
-	sk, err := approvedSK(a.Kind, a.Name)
-	if err != nil || a.Version == "" {
-		return ErrBadPackage
-	}
-	a.Polled = a.Version
-	in := &dynamodb.PutItemInput{TableName: aws.String(s.table), Item: approvedRow(sk, a)}
-	if conditional {
-		in.ConditionExpression = aws.String("attribute_not_exists(pk) OR polled = :version")
-		in.ExpressionAttributeValues = row{":version": str(a.Version)}
-	}
-	_, err = s.client.PutItem(ctx, in)
-	if failed := new(types.ConditionalCheckFailedException); errors.As(err, &failed) {
-		// A newer version has been polled or approved: leave it.
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("put the approval of %s into table %s: %w", sk, s.table, err)
-	}
-	return nil
-}
-
 // ListApproved reads every APPROVED item.
 func (s *Store) ListApproved(ctx context.Context) ([]Approved, error) {
 	pages := dynamodb.NewQueryPaginator(s.client, &dynamodb.QueryInput{

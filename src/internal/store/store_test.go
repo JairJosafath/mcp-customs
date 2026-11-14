@@ -89,12 +89,13 @@ func (f *fakeDynamo) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput,
 }
 
 // TransactWriteItems checks every item's condition first, as DynamoDB
-// does, and cancels the whole transaction when one fails; it applies only
-// updates.
+// does, and cancels the whole transaction when one fails; it applies
+// puts and updates.
 func (f *fakeDynamo) TransactWriteItems(ctx context.Context, in *dynamodb.TransactWriteItemsInput, _ ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
+	f.tables = append(f.tables, "transaction")
 	reasons := make([]types.CancellationReason, len(in.TransactItems))
 	canceled := false
 	for i, item := range in.TransactItems {
@@ -107,6 +108,8 @@ func (f *fakeDynamo) TransactWriteItems(ctx context.Context, in *dynamodb.Transa
 			cond, key, values = item.ConditionCheck.ConditionExpression, item.ConditionCheck.Key, item.ConditionCheck.ExpressionAttributeValues
 		case item.Update != nil:
 			cond, key, values = item.Update.ConditionExpression, item.Update.Key, item.Update.ExpressionAttributeValues
+		case item.Put != nil:
+			cond, key, values = item.Put.ConditionExpression, item.Put.Item, item.Put.ExpressionAttributeValues
 		default:
 			return nil, errors.New("unexpected transaction item")
 		}
@@ -121,6 +124,9 @@ func (f *fakeDynamo) TransactWriteItems(ctx context.Context, in *dynamodb.Transa
 		return nil, &types.TransactionCanceledException{Message: aws.String("Transaction cancelled"), CancellationReasons: reasons}
 	}
 	for _, item := range in.TransactItems {
+		if p := item.Put; p != nil {
+			f.items[keyOf(p.Item)] = p.Item
+		}
 		if u := item.Update; u != nil {
 			if _, err := f.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 				TableName: u.TableName, Key: u.Key, UpdateExpression: u.UpdateExpression,
@@ -144,6 +150,9 @@ func (f *fakeDynamo) holds(condition *string, key [2]string, values row) error {
 		ok = !exists
 	case "attribute_exists(pk)":
 		ok = exists
+	case "attribute_exists(pk) AND #status <> :done":
+		status, _ := readStr(item, "status")
+		ok = exists && status != string(StatusDone)
 	case "attribute_not_exists(pk) OR polled = :version":
 		version, _ := readStr(values, ":version")
 		existing, _ := readStr(item, "polled")
@@ -364,7 +373,10 @@ func TestStorePutsAndGetsAVerdict(t *testing.T) {
 	want := Verdict{Hash: hash, CheckID: "c1", ToolListHash: strings.Repeat("a", 64), InstallSpec: "npm install mail-mcp@1.0.0"}
 	fake := newFakeDynamo()
 	store := New(fake, "customs")
-	if err := store.PutVerdict(t.Context(), want); err != nil {
+	if err := store.PutCheck(t.Context(), Check{ID: "c1", Status: StatusRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PassCheck(t.Context(), Pass{Hash: want, Verdict: "pass"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := fake.items[[2]string{"HASH#" + hash, "VERDICT"}]; !ok {
@@ -401,7 +413,9 @@ func TestStoreRefusesBadKeysWithoutCallingDynamoDB(t *testing.T) {
 		"append a step": {func() error { return store.AppendStep(t.Context(), "c1", Step{Seq: 0}) }, ErrBadSeq},
 		"step of no id": {func() error { return store.AppendStep(t.Context(), "", Step{Seq: 1}) }, ErrBadCheckID},
 		"list steps":    {func() error { _, err := store.ListSteps(t.Context(), "#"); return err }, ErrBadCheckID},
-		"put a verdict": {func() error { return store.PutVerdict(t.Context(), Verdict{Hash: "abc"}) }, ErrBadHash},
+		"put a verdict": {func() error {
+			return store.PassCheck(t.Context(), Pass{Hash: Verdict{Hash: "abc", CheckID: "c1"}, Verdict: "pass"})
+		}, ErrBadHash},
 		"get a verdict": {func() error { _, _, err := store.GetVerdict(t.Context(), "ABC"); return err }, ErrBadHash},
 	} {
 		if err := tc.call(); !errors.Is(err, tc.want) {
@@ -427,7 +441,9 @@ func TestStoreWrapsDynamoDBFailures(t *testing.T) {
 		},
 		"append a step": func() error { return store.AppendStep(t.Context(), "c1", Step{Seq: 1}) },
 		"list steps":    func() error { _, err := store.ListSteps(t.Context(), "c1"); return err },
-		"put a verdict": func() error { return store.PutVerdict(t.Context(), Verdict{Hash: hash}) },
+		"put a verdict": func() error {
+			return store.PassCheck(t.Context(), Pass{Hash: Verdict{Hash: hash, CheckID: "c1"}, Verdict: "pass"})
+		},
 		"get a verdict": func() error { _, _, err := store.GetVerdict(t.Context(), hash); return err },
 	} {
 		err := call()

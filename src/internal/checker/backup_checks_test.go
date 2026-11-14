@@ -2,6 +2,7 @@ package checker
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -44,8 +45,11 @@ func TestTheAllowActionRefusesAnInternalHost(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.Status != durabletest.Failed || !strings.Contains(result.Error.Message, ErrBadArguments.Error()) || slices.Contains(w.paths(), "/allow") {
-			t.Errorf("%s: status %s, error %+v, harness calls %v; want refused before /allow", host, result.Status, result.Error, w.paths())
+		// The error names the host, so each case is refused by allowedHost,
+		// not by a later check such as ownAPIRefusal's of an address.
+		want := fmt.Sprintf("%s: %q is not a public host name", ErrBadArguments, host)
+		if result.Status != durabletest.Failed || !strings.Contains(result.Error.Message, want) || slices.Contains(w.paths(), "/allow") {
+			t.Errorf("%s: status %s, error %+v, harness calls %v; want %q before /allow", host, result.Status, result.Error, w.paths(), want)
 		}
 	}
 }

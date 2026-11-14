@@ -33,7 +33,7 @@ func installPyPI(ctx context.Context, p Package, sb Sandbox, log io.Writer) (Ins
 	pip := filepath.Join(venv, "bin", "pip")
 	report := filepath.Join(sb.Workdir, "pip-report.json")
 	if err := step(ctx, sb, log, pip, "install", "--disable-pip-version-check", "--dry-run", "--ignore-installed",
-		"--report", report, p.Name+"=="+p.Version); err != nil {
+		"--only-binary=:all:", "--report", report, p.Name+"=="+p.Version); err != nil {
 		return Installed{}, err
 	}
 	raw, err := readAsAccount(ctx, sb, report)

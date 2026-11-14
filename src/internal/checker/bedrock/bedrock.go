@@ -7,14 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
-	"github.com/aws/smithy-go"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/checker"
 )
@@ -53,15 +51,6 @@ const (
 	attempts     = 4
 	firstBackoff = 2 * time.Second
 )
-
-// busy are the Bedrock errors of a model too busy to answer now: a call
-// is safe to try again, as it changes nothing.
-var busy = []string{"ThrottlingException", "ServiceUnavailableException", "ModelNotReadyException"}
-
-func isBusy(err error) bool {
-	var apiErr smithy.APIError
-	return errors.As(err, &apiErr) && slices.Contains(busy, apiErr.ErrorCode())
-}
 
 func wait(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
