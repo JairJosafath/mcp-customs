@@ -14,6 +14,15 @@ Every user-visible change, newest first. The format follows
   public; the shared store of checks, steps and verdicts
   (`src/internal/store`); and a bucket for reports, in one stack.
 
+### Changed
+
+- A check is created once: a second create of the same check is refused,
+  and its status, verdict and callback ID change only by an update of
+  those fields.
+- A `404` repeats at most 100 characters of the path asked for.
+- Deleting the development stack empties and deletes its reports bucket;
+  production still keeps it.
+
 ### Removed
 
 - The items API theos scaffolded (`PUT` and `GET /items/{id}`) and its

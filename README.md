@@ -27,7 +27,7 @@ sessions.
 | Function         | Code                                      | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | ---------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | The Checker      | `src/cmd/checker`, `src/internal/checker` | A Lambda [durable function](https://docs.aws.amazon.com/lambda/latest/dg/durable-functions.html) on the AWS Durable Execution SDK for Go. Started with `{"checkId":"c1","submission":{"kind":"npm","ref":"weather-mcp@1.0.0"}}`, it records the check's `META` item as `running` and its first step, `STEP#0001`, each in a durable step, and returns. Its execution may last 8 days, so a check can wait a week for a person's Approve or Block. |
-| The web function | `src/cmd/web`, `src/internal/web`         | Behind the HTTP API, open to the public: `GET /` is an HTML page (from `html/template`) saying the service is up; `GET /api/health` answers `200` `{"status":"ok"}`. Any other `/api/` path answers `404` with `{"message":"..."}`.                                                                                                                                                                                                               |
+| The web function | `src/cmd/web`, `src/internal/web`         | Behind the HTTP API, open to the public: `GET /` is an HTML page (from `html/template`) saying the service is up; `GET /api/health` answers `200` `{"status":"ok"}`. Any other `/api/` path answers `404` with `{"message":"..."}`, which repeats at most 100 characters of the path.                                                                                                                                                             |
 
 Both share `src/internal/store`, which keeps a check's `META`, its `STEP#`
 items and the `HASH#` verdicts in one DynamoDB table, as
@@ -67,8 +67,8 @@ Production keeps the table and the reports bucket when the stack goes,
 protects the table and the stack from deletion, recovers the table to any
 second of the last 35 days and keeps the bucket's earlier versions as long,
 backs the table up daily with AWS Backup, traces with X-Ray and keeps logs a
-year; development throws its data away with the stack and keeps logs a
-month. Both tiers alarm and have a dashboard.
+year; development throws its data away with the stack, emptying the reports
+bucket first, and keeps logs a month. Both tiers alarm and have a dashboard.
 
 What the app promises whatever the tier, the backups' retention and copy
 region, the recovery objectives and who the alarms tell, is in
