@@ -26,5 +26,5 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["infra", "vitest.config.mts"]
+  "include": ["infra", "demo", "vitest.config.mts"]
 }
