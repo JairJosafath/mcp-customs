@@ -88,4 +88,4 @@ the deadline. Cost and tokens come from each session's own report.
 | #20      | reviewer    | session_01SZoxcmN1VB7Tk6NzRQzxMm | 2026-11-14 15:03 | 1      | approved; digest checked against the public ECR gallery; deploy risks → #50                           | $2.08               |
 | #20      | merge       |                                  | 2026-11-14 15:28 |        | PR #47 merged; follow-ups #50 (first deploy), #51                                                     |                     |
 | #40      | reviewer    | session_01SZoxcoHVShMAQUHtiGJcL2 | 2026-11-14 15:16 | 2      | running                                                                                               |                     |
-| #48, #46 | implementer | (started 15:28)                  | 2026-11-14 15:28 | 1      | running                                                                                               |                     |
+| #48, #46 | implementer | session_01SZoxcjWJGAYUT1DsCqv5mf | 2026-11-14 15:28 | 1      | running                                                                                               |                     |
