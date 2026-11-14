@@ -1,22 +1,11 @@
 import { App } from 'aws-cdk-lib';
 import { Capture, Match, Template } from 'aws-cdk-lib/assertions';
-import { AttributeType, Table } from 'aws-cdk-lib/aws-dynamodb';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { SubnetType, Vpc } from 'aws-cdk-lib/aws-ec2';
-import type { IVpc } from 'aws-cdk-lib/aws-ec2';
-import {
-  AuroraPostgresEngineVersion,
-  ClusterInstance,
-  DatabaseCluster,
-  DatabaseClusterEngine,
-} from 'aws-cdk-lib/aws-rds';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { ApiStack, maxConnections } from './api_stack';
+import { ApiStack, DURABLE_EXECUTION_ACTIONS } from './api_stack';
 import { copyVaultName } from './backups';
-import { DATA_STORES } from './connectors';
-import type { Connect } from './connectors';
 import type { Operations, Tier } from './standard';
 
 const OPERATIONS: Operations = {
@@ -25,18 +14,11 @@ const OPERATIONS: Operations = {
   alerts: { email: '' },
 };
 
-/** The stack's own tables, without a data store: its items. */
-const TABLES = 1;
-
-/**
- * The stack's app and template for `tier`, with `operations` changed as given,
- * and `dataStores` in place of the Connectors' (none, unless a test names them).
- */
+/** The stack's app and template for `tier`, with `operations` changed as given. */
 function build(
   tier: Tier,
   backups: Partial<Operations['backups']> = {},
   alerts: Partial<Operations['alerts']> = {},
-  dataStores: readonly (readonly [string, Connect])[] = [],
 ): { app: App; template: Template } {
   const operations: Operations = {
     ...OPERATIONS,
@@ -44,33 +26,34 @@ function build(
     alerts: { ...OPERATIONS.alerts, ...alerts },
   };
   const app = new App();
-  const template = Template.fromStack(
-    new ApiStack(app, 'test', {
-      tier,
-      operations,
-      dataStores,
-    }),
-  );
+  const template = Template.fromStack(new ApiStack(app, 'test', { tier, operations }));
   return { app, template };
 }
 
-/**
- * The stack's template for `tier`, with `operations` changed as given, and
- * `dataStores` in place of the Connectors' (none, unless a test names them).
- */
+/** The stack's template for `tier`, with `operations` changed as given. */
 function synth(
   tier: Tier,
   backups: Partial<Operations['backups']> = {},
   alerts: Partial<Operations['alerts']> = {},
-  dataStores: readonly (readonly [string, Connect])[] = [],
 ): Template {
-  return build(tier, backups, alerts, dataStores).template;
+  return build(tier, backups, alerts).template;
 }
 
-/** The IAM actions the stack's policies allow, sorted. */
-function allowedActions(template: Template): string[] {
+/** The logical ID of the one resource of `type` whose ID starts with `prefix`. */
+function idOf(template: Template, type: string, prefix: string): string {
+  const ids = Object.keys(template.findResources(type)).filter((id) => id.startsWith(prefix));
+  expect(ids, `${type} ${prefix}`).toHaveLength(1);
+  return ids[0] ?? '';
+}
+
+/** The IAM actions the policies attached to the role `roleId` allow, sorted. */
+function actionsOf(template: Template, roleId: string): string[] {
   return Object.values(template.findResources('AWS::IAM::Policy'))
-    .flatMap((policy: unknown) => JSON.stringify(policy).match(/"[a-z0-9]+:[A-Za-z]+"/g) ?? [])
+    .filter((policy: unknown) => JSON.stringify(policy).includes(`{"Ref":"${roleId}"}`))
+    .flatMap((policy: unknown) => {
+      const document = JSON.stringify(policy).split('"Roles"')[0] ?? '';
+      return document.match(/"[a-z0-9]+:[A-Za-z]+"/g) ?? [];
+    })
     .sort();
 }
 
@@ -86,13 +69,16 @@ beforeAll(() => {
 });
 
 describe('ApiStack', () => {
-  it('keeps items in an on-demand table, kept and recoverable in production', () => {
+  it('keeps checks in one on-demand table keyed by pk and sk, kept and recoverable in production', () => {
     production.resourceCountIs('AWS::DynamoDB::Table', 1);
     production.hasResource('AWS::DynamoDB::Table', {
       DeletionPolicy: 'Retain',
       UpdateReplacePolicy: 'Retain',
       Properties: {
-        KeySchema: [{ AttributeName: 'id', KeyType: 'HASH' }],
+        KeySchema: [
+          { AttributeName: 'pk', KeyType: 'HASH' },
+          { AttributeName: 'sk', KeyType: 'RANGE' },
+        ],
         BillingMode: 'PAY_PER_REQUEST',
         PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
         DeletionProtectionEnabled: true,
@@ -111,49 +97,145 @@ describe('ApiStack', () => {
     });
   });
 
-  it('runs the Go binary on arm64 and Amazon Linux 2023, with its limits set', () => {
-    production.hasResourceProperties('AWS::Lambda::Function', {
-      Handler: 'bootstrap',
-      Runtime: 'provided.al2023',
-      Architectures: ['arm64'],
-      MemorySize: 256,
-      Timeout: 10,
-      Environment: { Variables: { TABLE_NAME: Match.anyValue() } },
+  it('keeps reports in a private, encrypted, versioned bucket, kept in production', () => {
+    production.resourceCountIs('AWS::S3::Bucket', 1);
+    production.hasResource('AWS::S3::Bucket', {
+      DeletionPolicy: 'Retain',
+      Properties: {
+        BucketEncryption: {
+          ServerSideEncryptionConfiguration: [
+            { ServerSideEncryptionByDefault: { SSEAlgorithm: 'AES256' } },
+          ],
+        },
+        PublicAccessBlockConfiguration: {
+          BlockPublicAcls: true,
+          BlockPublicPolicy: true,
+          IgnorePublicAcls: true,
+          RestrictPublicBuckets: true,
+        },
+        VersioningConfiguration: { Status: 'Enabled' },
+        LifecycleConfiguration: {
+          Rules: [{ Status: 'Enabled', NoncurrentVersionExpiration: { NoncurrentDays: 35 } }],
+        },
+      },
     });
+    // Only over TLS.
+    production.hasResourceProperties('AWS::S3::BucketPolicy', {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Effect: 'Deny',
+            Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+          }),
+        ]),
+      },
+    });
+    development.hasResource('AWS::S3::Bucket', { DeletionPolicy: 'Delete' });
   });
 
-  it('builds src/ into one bootstrap binary for arm64 Linux', () => {
+  it('runs the Checker as a durable function whose execution outlasts a week of waiting', () => {
+    const checker = idOf(production, 'AWS::Lambda::Function', 'Checker');
+    const table = idOf(production, 'AWS::DynamoDB::Table', 'Table');
+    expect(production.findResources('AWS::Lambda::Function')[checker]).toMatchObject({
+      Properties: {
+        Handler: 'bootstrap',
+        Runtime: 'provided.al2023',
+        Architectures: ['arm64'],
+        MemorySize: 256,
+        Timeout: 300,
+        DurableConfig: { ExecutionTimeout: 8 * 24 * 60 * 60, RetentionPeriodInDays: 30 },
+        Environment: { Variables: { DYNAMODB_TABLE_NAME: { Ref: table } } },
+      },
+    });
+    const config = new Capture();
+    development.hasResourceProperties('AWS::Lambda::Function', { DurableConfig: config });
+    expect(config.asObject()['ExecutionTimeout']).toBeGreaterThanOrEqual(7 * 24 * 60 * 60);
+  });
+
+  it('runs the web function within API Gateway’s 30 seconds, not durable', () => {
+    const web = idOf(production, 'AWS::Lambda::Function', 'Web');
+    expect(production.findResources('AWS::Lambda::Function')[web]).toMatchObject({
+      Properties: {
+        Handler: 'bootstrap',
+        Runtime: 'provided.al2023',
+        Architectures: ['arm64'],
+        MemorySize: 256,
+        Timeout: 10,
+      },
+    });
+    expect(
+      production.findResources('AWS::Lambda::Function')[web]?.['Properties'],
+    ).not.toHaveProperty('DurableConfig');
+    production.resourceCountIs('AWS::Lambda::Function', 2);
+  });
+
+  it('builds each function from its own package into one bootstrap binary for arm64 Linux', () => {
     const key = new Capture();
-    production.hasResourceProperties('AWS::Lambda::Function', { Code: { S3Key: key } });
-    const dir = path.join(outdir, `asset.${key.asString().replace(/\.zip$/, '')}`);
-    expect(readdirSync(dir)).toEqual(['bootstrap']);
-    // An ELF executable for AArch64: e_machine 183 at offset 18.
-    const binary = readFileSync(path.join(dir, 'bootstrap'));
-    expect(binary.subarray(0, 4).toString('latin1')).toBe('\x7fELF');
-    expect(binary.readUInt16LE(18)).toBe(183);
+    production.allResourcesProperties('AWS::Lambda::Function', { Code: { S3Key: key } });
+    const keys = [key.asString()];
+    while (key.next()) {
+      keys.push(key.asString());
+    }
+    // Two programs, so two different binaries.
+    expect(new Set(keys).size).toBe(2);
+    for (const key of keys) {
+      const dir = path.join(outdir, `asset.${key.replace(/\.zip$/, '')}`);
+      expect(readdirSync(dir)).toEqual(['bootstrap']);
+      // An ELF executable for AArch64: e_machine 183 at offset 18.
+      const binary = readFileSync(path.join(dir, 'bootstrap'));
+      expect(binary.subarray(0, 4).toString('latin1')).toBe('\x7fELF');
+      expect(binary.readUInt16LE(18)).toBe(183);
+    }
   });
 
   it('traces with X-Ray in production only', () => {
-    production.hasResourceProperties('AWS::Lambda::Function', {
+    production.allResourcesProperties('AWS::Lambda::Function', {
       TracingConfig: { Mode: 'Active' },
     });
-    development.hasResourceProperties('AWS::Lambda::Function', {
+    development.allResourcesProperties('AWS::Lambda::Function', {
       TracingConfig: Match.absent(),
     });
   });
 
-  it('lets the handler only get and put items, and write its logs', () => {
-    const own = [
-      '"dynamodb:GetItem"',
-      '"dynamodb:PutItem"',
-      '"logs:CreateLogStream"',
-      '"logs:PutLogEvents"',
-    ];
-    expect(allowedActions(development)).toEqual(own);
-    expect(allowedActions(production)).toEqual(
-      [...own, '"xray:PutTelemetryRecords"', '"xray:PutTraceSegments"'].sort(),
+  it('lets the Checker only put items, checkpoint its own executions and write its logs', () => {
+    const role = idOf(development, 'AWS::IAM::Role', 'CheckerRole');
+    expect(actionsOf(development, role)).toEqual(
+      [
+        '"dynamodb:PutItem"',
+        ...DURABLE_EXECUTION_ACTIONS.map((action) => `"${action}"`),
+        '"logs:CreateLogStream"',
+        '"logs:PutLogEvents"',
+      ].sort(),
     );
-    // The handler's role carries no managed policy.
+    // Its executions only: ARNs under its own.
+    const checker = idOf(development, 'AWS::Lambda::Function', 'Checker');
+    development.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: {
+        Statement: [
+          {
+            Action: [...DURABLE_EXECUTION_ACTIONS],
+            Effect: 'Allow',
+            Resource: { 'Fn::Join': ['', [{ 'Fn::GetAtt': [checker, 'Arn'] }, ':*']] },
+          },
+        ],
+      },
+    });
+  });
+
+  it('lets the web function only write its logs', () => {
+    const role = idOf(development, 'AWS::IAM::Role', 'WebRole');
+    expect(actionsOf(development, role)).toEqual(['"logs:CreateLogStream"', '"logs:PutLogEvents"']);
+    expect(actionsOf(production, idOf(production, 'AWS::IAM::Role', 'WebRole'))).toEqual(
+      [
+        '"logs:CreateLogStream"',
+        '"logs:PutLogEvents"',
+        '"xray:PutTelemetryRecords"',
+        '"xray:PutTraceSegments"',
+      ].sort(),
+    );
+  });
+
+  it('gives no function role a managed policy', () => {
     production.resourcePropertiesCountIs(
       'AWS::IAM::Role',
       {
@@ -166,14 +248,20 @@ describe('ApiStack', () => {
     );
   });
 
-  it('routes GET and PUT /items/{id} to the handler, signed with IAM', () => {
-    for (const routeKey of ['GET /items/{id}', 'PUT /items/{id}']) {
+  it('routes GET / and GET /api/* to the web function, open to the public', () => {
+    const web = idOf(production, 'AWS::Lambda::Function', 'Web');
+    for (const routeKey of ['GET /', 'GET /api/{proxy+}']) {
       production.hasResourceProperties('AWS::ApiGatewayV2::Route', {
         RouteKey: routeKey,
-        AuthorizationType: 'AWS_IAM',
+        AuthorizationType: 'NONE',
       });
     }
     production.resourceCountIs('AWS::ApiGatewayV2::Route', 2);
+    production.resourceCountIs('AWS::ApiGatewayV2::Integration', 1);
+    production.hasResourceProperties('AWS::ApiGatewayV2::Integration', {
+      IntegrationUri: { 'Fn::GetAtt': [web, 'Arn'] },
+      PayloadFormatVersion: '2.0',
+    });
   });
 
   it('logs every request as JSON and throttles the stage', () => {
@@ -197,24 +285,27 @@ describe('ApiStack', () => {
     });
   });
 
-  it('alarms on the API, the function and the table, in either tier', () => {
+  it('alarms on the API, both functions and the table, in either tier', () => {
     for (const template of [production, development]) {
-      // 5xx; errors, throttles and duration; the table's read and write
-      // throttles and system errors.
-      template.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 3 + 3);
+      // 5xx; errors, throttles and duration of each function; the table's
+      // read and write throttles and system errors.
+      template.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 2 * 3 + 3);
       template.resourceCountIs('AWS::CloudWatch::Dashboard', 1);
-      // The p99 duration alarm fires at 8 of the function's 10 seconds.
-      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
-        Metrics: [
-          Match.objectLike({
-            MetricStat: Match.objectLike({
-              Metric: Match.objectLike({ MetricName: 'Duration' }),
-              Stat: 'p99',
+      // The p99 duration alarms fire at 8 of the web function's 10 seconds
+      // and 240 of the Checker's 300.
+      for (const threshold of [8000, 240000]) {
+        template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+          Metrics: [
+            Match.objectLike({
+              MetricStat: Match.objectLike({
+                Metric: Match.objectLike({ MetricName: 'Duration' }),
+                Stat: 'p99',
+              }),
             }),
-          }),
-        ],
-        Threshold: 8000,
-      });
+          ],
+          Threshold: threshold,
+        });
+      }
       template.hasOutput('AlarmTopicArn', { Value: { Ref: Match.anyValue() } });
       template.hasOutput('EntryPoint', {
         Value: { 'Fn::GetAtt': [Match.anyValue(), 'ApiEndpoint'] },
@@ -228,7 +319,7 @@ describe('ApiStack', () => {
     });
   });
 
-  it('backs up daily for retentionDays in production, and not at all in development', () => {
+  it('backs up the table daily for retentionDays in production, and not at all in development', () => {
     production.hasResourceProperties('AWS::Backup::BackupPlan', {
       BackupPlan: {
         BackupPlanRule: [Match.objectLike({ Lifecycle: { DeleteAfterDays: 35 }, CopyActions: [] })],
@@ -236,14 +327,11 @@ describe('ApiStack', () => {
     });
     // The data table by ARN, never the Container's tag, which a development
     // stack in the same account carries too (#1267).
-    const [data, ...others] = Object.keys(production.findResources('AWS::DynamoDB::Table')).filter(
-      (id) => id.startsWith('Items'),
-    );
-    expect([data, others]).toEqual([expect.any(String), []]);
+    const table = idOf(production, 'AWS::DynamoDB::Table', 'Table');
     production.resourceCountIs('AWS::Backup::BackupSelection', 1);
     production.hasResourceProperties('AWS::Backup::BackupSelection', {
       BackupSelection: Match.objectLike({
-        Resources: [{ 'Fn::GetAtt': [data, 'Arn'] }],
+        Resources: [{ 'Fn::GetAtt': [table, 'Arn'] }],
         ListOfTags: Match.absent(),
         Conditions: Match.absent(),
       }),
@@ -257,6 +345,14 @@ describe('ApiStack', () => {
     template.resourceCountIs('AWS::Backup::BackupPlan', 0);
     template.hasResourceProperties('AWS::DynamoDB::Table', {
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+    });
+  });
+
+  it('keeps earlier report versions as long as the backups when they outlast 35 days', () => {
+    synth('production', { retentionDays: 90 }).hasResourceProperties('AWS::S3::Bucket', {
+      LifecycleConfiguration: {
+        Rules: [{ Status: 'Enabled', NoncurrentVersionExpiration: { NoncurrentDays: 90 } }],
+      },
     });
   });
 
@@ -280,148 +376,6 @@ describe('ApiStack', () => {
         },
       },
     );
-  });
-});
-
-describe('ApiStack data stores', () => {
-  it("connects the function to each Connector's data store and alarms on its table", () => {
-    const connected: string[] = [];
-    const connect: Connect = (scope, fn, rules) => {
-      connected.push(fn.node.id);
-      return new Table(scope, 'Store', {
-        partitionKey: { name: 'pk', type: AttributeType.STRING },
-        deletionProtection: rules.keepData,
-      });
-    };
-    const template = synth('production', {}, {}, [['Store', connect]]);
-    expect(connected).toEqual(['Handler']);
-    template.resourceCountIs('AWS::DynamoDB::Table', TABLES + 1);
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 3 + (TABLES + 1) * 3);
-    // Its table is data: backed up with the stack's own (#1267).
-    const tables = Object.keys(template.findResources('AWS::DynamoDB::Table'));
-    const backedUp = ['Items', 'Store'].map((name) => tables.find((id) => id.startsWith(name)));
-    template.hasResourceProperties('AWS::Backup::BackupSelection', {
-      BackupSelection: Match.objectLike({
-        Resources: backedUp.map((id) => ({ 'Fn::GetAtt': [id, 'Arn'] })),
-      }),
-    });
-  });
-
-  it('alarms on a cluster store by its CPU and connections, and backs it up by ARN', () => {
-    // A stand-in for what the rds Connector builds: a Serverless v2 cluster
-    // that scales to 8 ACU, in a VPC of its own.
-    const connect: Connect = (scope) => {
-      const vpc = new Vpc(scope, 'StoreVpc', {
-        natGateways: 0,
-        subnetConfiguration: [{ name: 'Isolated', subnetType: SubnetType.PRIVATE_ISOLATED }],
-      }) as IVpc;
-      return new DatabaseCluster(scope, 'Store', {
-        engine: DatabaseClusterEngine.auroraPostgres({
-          version: AuroraPostgresEngineVersion.VER_16_6,
-        }),
-        writer: ClusterInstance.serverlessV2('Writer'),
-        serverlessV2MaxCapacity: 8,
-        vpc,
-        vpcSubnets: { subnetType: SubnetType.PRIVATE_ISOLATED },
-      });
-    };
-    const template = synth('production', {}, {}, [['Store', connect]]);
-    template.resourceCountIs('AWS::RDS::DBCluster', 1);
-    // The API's, the function's three, the tables' three each, and the cluster's two.
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 1 + 3 + TABLES * 3 + 2);
-    const [clusterId] = Object.keys(template.findResources('AWS::RDS::DBCluster'));
-    const clusterMetric = (name: string) =>
-      Match.arrayWith([
-        Match.objectLike({
-          MetricStat: Match.objectLike({
-            Metric: {
-              Namespace: 'AWS/RDS',
-              MetricName: name,
-              Dimensions: [{ Name: 'DBClusterIdentifier', Value: { Ref: clusterId } }],
-            },
-          }),
-        }),
-      ]);
-    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
-      Metrics: clusterMetric('DatabaseConnections'),
-      Threshold: Math.floor(1669 * 0.9),
-    });
-    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
-      Metrics: clusterMetric('CPUUtilization'),
-      Threshold: 90,
-    });
-    // Backed up with the tables, after them (#1923).
-    const [itemsId] = Object.keys(template.findResources('AWS::DynamoDB::Table')).filter((id) =>
-      id.startsWith('Items'),
-    );
-    template.hasResourceProperties('AWS::Backup::BackupSelection', {
-      BackupSelection: Match.objectLike({
-        Resources: [
-          { 'Fn::GetAtt': [itemsId, 'Arn'] },
-          { 'Fn::GetAtt': [clusterId, 'DBClusterArn'] },
-        ],
-      }),
-    });
-  });
-
-  it('reads the connections limit from the cluster scaling, and takes 1 ACU without one', () => {
-    const stack = new ApiStack(new App(), 'test', { tier: 'development', operations: OPERATIONS });
-    const vpc = new Vpc(stack, 'Vpc', {
-      natGateways: 0,
-      subnetConfiguration: [{ name: 'Isolated', subnetType: SubnetType.PRIVATE_ISOLATED }],
-    }) as IVpc;
-    const engine = DatabaseClusterEngine.auroraPostgres({
-      version: AuroraPostgresEngineVersion.VER_16_6,
-    });
-    const vpcSubnets = { subnetType: SubnetType.PRIVATE_ISOLATED };
-    const scaled = new DatabaseCluster(stack, 'Scaled', {
-      engine,
-      vpc,
-      vpcSubnets,
-      writer: ClusterInstance.serverlessV2('Writer'),
-      serverlessV2MaxCapacity: 8,
-    });
-    const provisioned = new DatabaseCluster(stack, 'Provisioned', {
-      engine,
-      vpc,
-      vpcSubnets,
-      writer: ClusterInstance.provisioned('Writer'),
-    });
-    const between = new DatabaseCluster(stack, 'Between', {
-      engine,
-      vpc,
-      vpcSubnets,
-      writer: ClusterInstance.serverlessV2('Writer'),
-      serverlessV2MinCapacity: 1,
-      serverlessV2MaxCapacity: 2,
-    });
-    const wide = new DatabaseCluster(stack, 'Wide', {
-      engine,
-      vpc,
-      vpcSubnets,
-      writer: ClusterInstance.serverlessV2('Writer'),
-      serverlessV2MaxCapacity: 32,
-    });
-    // The Aurora User Guide's table: 8 ACU allow 1,669, 1 ACU 189; 2 ACU sit a
-    // third of the way from 189 to 4 ACU's 823; 32 ACU would allow 5,000, but a
-    // minimum of 0.5 ACU (the default) stops at 2,000.
-    expect(maxConnections(scaled)).toBe(Math.floor(1669 * 0.9));
-    expect(maxConnections(provisioned)).toBe(Math.floor(189 * 0.9));
-    expect(maxConnections(between)).toBe(Math.floor(Math.floor(189 + (823 - 189) / 3) * 0.9));
-    expect(maxConnections(wide)).toBe(Math.floor(2000 * 0.9));
-  });
-
-  it('connects the data stores of the rendered infra/connectors.ts by default', () => {
-    const template = Template.fromStack(
-      new ApiStack(new App(), 'test', {
-        tier: 'production',
-        operations: OPERATIONS,
-      }),
-    );
-    // One table or one cluster per store, beside the stack's own tables.
-    const tables = Object.keys(template.findResources('AWS::DynamoDB::Table')).length;
-    const clusters = Object.keys(template.findResources('AWS::RDS::DBCluster')).length;
-    expect(tables - TABLES + clusters).toBe(DATA_STORES.length);
   });
 });
 
