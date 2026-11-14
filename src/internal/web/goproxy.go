@@ -3,12 +3,15 @@ package web
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/JairJosafath/mcp-customs/src/internal/store"
 )
 
 // GoProxy reads the demo Go module proxy's files, and false for a file it
@@ -51,6 +54,12 @@ func (h *Handler) goProxyFile(ctx context.Context, path string) (Response, error
 		return problem(http.StatusNotFound, "No module proxy file "+quotable(path)+"."), nil
 	}
 	body, found, err := h.deps.Proxy.GetProxyFile(ctx, p)
+	if errors.Is(err, store.ErrProxyDenied) {
+		// A 404 lets the go command and the poller ask the public proxy;
+		// a 500 would stop them. Logged, in case the grant is what's wrong.
+		h.deps.Log.WarnContext(ctx, "S3 denied a proxy file's read; answered 404.", "path", p, "error", err.Error())
+		found, err = false, nil
+	}
 	if err != nil {
 		return Response{}, fmt.Errorf("read the proxy file %s: %w", p, err)
 	}

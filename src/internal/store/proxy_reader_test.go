@@ -4,6 +4,8 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/aws/smithy-go"
 )
 
 func TestProxyReaderReadsOnlyUnderTheProxyPrefix(t *testing.T) {
@@ -24,5 +26,16 @@ func TestProxyReaderReadsOnlyUnderTheProxyPrefix(t *testing.T) {
 	want := []string{"b/goproxy/example.com/m/@v/list", "b/goproxy/example.com/m/@latest"}
 	if !reflect.DeepEqual(fake.keys, want) {
 		t.Errorf("asked %v, want %v", fake.keys, want)
+	}
+}
+
+func TestAProxyReadS3DeniesIsErrProxyDenied(t *testing.T) {
+	denied := &fakeS3Get{err: &smithy.GenericAPIError{Code: "AccessDenied", Message: "Access Denied"}}
+	if _, found, err := NewProxyReader(denied, "b").GetProxyFile(t.Context(), "example.com/m/@latest"); found || !errors.Is(err, ErrProxyDenied) {
+		t.Errorf("denied: %v, %v; want ErrProxyDenied", found, err)
+	}
+	failed := &fakeS3Get{err: &smithy.GenericAPIError{Code: "InternalError"}}
+	if _, _, err := NewProxyReader(failed, "b").GetProxyFile(t.Context(), "example.com/m/@latest"); err == nil || errors.Is(err, ErrProxyDenied) {
+		t.Errorf("another failure: %v, want an error other than ErrProxyDenied", err)
 	}
 }

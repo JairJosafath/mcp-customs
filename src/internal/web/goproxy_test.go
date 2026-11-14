@@ -1,11 +1,17 @@
 package web
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/JairJosafath/mcp-customs/src/internal/store"
 )
 
 const proxyRoute = "GET /goproxy/{proxy+}"
@@ -66,5 +72,25 @@ func TestADemoProxyReadThatFailsIsA500(t *testing.T) {
 	resp := f.answer(t, request(http.MethodGet, "/goproxy/example.com/m/@latest", proxyRoute))
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("%d, want 500", resp.StatusCode)
+	}
+}
+
+func TestAMissingProxyFileIsA404WhetherS3SaysNoSuchKeyOrDenied(t *testing.T) {
+	path := "/goproxy/github.com/acme/weather/@v/list"
+	for name, err := range map[string]error{
+		"no such key": nil,
+		"denied":      fmt.Errorf("goproxy/x: %w", store.ErrProxyDenied),
+	} {
+		f := newFixture(t)
+		var logs bytes.Buffer
+		f.h.deps.Log = slog.New(slog.NewJSONHandler(&logs, nil))
+		f.proxy.err = err
+		resp := f.answer(t, request(http.MethodGet, path, proxyRoute))
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s: %d, want 404", name, resp.StatusCode)
+		}
+		if logged := strings.Contains(logs.String(), "S3 denied"); logged != (err != nil) {
+			t.Errorf("%s: logged %q, want a warning only when denied", name, logs.String())
+		}
 	}
 }
