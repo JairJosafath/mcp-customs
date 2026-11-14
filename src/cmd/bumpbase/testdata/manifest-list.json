@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+  "manifests": [
+    {
+      "digest": "sha256:9a74aead0bda9a1bf4bec44a051b528d3f1f129c29adee4e8ab7e0784180b99c",
+      "platform": { "architecture": "amd64", "os": "linux" }
+    },
+    {
+      "digest": "sha256:c57e7030b32c60aa8c1dd78d86eb2101b73e17d3ec202a615f2e45aa988006c2",
+      "platform": { "architecture": "arm64", "os": "linux" }
+    }
+  ]
+}

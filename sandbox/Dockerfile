@@ -7,8 +7,8 @@
 # canaries arrive later, through the /run hook (docs/contracts.md).
 # The base, pinned by digest: the manifest list of al2023-minimal.2026.11.05.18
 # (arm64 and x86_64), Amazon Linux 2023 release 2023.12.20261102. To move it,
-# read the new tag's digest and its release (the ADD line of its history)
-# from the public ECR gallery, and change both here.
+# with the release and every dnf pin below, run, in src/:
+#   go run ./cmd/bumpbase -dockerfile ../sandbox/Dockerfile <new tag>
 FROM public.ecr.aws/lambda/microvms:al2023-minimal.2026.11.05.18@sha256:3e45d46e969eb0d34ea954aff12747e15ca3f4a594788812c7218445777fa4bc
 ARG AL2023_RELEASE=2023.12.20261102
 
