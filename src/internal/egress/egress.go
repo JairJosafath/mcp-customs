@@ -11,6 +11,8 @@ package egress
 import (
 	"context"
 	"net/http"
+	"net/url"
+	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -120,6 +122,10 @@ type Config struct {
 	// InstallAllow are the hosts allowed only while an install runs, such
 	// as the package registries (RegistryHosts).
 	InstallAllow []string
+	// InstallGet are URL prefixes, such as the stack's demo Go module
+	// proxy (https://<host>/goproxy/), an install may only GET (or HEAD)
+	// while it runs: any other method or path on their hosts is refused.
+	InstallGet []string
 	// ServerEnv is what the server's environment needs to go through the
 	// proxy and trust the CA (see Env).
 	ServerEnv []string
@@ -135,6 +141,7 @@ type Egress struct {
 	mu         sync.Mutex
 	allowed    map[string]bool
 	install    map[string]bool
+	installGet map[string][]string
 	installing bool
 	canaries   canary.Set
 	observe    Observer
@@ -159,13 +166,24 @@ type Egress struct {
 
 // New makes the proxy. Nothing is observed until Observe names an observer.
 func New(cfg Config) *Egress {
-	e := &Egress{cfg: cfg, allowed: map[string]bool{}, install: map[string]bool{}, fakes: map[string]string{}, observe: func(string, any) {}}
+	e := &Egress{
+		cfg: cfg, allowed: map[string]bool{}, install: map[string]bool{}, installGet: map[string][]string{},
+		fakes: map[string]string{}, observe: func(string, any) {},
+	}
 	e.sealed, e.seal = context.WithCancel(context.Background())
 	e.Allow(cfg.Allow...)
 	for _, h := range cfg.InstallAllow {
 		if h = normalHost(h); h != "" {
 			e.install[h] = true
 		}
+	}
+	for _, prefix := range cfg.InstallGet {
+		u, err := url.Parse(prefix)
+		if err != nil || u.Scheme != "https" || normalHost(u.Hostname()) == "" {
+			continue
+		}
+		h := normalHost(u.Hostname())
+		e.installGet[h] = append(e.installGet[h], u.Path)
 	}
 	return e
 }
@@ -219,6 +237,10 @@ func (e *Egress) Allow(hosts ...string) []string {
 	return list
 }
 
+// isAllowed says whether host may be looked up and connected to: an
+// allowed host, a registry while an install runs, or a host with an
+// InstallGet prefix while an install runs, whose requests requestAllowed
+// still holds to that prefix.
 func (e *Egress) isAllowed(host string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -231,7 +253,41 @@ func (e *Egress) allowedLocked(host string) bool {
 	if e.isSealed() {
 		return false
 	}
-	return e.allowed[h] || (e.installing && e.install[h])
+	return e.allowed[h] || (e.installing && (e.install[h] || len(e.installGet[h]) > 0))
+}
+
+// requestAllowed is requestAllowedLocked, taking e.mu.
+func (e *Egress) requestAllowed(method, host string, u *url.URL) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.requestAllowedLocked(method, host, u)
+}
+
+// requestAllowedLocked says, with e.mu held, whether a request may go on
+// to host: none once sealed; any request to an allowed host or, while an
+// install runs, a registry; and while an install runs, a GET or HEAD under
+// one of host's InstallGet prefixes, its path clean, as decoded and as
+// sent, so it can't climb out of the prefix.
+func (e *Egress) requestAllowedLocked(method, host string, u *url.URL) bool {
+	if e.isSealed() {
+		return false
+	}
+	h := normalHost(host)
+	if e.allowed[h] || (e.installing && e.install[h]) {
+		return true
+	}
+	if !e.installing || (method != http.MethodGet && method != http.MethodHead) || path.Clean(u.Path) != u.Path {
+		return false
+	}
+	// The path as sent, too: a module path's capitals are escaped as "!",
+	// which Go keeps as RawPath; an escaped "/" or "." must not reach past
+	// the prefix either.
+	for _, prefix := range e.installGet[h] {
+		if strings.HasPrefix(u.Path, prefix) && strings.HasPrefix(u.EscapedPath(), prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Egress) record(kind string, detail any) {

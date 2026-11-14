@@ -41,18 +41,23 @@ func (r *ReportReader) GetReport(ctx context.Context, checkID string) ([]byte, b
 	if !ValidCheckID(checkID) {
 		return nil, false, ErrBadCheckID
 	}
-	key := "reports/" + checkID + ".json"
-	out, err := r.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(r.name), Key: aws.String(key)})
+	return getBounded(ctx, r.client, r.name, "reports/"+checkID+".json")
+}
+
+// getBounded reads key from bucket, at most MaxReportBytes, and false when
+// there is no such key.
+func getBounded(ctx context.Context, client S3GetAPI, bucket, key string) ([]byte, bool, error) {
+	out, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
 	if noKey := new(types.NoSuchKey); errors.As(err, &noKey) {
 		return nil, false, nil
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("get %s from bucket %s: %w", key, r.name, err)
+		return nil, false, fmt.Errorf("get %s from bucket %s: %w", key, bucket, err)
 	}
 	defer func() { _ = out.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(out.Body, MaxReportBytes+1))
 	if err != nil {
-		return nil, false, fmt.Errorf("read %s from bucket %s: %w", key, r.name, err)
+		return nil, false, fmt.Errorf("read %s from bucket %s: %w", key, bucket, err)
 	}
 	if len(body) > MaxReportBytes {
 		return nil, false, fmt.Errorf("read %s: %w", key, ErrReportTooLarge)

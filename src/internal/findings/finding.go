@@ -55,6 +55,9 @@ const (
 	// The sandbox's egress could not be sealed, or its observations read a
 	// last time after: what the server sent at the end may be unseen.
 	RuleNotSealed = "not-sealed"
+	// A STEP# record of the seal or the last read could not be written,
+	// though the action itself worked: the check's page misses that step.
+	RuleStepNotRecorded = "step-not-recorded"
 )
 
 // The rules of hidden characters Unicode's tables name, beyond those above.
