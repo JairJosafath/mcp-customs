@@ -1,0 +1,8 @@
+{
+  "probes": [
+    {
+      "tool": 0,
+      "arguments": { "repo": "octocat/hello-world", "github_token": "{{canary:github-token}}" }
+    }
+  ]
+}
