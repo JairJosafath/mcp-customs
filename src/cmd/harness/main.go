@@ -8,9 +8,10 @@
 // MicroVM"). It reads HARNESS_USER (the unprivileged user, "dev" by
 // default), HARNESS_WORKDIR (the server's working directory,
 // ~/projects/server by default), PORT (the Harness API's, 8080 by default),
-// HOOKS_PORT (9000 by default), and GO_PROXY_URL, the GOPROXY-style list
+// HOOKS_PORT (9000 by default), GO_PROXY_URL, the GOPROXY-style list
 // Go installs resolve through, whose hosts an install may reach (Go's own
-// default when unset). It must run as root, and refuses to
+// default when unset), and API_HOST, the stack's own API host, which
+// /allow and /install never allow. It must run as root, and refuses to
 // start otherwise: it runs the server as the unprivileged user, never as
 // itself.
 //
@@ -72,6 +73,7 @@ func serve(log *slog.Logger) error {
 	defer stopEgress()
 	cfg := configFor(account)
 	cfg.GoProxy = goProxy
+	cfg.APIHost = os.Getenv("API_HOST")
 	cfg.Egress = eg
 	h, err := harness.New(cfg, log)
 	if err != nil {

@@ -1,5 +1,5 @@
 import { App } from 'aws-cdk-lib';
-import { Template } from 'aws-cdk-lib/assertions';
+import { Match, Template } from 'aws-cdk-lib/assertions';
 import { Node } from 'constructs';
 import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -125,7 +125,7 @@ describe('the demo Go module proxy', () => {
       Environment: { Variables: { [GO_PROXY_URL]: list } },
     });
     template.hasResourceProperties('AWS::Lambda::MicrovmImage', {
-      EnvironmentVariables: [{ Key: GO_PROXY_URL, Value: list }],
+      EnvironmentVariables: Match.arrayWith([{ Key: GO_PROXY_URL, Value: list }]),
     });
   });
 

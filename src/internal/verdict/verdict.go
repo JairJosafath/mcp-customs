@@ -42,6 +42,8 @@ var codeFloors = map[string]Verdict{
 	findings.RuleUnprobedTool:      Review,
 	findings.RuleOversized:         Review,
 	findings.RuleNotSealed:         Review,
+	findings.RuleOwnAPIHost:        Review,
+	findings.RuleStepNotRecorded:   Review,
 }
 
 // Input is what a verdict is decided from.

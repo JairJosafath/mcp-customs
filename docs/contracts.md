@@ -23,6 +23,7 @@ pull request.
 | `src/internal/poller`               | The poll: each approved package's registry asked for its latest version, a re-check started for a new one          |
 | `src/internal/store`                | DynamoDB and S3 access shared by the Checker and the web function                                                  |
 | `src/internal/web`                  | Handlers and `html/template` pages                                                                                 |
+| `src/internal/demoscene`            | What the Checker writes for each demo check, played by `src/cmd/webstub`; a Checker test holds it to the Checker   |
 | `src/demo/weather`, `src/demo/mail` | The demo MCP servers, each its own `main`                                                                          |
 | `sandbox/Dockerfile`                | The MicroVM image: Go, Node, Python, the harness, a fake developer home                                            |
 | `infra/`                            | One CDK app: the Checker (durable), the web function behind the HTTP API, the table, the bucket, the MicroVM image |
@@ -62,6 +63,15 @@ The investigation's calls (`/call` again, `/source`, `/download`, `/clock`)
 and `/allow` are best effort: an error answer is told to the judge, and the
 check goes on.
 
+The server under test never reaches the stack's own API. Before `allow`
+calls `/allow`, the Checker refuses an allowlist holding its API host
+(`API_HOST`), or a name that resolves to one of that host's addresses
+(or any name, when the API host doesn't resolve): no `/allow` is sent,
+the `allow` step records an `allow-own-api` code finding, at least
+review, and the judge investigates nothing more. The harness, given the
+same host as the image's `API_HOST`, answers `/allow`, and `/install`'s
+`allowHosts`, 403 when they name it.
+
 `/seal` ends egress for good: the allowlist (the registries' too) is
 emptied, every new CONNECT is refused (recorded as a refused `connect`,
 searched), and a request still being sent on to an allowed host is cut;
@@ -73,7 +83,9 @@ again answers the same; `/allow` after it answers 409, and a harness
 with no egress proxy answers `/seal` 409. Once the investigation ends,
 the Checker calls `/seal`, then `GET /observations` a last time, then
 ends the MicroVM, and decides the verdict from that last read. A seal or
-last read that fails is a `not-sealed` code finding, at least review.
+last read that fails is a `not-sealed` code finding, at least review;
+one that works but whose STEP# item can't be written is a
+`step-not-recorded` code finding, also at least review.
 
 An observation is `{"at","kind","detail"}`, where `kind` is one of `dns`
 (every UDP datagram to port 53, at any address: name, type, answers,

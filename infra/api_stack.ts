@@ -24,7 +24,7 @@ import { DEMO_VERSIONS_FILE, DemoProxy, GO_PROXY_PREFIX } from './demo_proxy';
 import { goFunction } from './go_function';
 import { APPROVED_PARTITION, Recheck, POLLER_TIMEOUT } from './recheck';
 import { RecheckOutcomes } from './recheck_outcomes';
-import { Sandbox } from './sandbox';
+import { API_HOST, Sandbox } from './sandbox';
 import { TIER_RULES } from './standard';
 import type { Operations, Tier, TierRules } from './standard';
 
@@ -258,10 +258,17 @@ export class ApiStack extends Stack {
     // other Go module from the public proxy (docs/contracts.md, "The demo proxy").
     const goProxy = `${api.apiEndpoint}/goproxy,${PUBLIC_GO_PROXY}`;
 
+    // The API's own host, which no server under test may reach: the
+    // Checker and the harness both refuse it in an allowlist.
+    const apiHost = `${api.apiId}.execute-api.${this.region}.${this.urlSuffix}`;
+    checker.addEnvironment(API_HOST, apiHost);
+
     // One MicroVM per check, from the harness image.
-    new Sandbox(this, 'Sandbox', { logRetention: rules.logRetention, goProxy }).grantLaunch(
-      checker,
-    );
+    new Sandbox(this, 'Sandbox', {
+      logRetention: rules.logRetention,
+      goProxy,
+      apiHost,
+    }).grantLaunch(checker);
 
     const recheck = new Recheck(this, 'Recheck', { table, checker, rules, goProxy });
     const outcomes = new RecheckOutcomes(this, 'RecheckOutcomes', { checker });

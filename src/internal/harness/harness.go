@@ -40,6 +40,9 @@ type Config struct {
 	// GoProxy is the GOPROXY-style list a Go install resolves through:
 	// the stack's demo proxy, then the public one. Empty keeps Go's own.
 	GoProxy string
+	// APIHost is the stack's own API host, API_HOST: /allow and /install
+	// refuse to allow it. Empty refuses nothing.
+	APIHost string
 	// Now is the clock observations are stamped with.
 	Now func() time.Time
 	// Egress is the egress proxy the server's traffic goes through, or nil
@@ -196,6 +199,9 @@ func (h *Harness) install(r *http.Request) (int, answer) {
 	}
 	if err := checkHosts(req.AllowHosts); err != nil {
 		return problem(http.StatusBadRequest, err.Error())
+	}
+	if status, body := h.refuseOwnAPI(req.AllowHosts); status != 0 {
+		return status, body
 	}
 	if h.cfg.Egress != nil {
 		h.cfg.Egress.Allow(req.AllowHosts...)
@@ -416,6 +422,9 @@ func (h *Harness) allow(r *http.Request) (int, answer) {
 	}
 	if err := checkHosts(req.Hosts); err != nil {
 		return problem(http.StatusBadRequest, err.Error())
+	}
+	if status, body := h.refuseOwnAPI(req.Hosts); status != 0 {
+		return status, body
 	}
 	if h.cfg.Egress == nil {
 		return problem(http.StatusConflict, "This harness has no egress proxy.")

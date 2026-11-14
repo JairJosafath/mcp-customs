@@ -54,6 +54,10 @@ type Deps struct {
 	Token func(checkID string) string
 	// Events is where a superseded approval is announced.
 	Events Events
+	// APIHost is the stack's own API host, API_HOST: no allowlist may hold
+	// it, or a name LookupHost resolves to one of its addresses.
+	APIHost    string
+	LookupHost LookupHost
 }
 
 // Input is the event that starts a check.
@@ -120,6 +124,9 @@ type run struct {
 	sealing bool
 	// supersedeDone says a re-check's supersede ran.
 	supersedeDone bool
+	// ownAPI says allow refused the stack's own API host: the judge
+	// investigates nothing after it.
+	ownAPI bool
 }
 
 // Handler is the Checker's durable handler. Each write and each call is a
@@ -273,6 +280,12 @@ func (r *run) judge(ctx durable.Context) (verdict.Input, error) {
 	}
 	if err := r.do(ctx, ActAllow, hosts); err != nil {
 		return verdict.Input{}, err
+	}
+	// An allowlist that reaches the stack's own API ends the investigation
+	// before it starts: its finding gives review.
+	if r.ownAPI {
+		in.Code = unique(r.code)
+		return in, nil
 	}
 	if err := r.investigate(ctx, &in, evidence, j); err != nil {
 		return verdict.Input{}, err

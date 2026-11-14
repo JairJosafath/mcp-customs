@@ -27,9 +27,25 @@ Every user-visible change, newest first. The format follows
   `--scene` records one scene to its own file. `demo/script.md` is its narration and `docs/results.md` the
   write-up's skeleton. `src/cmd/webstub` serves the web page with a fake
   store and Checker, for the recorder's test; it is never deployed.
+- The web stub plays the steps the Checker writes for each demo scene
+  (`src/internal/demoscene`), and a Checker test runs each scene through
+  the Checker with its fakes and fails on any difference, so the stub
+  can't drift (#46): it now shows the `allow`, `seal` and last `observe`
+  steps, tools numbered from 0, and the verdict's model findings. A scene
+  that ends at another verdict fails with
+  `scene <name>: expected <verdict>, got <verdict>`.
 
 ### Fixed
 
+- The server under test can never be allowed to reach MCP Customs' own
+  API (#53). The Checker refuses an allowlist holding the stack's API host,
+  or a name that resolves to it, as an `allow-own-api` code finding that
+  ends the investigation at review; the harness's `POST /allow` refuses
+  the same host with 403.
+- A seal or last read that works but whose step can't be written ends
+  at review with `step-not-recorded`, not `not-sealed` (which said egress
+  stayed open) and not a failed check (#48). A seal or last read that
+  fails still gives `not-sealed`.
 - The harness finds `iptables` and `ip6tables`: the MicroVM image's PATH
   now has `/usr/sbin`, where Amazon Linux 2023 keeps them, so the firewall
   comes up (#20). The image's base is pinned by digest, dnf to the base's

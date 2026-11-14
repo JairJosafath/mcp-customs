@@ -21,7 +21,8 @@ import (
 // memoryRecorder keeps every write the handler makes, in order, and
 // creates a check only once, as the store does. putErr and stepErr make
 // those writes fail, as an outage would, and failStep makes the write of
-// steps of that name fail; loseFirstReply makes the first
+// steps of that name fail, once a step named failAfter is written when
+// that is set; loseFirstReply makes the first
 // create succeed but answer an error, as a reply lost on the network does.
 type memoryRecorder struct {
 	mu             sync.Mutex
@@ -37,6 +38,7 @@ type memoryRecorder struct {
 	putErr         error
 	stepErr        error
 	failStep       string
+	failAfter      string
 	loseFirstReply bool
 	puts           int
 	retries        []string
@@ -163,7 +165,7 @@ func (m *memoryRecorder) AppendStep(_ context.Context, checkID string, step stor
 	if m.stepErr != nil {
 		return m.stepErr
 	}
-	if step.Name == m.failStep {
+	if step.Name == m.failStep && (m.failAfter == "" || slices.ContainsFunc(m.steps, func(s store.Step) bool { return s.Name == m.failAfter })) {
 		return errors.New("the table is unavailable")
 	}
 	// As DynamoDB does, refuse an item larger than it keeps.
@@ -507,7 +509,10 @@ func (w *world) deps() Deps {
 		Judge:    w.judge,
 		Canaries: func() canary.Set { return fixedCanaries },
 		Token:    func(checkID string) string { return "run-token-" + checkID },
-		Events:   w.events,
+		// Every test keeps the stack's own API out of the allowlist.
+		APIHost:    apiHost,
+		LookupHost: testDNS,
+		Events:     w.events,
 	}
 }
 
