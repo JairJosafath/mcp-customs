@@ -72,7 +72,7 @@ func bump(ctx context.Context, src basebump.Source, path string, args []string, 
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
-	if err := dir.WriteFile(name, []byte(rewritten), info.Mode().Perm()); err != nil {
+	if err := replace(dir, name, []byte(rewritten), info.Mode().Perm()); err != nil {
 		return fmt.Errorf("write the Dockerfile: %w", err)
 	}
 	fmt.Fprintf(out, "%s -> %s\n%s -> %s\n%s -> %s\n", from.Tag, to.Tag, from.Digest, to.Digest, from.Release, to.Release)
@@ -80,6 +80,24 @@ func bump(ctx context.Context, src basebump.Source, path string, args []string, 
 		if from.Packages[name] != to.Packages[name] {
 			fmt.Fprintf(out, "%s: %s -> %s\n", name, from.Packages[name], to.Packages[name])
 		}
+	}
+	return nil
+}
+
+// replace writes data to a new file beside name, then renames it over name,
+// so the file is either all the old text or all the new.
+func replace(dir *os.Root, name string, data []byte, perm os.FileMode) error {
+	tmp := "." + name + ".bumpbase"
+	f, err := dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err = errors.Join(err, f.Close()); err == nil {
+		err = dir.Rename(tmp, name)
+	}
+	if err != nil {
+		return errors.Join(err, dir.Remove(tmp))
 	}
 	return nil
 }

@@ -15,7 +15,9 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
+	"time"
 )
 
 // Source reads a tag's digest and release from the public ECR gallery, and
@@ -29,17 +31,28 @@ type Source struct {
 	// Mirrors is the root of the releases' mirror lists, Arch the
 	// repository's architecture. The image is the gallery's linux/arm64 one.
 	Mirrors, Arch string
+	// MirrorHosts are the only hosts, host[:port], a mirror list or
+	// repomd.xml may send it to.
+	MirrorHosts []string
 }
+
+// mirrorHosts are AL2023's: what its mirror lists name today.
+var mirrorHosts = []string{"cdn.amazonlinux.com"}
+
+// ErrRefused says a URL is not one Source fetches: not https, a host not on
+// its list, or a redirect.
+var ErrRefused = errors.New("refused")
 
 // Public is the Source the Dockerfile's base comes from: the
 // lambda/microvms gallery image for arm64, and AL2023's core repository.
 func Public() Source {
 	return Source{
-		Client:     http.DefaultClient,
-		Gallery:    "https://public.ecr.aws",
-		Repository: "lambda/microvms",
-		Mirrors:    "https://cdn.amazonlinux.com/al2023/core/mirrors",
-		Arch:       "aarch64",
+		Client:      &http.Client{Timeout: 2 * time.Minute},
+		Gallery:     "https://public.ecr.aws",
+		Repository:  "lambda/microvms",
+		Mirrors:     "https://cdn.amazonlinux.com/al2023/core/mirrors",
+		Arch:        "aarch64",
+		MirrorHosts: mirrorHosts,
 	}
 }
 
@@ -60,14 +73,14 @@ func (s Source) Image(ctx context.Context, tag string) (digest, release string, 
 	var token struct {
 		Token string `json:"token"`
 	}
-	body, err := s.get(ctx, s.Gallery+"/token/?scope=repository:"+s.Repository+":pull", "", "")
+	body, err := s.get(ctx, s.Gallery+"/token/?scope=repository:"+s.Repository+":pull", "", "", false)
 	if err != nil {
 		return "", "", err
 	}
 	if err := json.Unmarshal(body, &token); err != nil || token.Token == "" {
 		return "", "", fmt.Errorf("read the gallery's token: %w", errors.Join(err, errors.New("no token")))
 	}
-	body, err = s.get(ctx, s.Gallery+"/v2/"+s.Repository+"/manifests/"+url.PathEscape(tag), listTypes, token.Token)
+	body, err = s.get(ctx, s.Gallery+"/v2/"+s.Repository+"/manifests/"+url.PathEscape(tag), listTypes, token.Token, false)
 	if err != nil {
 		return "", "", err
 	}
@@ -123,7 +136,9 @@ func (s Source) blob(ctx context.Context, kind, digest, accept, token string, v 
 	if !digestRE.MatchString(digest) {
 		return fmt.Errorf("%s digest %q: not a sha256 digest", kind, digest)
 	}
-	body, err := s.get(ctx, s.Gallery+"/v2/"+s.Repository+"/"+kind+"/"+digest, accept, token)
+	// Only a blob may redirect (the gallery serves them from a CDN): its
+	// bytes are checked against the digest below.
+	body, err := s.get(ctx, s.Gallery+"/v2/"+s.Repository+"/"+kind+"/"+digest, accept, token, kind == "blobs")
 	if err != nil {
 		return err
 	}
@@ -140,7 +155,7 @@ func (s Source) blob(ctx context.Context, kind, digest, accept, token string, v 
 // release's repository.
 func (s Source) Packages(ctx context.Context, release string, names []string) (map[string]string, error) {
 	mirrorList := s.Mirrors + "/" + release + "/" + s.Arch + "/mirror.list"
-	body, err := s.get(ctx, mirrorList, "", "")
+	body, err := s.mirror(ctx, mirrorList)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +164,7 @@ func (s Source) Packages(ctx context.Context, release string, names []string) (m
 	if err != nil {
 		return nil, err
 	}
-	body, err = s.get(ctx, repo+"repodata/repomd.xml", "", "")
+	body, err = s.mirror(ctx, repo+"repodata/repomd.xml")
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +191,7 @@ func (s Source) Packages(ctx context.Context, release string, names []string) (m
 		if err != nil {
 			return nil, err
 		}
-		gz, err := s.get(ctx, primary, "", "")
+		gz, err := s.mirror(ctx, primary)
 		if err != nil {
 			return nil, err
 		}
@@ -205,11 +220,34 @@ func resolve(base, ref string) (string, error) {
 	return b.ResolveReference(r).String(), nil
 }
 
-// get reads a URL's body, failing on any status but 200.
-func (s Source) get(ctx context.Context, rawURL, accept, token string) ([]byte, error) {
+// mirror reads a URL on one of the mirror hosts, without redirects.
+func (s Source) mirror(ctx context.Context, rawURL string) ([]byte, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", rawURL, err)
+	}
+	if !slices.Contains(s.MirrorHosts, u.Host) {
+		return nil, fmt.Errorf("get %s: %s is not an AL2023 mirror host: %w", rawURL, u.Host, ErrRefused)
+	}
+	return s.get(ctx, rawURL, "", "", false)
+}
+
+// get reads an https URL's body, failing on any status but 200. It follows
+// a redirect, to https only, when follow says so, and refuses one otherwise.
+func (s Source) get(ctx context.Context, rawURL, accept, token string, follow bool) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("get %s: %w", rawURL, err)
+	}
+	if req.URL.Scheme != "https" {
+		return nil, fmt.Errorf("get %s: not https: %w", rawURL, ErrRefused)
+	}
+	client := *s.Client
+	client.CheckRedirect = func(next *http.Request, _ []*http.Request) error {
+		if !follow || next.URL.Scheme != "https" {
+			return fmt.Errorf("a redirect to %s: %w", next.URL, ErrRefused)
+		}
+		return nil
 	}
 	if accept != "" {
 		req.Header.Set("Accept", accept)
@@ -217,7 +255,7 @@ func (s Source) get(ctx context.Context, rawURL, accept, token string) ([]byte, 
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := s.Client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("get %s: %w", rawURL, err)
 	}
