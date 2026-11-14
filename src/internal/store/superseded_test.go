@@ -56,14 +56,52 @@ func TestASupersededLinkIsLiftedOnlyByTheRecheckThatSetIt(t *testing.T) {
 	if c0, _, _ := store.GetCheck(t.Context(), "c0"); c0.SupersededBy != newest.RecheckID {
 		t.Errorf("c0 %+v, want the link kept", c0)
 	}
-	for i := range 2 {
-		lifted, err := store.LiftSuperseded(t.Context(), "c0", newest.RecheckID)
-		if err != nil || lifted != (i == 0) {
-			t.Errorf("lift %d = %v, %v; want it lifted once", i, lifted, err)
-		}
+	if lifted, err := store.LiftSuperseded(t.Context(), "c0", newest.RecheckID); err != nil || !lifted {
+		t.Errorf("lift = %v, %v; want lifted", lifted, err)
 	}
 	if c0, _, _ := store.GetCheck(t.Context(), "c0"); c0.SupersededBy != "" {
 		t.Errorf("c0 %+v, want no link", c0)
+	}
+}
+
+func TestALiftRetriedAfterItCommittedStillAnswersLifted(t *testing.T) {
+	// A retry of a lift whose reply was lost must still say so, or the
+	// lifted event is never sent; another re-check's lift stays refused.
+	store := supersedingWorld(t)
+	newest := superseding("v1.0.2")
+	if marked, err := store.MarkSuperseded(t.Context(), "c0", newest); err != nil || !marked {
+		t.Fatalf("MarkSuperseded = %v, %v", marked, err)
+	}
+	for i := range 2 {
+		if lifted, err := store.LiftSuperseded(t.Context(), "c0", newest.RecheckID); err != nil || !lifted {
+			t.Errorf("lift %d = %v, %v; want lifted each time", i, lifted, err)
+		}
+	}
+	if lifted, err := store.LiftSuperseded(t.Context(), "c0", superseding("v1.0.1").RecheckID); err != nil || lifted {
+		t.Errorf("another re-check's lift = %v, %v; want false, nil", lifted, err)
+	}
+}
+
+func TestALateLiftRetryLeavesANewerMark(t *testing.T) {
+	store := supersedingWorld(t)
+	older, newest := superseding("v1.0.2"), superseding("v1.0.3")
+	if marked, err := store.MarkSuperseded(t.Context(), "c0", older); err != nil || !marked {
+		t.Fatalf("MarkSuperseded = %v, %v", marked, err)
+	}
+	if lifted, err := store.LiftSuperseded(t.Context(), "c0", older.RecheckID); err != nil || !lifted {
+		t.Fatalf("lift = %v, %v; want lifted", lifted, err)
+	}
+	if err := store.MarkPolled(t.Context(), "go", "example.com/mail", "v1.0.3"); err != nil {
+		t.Fatal(err)
+	}
+	if marked, err := store.MarkSuperseded(t.Context(), "c0", newest); err != nil || !marked {
+		t.Fatalf("MarkSuperseded = %v, %v", marked, err)
+	}
+	if lifted, err := store.LiftSuperseded(t.Context(), "c0", older.RecheckID); err != nil || lifted {
+		t.Errorf("late retry of the older lift = %v, %v; want false, nil", lifted, err)
+	}
+	if c0, _, _ := store.GetCheck(t.Context(), "c0"); c0.SupersededBy != newest.RecheckID {
+		t.Errorf("c0 %+v, want the newer link kept", c0)
 	}
 }
 

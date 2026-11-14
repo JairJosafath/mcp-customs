@@ -54,6 +54,7 @@ type memoryRecorder struct {
 	retries        []string
 	overtaken      bool
 	newestPolled   string
+	liftedBy       map[string]string
 }
 
 // memoryEvents keeps every event the Checker sends, superseded and lifted.
@@ -160,6 +161,9 @@ func (m *memoryRecorder) MarkSuperseded(_ context.Context, approvedID string, s 
 	return true, nil
 }
 
+// LiftSuperseded lifts check approvedID's mark while it names recheckID,
+// and answers true again to the re-check that lifted it while no newer
+// mark is set, as the store does.
 func (m *memoryRecorder) LiftSuperseded(_ context.Context, approvedID, recheckID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -167,10 +171,17 @@ func (m *memoryRecorder) LiftSuperseded(_ context.Context, approvedID, recheckID
 		return false, m.liftErr
 	}
 	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == approvedID })
-	if i < 0 || m.checks[i].SupersededBy != recheckID {
+	if i < 0 {
 		return false, nil
 	}
+	if marked := m.checks[i].SupersededBy; marked != recheckID {
+		return marked == "" && m.liftedBy[approvedID] == recheckID, nil
+	}
 	m.checks[i].SupersededBy = ""
+	if m.liftedBy == nil {
+		m.liftedBy = map[string]string{}
+	}
+	m.liftedBy[approvedID] = recheckID
 	return true, nil
 }
 
