@@ -6,7 +6,6 @@ package harness
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,8 +25,6 @@ import (
 
 // Config is what a harness needs to know, read once at start.
 type Config struct {
-	// Token is the run's bearer token; every call must carry it.
-	Token string
 	// Account is the unprivileged user the server runs as.
 	Account Account
 	// Workdir is the server's working directory, where it is installed.
@@ -62,8 +59,9 @@ type Egress interface {
 	Env() []string
 }
 
-// A Harness answers the Harness API for one run. Calls are answered one at
-// a time. Close stops the server under test.
+// A Harness answers the Harness API for one run, once the /run hook has
+// given it the run's token and canaries (lifecycle.go). Calls are answered
+// one at a time. Close stops the server under test.
 type Harness struct {
 	cfg  Config
 	log  *slog.Logger
@@ -73,6 +71,7 @@ type Harness struct {
 	run  *run
 	srv  *server
 	done bool
+	life lifecycle
 }
 
 // run is what the install call set up.
@@ -81,11 +80,9 @@ type run struct {
 	command []string
 }
 
-// New makes a harness from cfg. It refuses an empty token.
+// New makes a harness from cfg. It holds no per-run value: the run's token
+// and canaries arrive through the /run hook.
 func New(cfg Config, log *slog.Logger) (*Harness, error) {
-	if cfg.Token == "" {
-		return nil, errors.New("the harness needs the run's bearer token")
-	}
 	if cfg.Account.Home == "" || cfg.Workdir == "" || cfg.Installer == nil || cfg.Now == nil {
 		return nil, errors.New("the harness needs an account's home, a working directory, an installer and a clock")
 	}
@@ -105,19 +102,20 @@ func New(cfg Config, log *slog.Logger) (*Harness, error) {
 	return h, nil
 }
 
-// ServeHTTP answers one call, after checking its bearer token.
+// ServeHTTP answers one call, after checking its bearer token. Until the
+// /run hook has delivered the token, every call answers 503.
 func (h *Harness) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !h.authorized(r) {
+	switch h.life.authorize(r) {
+	case notStarted:
+		write(w, http.StatusServiceUnavailable, answer{"message": "The run has not started: the /run hook has not delivered its token yet."})
+		return
+	case unauthorized:
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		write(w, http.StatusUnauthorized, answer{"message": "This call needs the run's bearer token."})
 		return
+	case authorized:
 	}
 	h.mux.ServeHTTP(w, r)
-}
-
-func (h *Harness) authorized(r *http.Request) bool {
-	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	return ok && subtle.ConstantTimeCompare([]byte(got), []byte(h.cfg.Token)) == 1
 }
 
 // Close stops the server under test, if it runs. Calls after it answer 503.
@@ -170,7 +168,6 @@ func (h *Harness) noteFiles() {
 type installRequest struct {
 	Kind       string   `json:"kind"`
 	Ref        string   `json:"ref"`
-	Canaries   []Canary `json:"canaries"`
 	AllowHosts []string `json:"allowHosts"`
 }
 
@@ -186,19 +183,11 @@ func (h *Harness) install(r *http.Request) (int, answer) {
 	if err != nil {
 		return problem(http.StatusBadRequest, err.Error())
 	}
-	canaries, err := canarySet(req.Canaries)
-	if err != nil {
-		return problem(http.StatusBadRequest, err.Error())
-	}
 	if err := checkHosts(req.AllowHosts); err != nil {
 		return problem(http.StatusBadRequest, err.Error())
 	}
 	if h.cfg.Egress != nil {
-		h.cfg.Egress.SetCanaries(canaryList(req.Canaries))
 		h.cfg.Egress.Allow(req.AllowHosts...)
-	}
-	if err := plantHome(h.cfg.Account, canaries); err != nil {
-		return problem(http.StatusInternalServerError, "Could not plant the developer's home: "+err.Error())
 	}
 	if err := mkdirOwned(h.cfg.Account, h.installTemp()); err != nil {
 		return problem(http.StatusInternalServerError, "Could not make the working directory: "+err.Error())
@@ -240,8 +229,15 @@ func (h *Harness) sandbox() Sandbox {
 	return Sandbox{
 		Workdir: w,
 		Env:     env,
+		// The harness's own commands (cat, go, npm) are found on the trusted
+		// PATH, never on the server's, whose first directories the package
+		// being installed writes.
 		Run: func(ctx context.Context, args []string, out io.Writer) error {
-			return h.cfg.Account.run(ctx, w, env, args, out)
+			trusted, err := resolve(args, h.cfg.Path)
+			if err != nil {
+				return err
+			}
+			return h.cfg.Account.run(ctx, w, env, trusted, out)
 		},
 	}
 }

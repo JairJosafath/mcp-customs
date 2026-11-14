@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -46,9 +47,11 @@ func (f Firewall) Rules() []Command {
 		{"iptables", "-w", "-t", "nat", "-A", f.Chain, "-p", "tcp", "-j", "REDIRECT", "--to-ports", catch},
 		append(Command{"iptables", "-w", "-t", "nat", "-I", "OUTPUT"}, jump...),
 		{"iptables", "-w", "-t", "filter", "-N", f.Chain},
-		{"iptables", "-w", "-t", "filter", "-A", f.Chain, "-o", "lo", "-d", "127.0.0.1", "-p", "udp", "--dport", dns, "-j", "ACCEPT"},
-		{"iptables", "-w", "-t", "filter", "-A", f.Chain, "-o", "lo", "-d", "127.0.0.1", "-p", "tcp", "--dport", proxy, "-j", "ACCEPT"},
-		{"iptables", "-w", "-t", "filter", "-A", f.Chain, "-o", "lo", "-d", "127.0.0.1", "-p", "tcp", "--dport", catch, "-j", "ACCEPT"},
+		// No "-o lo": a packet REDIRECT turned to 127.0.0.1 keeps the
+		// interface it was first routed to.
+		{"iptables", "-w", "-t", "filter", "-A", f.Chain, "-d", "127.0.0.1", "-p", "udp", "--dport", dns, "-j", "ACCEPT"},
+		{"iptables", "-w", "-t", "filter", "-A", f.Chain, "-d", "127.0.0.1", "-p", "tcp", "--dport", proxy, "-j", "ACCEPT"},
+		{"iptables", "-w", "-t", "filter", "-A", f.Chain, "-d", "127.0.0.1", "-p", "tcp", "--dport", catch, "-j", "ACCEPT"},
 		{"iptables", "-w", "-t", "filter", "-A", f.Chain, "-j", "REJECT"},
 		append(Command{"iptables", "-w", "-t", "filter", "-I", "OUTPUT"}, jump...),
 		{"ip6tables", "-w", "-t", "filter", "-N", f.Chain},
@@ -95,4 +98,16 @@ func (f Firewall) Down(ctx context.Context, run Runner) {
 	for _, c := range f.Teardown() {
 		_ = run(ctx, c)
 	}
+}
+
+// Exec is the Runner that runs c for real: iptables needs CAP_NET_ADMIN.
+func Exec(ctx context.Context, c Command) error {
+	if len(c) == 0 {
+		return errors.New("no command to run")
+	}
+	out, err := exec.CommandContext(ctx, c[0], c[1:]...).CombinedOutput() //nolint:gosec // the firewall's own fixed commands
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, out)
+	}
+	return nil
 }

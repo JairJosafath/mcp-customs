@@ -2,12 +2,15 @@
 // runs the server under test as an unprivileged user and reports what the
 // server does. Wiring only; the work is in internal/harness.
 //
-// It reads HARNESS_TOKEN (the run's bearer token, required), HARNESS_USER
-// (the unprivileged user, "dev" by default), HARNESS_WORKDIR (the server's
-// working directory, ~/projects/server by default) and PORT (8080 by
-// default). The token is removed from the environment once read. It must
-// run as root, and refuses to start otherwise: it runs the server as the
-// unprivileged user, never as itself.
+// Lambda starts it once, at image build, and snapshots it, so it starts
+// with no per-run value: Lambda's /run hook, on HOOKS_PORT, delivers the
+// run's token and canaries when a MicroVM resumes (docs/contracts.md, "The
+// MicroVM"). It reads HARNESS_USER (the unprivileged user, "dev" by
+// default), HARNESS_WORKDIR (the server's working directory,
+// ~/projects/server by default), PORT (the Harness API's, 8080 by default)
+// and HOOKS_PORT (9000 by default). It must run as root, and refuses to
+// start otherwise: it runs the server as the unprivileged user, never as
+// itself.
 //
 // Before it answers anything it starts the egress proxy, writes the proxy
 // CA's certificate (never its key) to /etc/mcp-customs, and puts up the
@@ -23,11 +26,11 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -44,13 +47,6 @@ func main() {
 }
 
 func serve(log *slog.Logger) error {
-	token := os.Getenv("HARNESS_TOKEN")
-	// This drops the token from Go's copy of the environment, so nothing the
-	// harness starts inherits it. /proc/<pid>/environ still holds it; only
-	// running the server as another user keeps it out of reach.
-	if err := os.Unsetenv("HARNESS_TOKEN"); err != nil {
-		return err
-	}
 	u, err := user.Lookup(envOr("HARNESS_USER", "dev"))
 	if err != nil {
 		return err
@@ -59,46 +55,75 @@ func serve(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	eg, stopEgress, err := startEgress(context.Background(), account.UID)
+	eg, stopEgress, err := startEgress(context.Background(), account)
 	if err != nil {
 		return err
 	}
 	defer stopEgress()
-	h, err := harness.New(harness.Config{
-		Token:          token,
-		Account:        account,
-		Workdir:        envOr("HARNESS_WORKDIR", filepath.Join(account.Home, "projects", "server")),
-		WatchRoots:     []string{"/tmp", "/var/tmp", "/dev/shm"},
-		Path:           envOr("PATH", "/usr/local/bin:/usr/bin:/bin"),
-		Installer:      harness.Toolchain{},
-		Egress:         eg,
-		Now:            time.Now,
-		InstallTimeout: 10 * time.Minute,
-		CallTimeout:    time.Minute,
-	}, log)
+	cfg := configFor(account)
+	cfg.Egress = eg
+	h, err := harness.New(cfg, log)
 	if err != nil {
 		return err
 	}
 	defer h.Close()
 
-	srv := &http.Server{
-		Addr:              ":" + envOr("PORT", "8080"),
-		Handler:           h,
-		ReadHeaderTimeout: 10 * time.Second,
+	api, err := net.Listen("tcp", ":"+envOr("PORT", "8080"))
+	if err != nil {
+		return err
 	}
+	hooks, err := net.Listen("tcp", ":"+envOr("HOOKS_PORT", "9000"))
+	if err != nil {
+		_ = api.Close()
+		return err
+	}
+	h.Listening()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	go func() {
-		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+	log.Info("The harness is listening.", "api", api.Addr().String(), "hooks", hooks.Addr().String(), "user", account.Name)
+	errs := make(chan error, 2)
+	servers := []*http.Server{httpServer(h), httpServer(h.Hooks())}
+	for i, ln := range []net.Listener{api, hooks} {
+		go func() { errs <- servers[i].Serve(ln) }()
+	}
+	select {
+	case <-ctx.Done():
+	case err = <-errs:
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, srv := range servers {
 		_ = srv.Shutdown(shutdown)
-	}()
-	log.Info("The harness is listening.", "addr", srv.Addr, "user", account.Name)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// serverPath is the PATH the server under test and its install get after
+// their own commands, and the only one the harness finds its own install
+// commands on: the image's toolchains and the system's, never the
+// harness's own PATH (root's, with /root/.local/bin).
+const serverPath = "/usr/local/bin:/usr/local/go/bin:/usr/local/node/bin:/usr/bin:/bin"
+
+// configFor is the harness's configuration for the account: nothing of it
+// per run, and the server's PATH its own, not the harness's.
+func configFor(account harness.Account) harness.Config {
+	return harness.Config{
+		Account:        account,
+		Workdir:        envOr("HARNESS_WORKDIR", filepath.Join(account.Home, "projects", "server")),
+		WatchRoots:     []string{"/tmp", "/var/tmp", "/dev/shm"},
+		Path:           serverPath,
+		Installer:      harness.Toolchain{},
+		Now:            time.Now,
+		InstallTimeout: 10 * time.Minute,
+		CallTimeout:    time.Minute,
+	}
+}
+
+func httpServer(h http.Handler) *http.Server {
+	return &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
 }
 
 // accountFor is the unprivileged account the server under test runs as.
@@ -133,12 +158,25 @@ func accountFor(u *user.User, euid int) (harness.Account, error) {
 // trustDir is where the server finds the proxy CA's certificate.
 const trustDir = "/etc/mcp-customs"
 
+// trustOutside refuses a trust directory inside the account's home, where
+// the server under test could replace what the harness writes.
+func trustOutside(dir, home string) error {
+	rel, err := filepath.Rel(filepath.Clean(home), filepath.Clean(dir))
+	if err != nil || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+		return fmt.Errorf("the proxy's trust directory %s is inside %s, the server's home", dir, home)
+	}
+	return nil
+}
+
 // firewallChain names the netfilter chains of the firewall.
 const firewallChain = "MCP_CUSTOMS"
 
 // startEgress starts the egress proxy and puts up the firewall for uid. The
 // stop function takes both down.
-func startEgress(ctx context.Context, uid uint32) (*egress.Egress, func(), error) {
+func startEgress(ctx context.Context, account harness.Account) (*egress.Egress, func(), error) {
+	if err := trustOutside(trustDir, account.Home); err != nil {
+		return nil, nil, err
+	}
 	ca, err := egress.NewCA(time.Now)
 	if err != nil {
 		return nil, nil, err
@@ -164,25 +202,16 @@ func startEgress(ctx context.Context, uid uint32) (*egress.Egress, func(), error
 	})
 	stop := eg.Serve(l, egress.RedirectedFrom)
 	proxy, dns, catch := l.Ports()
-	fw := egress.Firewall{Chain: firewallChain, UID: uid, ProxyPort: proxy, DNSPort: dns, CatchPort: catch}
-	fw.Down(ctx, runCommand) // what an earlier harness left
-	if err := fw.Up(ctx, runCommand); err != nil {
+	fw := egress.Firewall{Chain: firewallChain, UID: account.UID, ProxyPort: proxy, DNSPort: dns, CatchPort: catch}
+	fw.Down(ctx, egress.Exec) // what an earlier harness left
+	if err := fw.Up(ctx, egress.Exec); err != nil {
 		stop()
 		return nil, nil, err
 	}
 	return eg, func() {
-		fw.Down(context.Background(), runCommand)
+		fw.Down(context.Background(), egress.Exec)
 		stop()
 	}, nil
-}
-
-// runCommand runs an iptables command.
-func runCommand(ctx context.Context, c egress.Command) error {
-	out, err := exec.CommandContext(ctx, c[0], c[1:]...).CombinedOutput() //nolint:gosec // the firewall's own fixed commands
-	if err != nil {
-		return fmt.Errorf("%w: %s", err, out)
-	}
-	return nil
 }
 
 func envOr(name, fallback string) string {

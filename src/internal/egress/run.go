@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -85,10 +86,15 @@ type Trust struct {
 }
 
 // WriteTrust writes the CA's certificate, and a bundle of systemRoots and
-// it, into dir, readable by all. The CA's key is never written.
+// it, into dir, readable by all and writable by the harness only. The CA's
+// key is never written. It refuses a dir someone else owns or can write to:
+// the server under test must not be able to swap what it trusts.
 func WriteTrust(dir string, ca *CA, systemRoots []byte) (Trust, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // the server must read the CA's certificate; nothing secret is here
 		return Trust{}, fmt.Errorf("make %s: %w", dir, err)
+	}
+	if err := ownedByUs(dir); err != nil {
+		return Trust{}, err
 	}
 	t := Trust{CAFile: filepath.Join(dir, "ca.pem"), BundleFile: filepath.Join(dir, "ca-bundle.pem")}
 	bundle := append(append([]byte{}, systemRoots...), '\n')
@@ -99,6 +105,23 @@ func WriteTrust(dir string, ca *CA, systemRoots []byte) (Trust, error) {
 		}
 	}
 	return t, nil
+}
+
+// ownedByUs refuses a directory that is not the harness's own, or that
+// anyone else may write to.
+func ownedByUs(dir string) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", dir, err)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	if int(st.Uid) != os.Geteuid() || info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s is owned by uid %d with mode %s; it must be the harness's (uid %d) and writable by it alone", dir, st.Uid, info.Mode().Perm(), os.Geteuid())
+	}
+	return nil
 }
 
 // Env is what the server's environment needs to go through the proxy at

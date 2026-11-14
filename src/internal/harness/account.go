@@ -3,8 +3,12 @@ package harness
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -21,14 +25,22 @@ type Account struct {
 	Switch bool
 }
 
+// setpriv is util-linux's setpriv, which the image ships (sandbox/Dockerfile).
+const setpriv = "/usr/bin/setpriv"
+
 // waitDelay is how long a stopped command's pipes may stay open before
 // they are closed for it.
 const waitDelay = 2 * time.Second
 
 // command is args run as the account in dir, with exactly env: nothing of
 // the harness's own environment reaches it. It is its own process group,
-// so cancelling ctx kills whatever it started.
+// so cancelling ctx kills whatever it started. Switched to the account, it
+// starts through setpriv --no-new-privs, so nothing it runs can gain
+// privileges, and setpriv finds args[0] on env's PATH, not the harness's.
 func (a Account) command(ctx context.Context, dir string, env, args []string) *exec.Cmd {
+	if a.Switch {
+		args = append([]string{setpriv, "--no-new-privs", "--"}, args...)
+	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // running the server under test, and its install, is the harness's job; it runs as the unprivileged account
 	cmd.Dir = dir
 	cmd.Env = env
@@ -69,6 +81,29 @@ func (a Account) run(ctx context.Context, dir string, env, args []string, out io
 	cmd := a.command(ctx, dir, env, args)
 	cmd.Stdout, cmd.Stderr = out, out
 	return cmd.Run()
+}
+
+// resolve is args with a bare command name replaced by its absolute path
+// on path, as the harness's own PATH finds it. A name with a slash is kept.
+// setpriv would otherwise look the name up on the command's environment,
+// which the server under test can write to.
+func resolve(args []string, path string) ([]string, error) {
+	if len(args) == 0 {
+		return nil, errors.New("no command to run")
+	}
+	if strings.Contains(args[0], "/") {
+		return args, nil
+	}
+	for _, dir := range filepath.SplitList(path) {
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		file := filepath.Join(dir, args[0])
+		if info, err := os.Stat(file); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+			return append([]string{file}, args[1:]...), nil
+		}
+	}
+	return nil, fmt.Errorf("%s is not on the harness's PATH", args[0])
 }
 
 // killGroup kills cmd's process group: the command and all it started.
