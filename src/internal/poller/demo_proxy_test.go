@@ -13,7 +13,7 @@ import (
 	"github.com/JairJosafath/mcp-customs/src/internal/store"
 )
 
-// demoProxy serves the demo proxy's files as `make demo-publish VERSION=version`
+// demoProxy serves the demo proxy's files as a deploy with demoVersion=version
 // leaves them, under /goproxy/ as the stack does.
 func demoProxy(t *testing.T, version string) *httptest.Server {
 	t.Helper()

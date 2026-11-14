@@ -3,6 +3,7 @@ import type { App, Stack } from 'aws-cdk-lib';
 import packageJson from '../package.json' with { type: 'json' };
 import { ApiStack } from './api_stack';
 import { BackupCopyStack } from './backups';
+import { DEMO_VERSION_CONTEXT, demoVersionOf } from './demo_proxy';
 import { OPERATIONS } from './operations';
 import { stackNameFor, TIER_RULES } from './standard';
 import type { Tier } from './standard';
@@ -22,6 +23,7 @@ export function defineStacks(app: App, tier: Tier): Stack[] {
     description: `${packageJson.description} The Checker, a Lambda durable function; the web function behind an HTTP API; a DynamoDB table and a reports bucket.`,
     tier,
     operations: OPERATIONS,
+    demoVersion: demoVersionOf(app.node.tryGetContext(DEMO_VERSION_CONTEXT)),
   });
   if (!TIER_RULES[tier].backups || backups.retentionDays === 0 || backups.copyToRegion === '') {
     return [api];

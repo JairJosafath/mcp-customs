@@ -19,7 +19,7 @@ pull request.
 | `src/internal/harness`              | The harness: MCP client, package install, egress proxy, observations                                               |
 | `src/internal/checker`              | The fixed checks, the action registry and interpreter, the judge and its investigation loop                        |
 | `src/internal/demoproxy`            | The demo Go module proxy's files: each demo version as a module whose default build is that version                |
-| `src/cmd/demopublish`               | Writes those files for `make demo-publish`, which copies them to the bucket                                        |
+| `src/cmd/demopublish`               | Writes those files, for the deploy to copy to the bucket (`infra/demo_proxy.ts`) and for `make demo-build`         |
 | `src/internal/poller`               | The poll: each approved package's registry asked for its latest version, a re-check started for a new one          |
 | `src/internal/store`                | DynamoDB and S3 access shared by the Checker and the web function                                                  |
 | `src/internal/web`                  | Handlers and `html/template` pages                                                                                 |
@@ -234,12 +234,18 @@ anything else. The demos are the modules
 `.../demo/weather` (v1.0.0): each version's module holds the demo's
 package built for that version, its build line taken off, and
 `src/demo/mcp` as `internal/mcp`, so `go install module@version` builds
-that version with no tag. `make demo-publish VERSION=<v>` writes every
-version up to `<v>`. The stack hands `GO_PROXY_URL`,
+that version with no tag. A deploy publishes the `demoVersion` context
+value (`v1.0.0` without it) and every earlier version: synth runs
+`src/cmd/demopublish`, and a `BucketDeployment`, whose role alone may
+write `goproxy/`, copies the files and prunes the rest. The web function
+may list `goproxy/` too, so S3 answers a missing file 404; a read S3 still
+denies is answered 404 and logged, since only a 404 or 410 sends the go
+command and the poller on to the next proxy. The stack hands `GO_PROXY_URL`,
 `<API>/goproxy,https://proxy.golang.org`, to the poller and to the
 MicroVM image; the harness gives a Go install `GOPROXY` set to it,
-`GONOSUMDB` set to the demo path alone, and allows its hosts while an
-install runs.
+`GONOSUMDB` set to the demo path alone, and, while an install runs, lets
+it GET (or HEAD) under each proxy's path that is not a registry's, and
+nothing else on that host.
 
 ## A person's answer
 

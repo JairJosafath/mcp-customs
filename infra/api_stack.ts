@@ -20,6 +20,7 @@ import type { Construct } from 'constructs';
 
 import { Alarms } from './alarms';
 import { Backups } from './backups';
+import { DEFAULT_DEMO_VERSION, DemoProxy, GO_PROXY_PREFIX } from './demo_proxy';
 import { goFunction } from './go_function';
 import { Recheck, POLLER_TIMEOUT } from './recheck';
 import { Sandbox } from './sandbox';
@@ -59,12 +60,8 @@ export const WEB_ROUTES = [
   ['GET', '/goproxy/{proxy+}'],
 ] as const;
 
-/**
- * Where the reports bucket keeps the demo Go module proxy's files, which
- * the web function serves read-only under `/goproxy/`. Only `make
- * demo-publish`, run with the deployer's credentials, writes them.
- */
-export const GO_PROXY_PREFIX = 'goproxy/';
+/** The time limit CDK sets on the function that copies the demo proxy's files. */
+export const DEMO_PROXY_TIMEOUT = Duration.minutes(15);
 
 /** The public Go module proxy, asked after the demo proxy answers 404. */
 export const PUBLIC_GO_PROXY = 'https://proxy.golang.org';
@@ -149,6 +146,8 @@ export interface ApiStackProps extends StackProps {
   readonly tier: Tier;
   /** What the Container promises whatever the tier: `OPERATIONS`. */
   readonly operations: Operations;
+  /** The newest demo version the demo Go module proxy serves; `DEFAULT_DEMO_VERSION` when unset. */
+  readonly demoVersion?: string;
 }
 
 /**
@@ -252,11 +251,17 @@ export class ApiStack extends Stack {
     );
 
     const recheck = new Recheck(this, 'Recheck', { table, checker, rules, goProxy });
+    const demoProxy = new DemoProxy(this, 'DemoProxy', {
+      bucket: reports,
+      version: props.demoVersion ?? DEFAULT_DEMO_VERSION,
+      rules,
+    });
 
     const alarms = this.addAlarms(alerts.email, api, [
       ['Checker', checker, CHECKER_TIMEOUT],
       ['Web', web, WEB_TIMEOUT],
       ['Poller', recheck.poller, POLLER_TIMEOUT],
+      ['DemoProxyDeployment', demoProxy.handler, DEMO_PROXY_TIMEOUT],
       ...(emptier === undefined
         ? []
         : [['ReportsAutoDelete', emptier, AUTO_DELETE_TIMEOUT] as const]),
@@ -282,10 +287,6 @@ export class ApiStack extends Stack {
     new CfnOutput(this, 'EntryPoint', {
       value: this.url,
       description: 'The URL of the HTTP API.',
-    });
-    new CfnOutput(this, 'ReportsBucketName', {
-      value: reports.bucketName,
-      description: `The reports bucket, which also holds the demo Go module proxy under ${GO_PROXY_PREFIX}: make demo-publish writes it.`,
     });
   }
 
@@ -369,6 +370,13 @@ export class ApiStack extends Stack {
             reports.arnForObjects('reports/*'),
             reports.arnForObjects(`${GO_PROXY_PREFIX}*`),
           ],
+        }),
+        // Without it, S3 answers a missing proxy file 403, not 404, and a
+        // 404 is what sends the go command on to the public proxy.
+        new PolicyStatement({
+          actions: ['s3:ListBucket'],
+          resources: [reports.bucketArn],
+          conditions: { StringLike: { 's3:prefix': [`${GO_PROXY_PREFIX}*`] } },
         }),
         new PolicyStatement({
           actions: ['lambda:InvokeFunction'],
