@@ -43,12 +43,16 @@ func (m *memoryApprovals) MarkPolled(_ context.Context, kind, name, version stri
 type fixedRegistry struct {
 	latest map[string]string
 	errs   map[string]error
-	asked  []string
+
+	mu    sync.Mutex
+	asked []string
 }
 
 func (f *fixedRegistry) Latest(_ context.Context, kind, name string) (string, error) {
 	key := kind + "#" + name
+	f.mu.Lock()
 	f.asked = append(f.asked, key)
+	f.mu.Unlock()
 	if err, ok := f.errs[key]; ok {
 		return "", err
 	}
@@ -59,14 +63,29 @@ func (f *fixedRegistry) Latest(_ context.Context, kind, name string) (string, er
 	return v, nil
 }
 
+// askedSet is the packages the registry was asked for, as a set: a poll
+// asks them concurrently, so their order is not fixed.
+func (f *fixedRegistry) askedSet() map[string]bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]bool{}
+	for _, k := range f.asked {
+		out[k] = true
+	}
+	return out
+}
+
 // recordingStarter keeps every event it was asked to start, and answers
 // ErrAlreadyStarted for an ID it started before, as Lambda does.
 type recordingStarter struct {
+	mu     sync.Mutex
 	events []Event
 	err    error
 }
 
 func (r *recordingStarter) Start(_ context.Context, e Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.err != nil {
 		return r.err
 	}
@@ -77,6 +96,13 @@ func (r *recordingStarter) Start(_ context.Context, e Event) error {
 	}
 	r.events = append(r.events, e)
 	return nil
+}
+
+// started is the events the starter kept.
+func (r *recordingStarter) started() []Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]Event(nil), r.events...)
 }
 
 // fakeDoer answers a request by its URL from answers, and 404 otherwise;

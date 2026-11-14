@@ -11,10 +11,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/harness"
 	"github.com/JairJosafath/mcp-customs/src/internal/store"
 )
+
+// maxConcurrent bounds how many packages a poll works on at once, so one
+// slow registry can't starve the rest within the poll's time budget while
+// the Checker isn't flooded with starts.
+const maxConcurrent = 8
 
 // Approvals is the store's calls the poller makes.
 type Approvals interface {
@@ -76,30 +82,42 @@ type Result struct {
 // version is neither the approved one nor one a re-check was started for
 // gets a re-check, started once: its check ID comes from the package and
 // version, so a poll that runs again starts nothing new. A remote server
-// has no versions and is left alone. A package it can't poll is logged
-// and counted, the others polled all the same, and the poll answers an
-// error naming how many failed.
+// has no versions and is left alone. Packages are polled concurrently, at
+// most maxConcurrent at once, so one slow registry can't starve the rest.
+// A package it can't poll is logged and counted, the others polled all the
+// same, and the poll answers an error naming how many failed.
 func Poll(ctx context.Context, d Deps) (Result, error) {
 	approved, err := d.Approvals.ListApproved(ctx)
 	if err != nil {
 		return Result{}, fmt.Errorf("list the approved packages: %w", err)
 	}
-	var res Result
+	var (
+		mu  sync.Mutex
+		res Result
+		wg  sync.WaitGroup
+	)
+	sem := make(chan struct{}, maxConcurrent)
 	for _, a := range approved {
 		if a.Kind == "remote" {
 			continue
 		}
-		res.Packages++
-		started, err := pollOne(ctx, d, a)
-		if err != nil {
-			res.Failed++
-			d.Log.WarnContext(ctx, "A package could not be polled.", "kind", a.Kind, "name", a.Name, "error", err.Error())
-			continue
-		}
-		if started {
-			res.Started++
-		}
+		sem <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			started, err := pollOne(ctx, d, a)
+			mu.Lock()
+			defer mu.Unlock()
+			res.Packages++
+			switch {
+			case err != nil:
+				res.Failed++
+				d.Log.WarnContext(ctx, "A package could not be polled.", "kind", a.Kind, "name", a.Name, "error", err.Error())
+			case started:
+				res.Started++
+			}
+		})
 	}
+	wg.Wait()
 	if res.Failed > 0 {
 		return res, fmt.Errorf("poll %d of %d approved packages: %w", res.Failed, res.Packages, ErrPollFailed)
 	}
@@ -131,12 +149,18 @@ func pollOne(ctx context.Context, d Deps, a store.Approved) (bool, error) {
 		Submission: store.Submission{Kind: a.Kind, Ref: ref},
 		Recheck:    Link{CheckID: a.CheckID, Ref: a.Name + "@" + a.Version, ToolListHash: a.ToolListHash},
 	}
+	// A poll that already ran for this version finds the check started
+	// (same ID): it is not a new start, but still marks the version polled.
 	err = d.Checker.Start(ctx, e)
-	if err != nil && !errors.Is(err, ErrAlreadyStarted) {
+	already := errors.Is(err, ErrAlreadyStarted)
+	if err != nil && !already {
 		return false, fmt.Errorf("start re-check %s: %w", e.CheckID, err)
 	}
 	if err := d.Approvals.MarkPolled(ctx, a.Kind, a.Name, latest); err != nil {
 		return false, err
+	}
+	if already {
+		return false, nil
 	}
 	d.Log.InfoContext(ctx, "A re-check started.", "checkId", e.CheckID, "kind", a.Kind, "ref", ref, "recheckOf", a.CheckID)
 	return true, nil
