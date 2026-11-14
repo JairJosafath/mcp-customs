@@ -43,7 +43,10 @@ Every user-visible change, newest first. The format follows
   `169.254.169.254.nip.io` or `localtest.me` reaches none of them (#32).
   The Checker's Bedrock client tries each call once, under the judge's own
   retries, so a busy model is no longer tried up to twelve times.
-
+- An install's GET of the demo Go proxy must be `https` on port 443, as
+  its `/goproxy/` prefix is (#61). A plain-http GET under the prefix, or
+  one to any other port, is refused and recorded like any other request
+  the sandbox may not send.
 - The stack's own API is kept out by fixed rules (#56). The Checker's
   refusal compares against API Gateway's published ranges for the region,
   so it no longer changes from run to run, and refuses the API's FIPS and
