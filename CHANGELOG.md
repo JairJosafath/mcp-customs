@@ -55,6 +55,14 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- Follow-ups from the review of #75 (#82). A re-check whose pass
+  committed but was answered as an error, after a person's approval or in
+  a retry, still lifts the approved check's superseded mark and says so.
+  A lift retried after it committed still sends its event. A judge call
+  that starts late in an invocation ends before Lambda's deadline, and
+  one with too little time left runs again in a fresh invocation instead
+  of ending the check at review.
+
 - Follow-ups from the reviews of #66 and #70 (#74). A re-check whose pass
   committed but was answered as an error no longer asks for a retry or
   shows a failure; one that ended short of a pass and couldn't mark its
