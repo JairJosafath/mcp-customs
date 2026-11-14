@@ -15,11 +15,14 @@ import (
 )
 
 // pypiIndex pins both of pip's calls to PyPI, whatever a pip
-// configuration names. pip refuses a dependency with a direct reference
-// (name @ url) of any package it got from PyPI, while it reads the
-// requirement, before it fetches or builds anything: --only-binary=:all:
-// alone doesn't stop pip building a file:// or https:// direct reference
-// with its build backend.
+// configuration names. It relies on pip's own rule (in
+// install_req_from_req_string): a package pip downloaded from
+// files.pythonhosted.org may not depend on a direct reference (name @ url),
+// and pip refuses one while it reads the requirement, before it fetches or
+// builds anything. --only-binary=:all: alone doesn't stop pip building a
+// file:// or https:// direct reference with its build backend. The rule
+// keys on that download host: a PyPI mirror or a proxy that rewrites its
+// URLs turns it off, and with it this refusal.
 const pypiIndex = "--index-url=https://pypi.org/simple/"
 
 // installPyPI asks pip's resolver for the dependency set before anything is
