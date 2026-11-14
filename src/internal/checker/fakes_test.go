@@ -22,7 +22,10 @@ import (
 // creates a check only once, as the store does. putErr and stepErr make
 // those writes fail, as an outage would, and failStep makes the write of
 // steps of that name fail, once a step named failAfter is written when
-// that is set; loseFirstReply makes the first
+// that is set; doneErr makes marking a check done fail, and with it every
+// write that goes in its transaction; liftErr makes lifting a superseded
+// mark fail; lostPassReply makes a pass commit but answer that error, as a
+// reply lost on the network does; loseFirstReply makes the first
 // create succeed but answer an error, as a reply lost on the network does.
 type memoryRecorder struct {
 	mu             sync.Mutex
@@ -39,6 +42,9 @@ type memoryRecorder struct {
 	stepErr        error
 	failStep       string
 	failAfter      string
+	doneErr        error
+	liftErr        error
+	lostPassReply  error
 	loseFirstReply bool
 	puts           int
 	retries        []string
@@ -51,11 +57,16 @@ type memoryEvents struct {
 	mu         sync.Mutex
 	superseded []events.Superseded
 	lifted     []events.Superseded
+	// liftedErr makes every lifted event fail, as an outage would.
+	liftedErr error
 }
 
 func (m *memoryEvents) PutLifted(_ context.Context, s events.Superseded) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.liftedErr != nil {
+		return m.liftedErr
+	}
 	m.lifted = append(m.lifted, s)
 	return nil
 }
@@ -102,6 +113,9 @@ func (m *memoryRecorder) UpdateCheck(_ context.Context, id string, u store.Check
 	if i < 0 {
 		return store.ErrNoCheck
 	}
+	if u.Status == store.StatusDone && m.doneErr != nil {
+		return m.doneErr
+	}
 	m.updates = append(m.updates, u)
 	c := &m.checks[i]
 	if u.Status != "" {
@@ -139,6 +153,9 @@ func (m *memoryRecorder) MarkSuperseded(_ context.Context, approvedID string, s 
 func (m *memoryRecorder) LiftSuperseded(_ context.Context, approvedID, recheckID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.liftErr != nil {
+		return false, m.liftErr
+	}
 	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == approvedID })
 	if i < 0 || m.checks[i].SupersededBy != recheckID {
 		return false, nil
@@ -184,23 +201,40 @@ func (m *memoryRecorder) GetVerdict(_ context.Context, hash string) (store.Verdi
 	return v, ok, nil
 }
 
-func (m *memoryRecorder) PutVerdict(_ context.Context, v store.Verdict) error {
+// FailCheck marks check id failed unless it is done, as the store does.
+func (m *memoryRecorder) FailCheck(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == id })
+	if i < 0 {
+		return store.ErrNoCheck
+	}
+	if m.checks[i].Status == store.StatusDone {
+		return store.ErrCheckDone
+	}
+	m.updates = append(m.updates, store.CheckUpdate{Status: store.StatusFailed})
+	m.checks[i].Status = store.StatusFailed
+	return nil
+}
+
+// PassCheck writes a pass's approvals and marks its check done, all or
+// none, as the store's transaction does.
+func (m *memoryRecorder) PassCheck(ctx context.Context, p store.Pass) error {
+	if err := m.UpdateCheck(ctx, p.Hash.CheckID, store.CheckUpdate{Status: store.StatusDone, Verdict: p.Verdict}); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.verdicts == nil {
 		m.verdicts = map[string]store.Verdict{}
 	}
-	m.verdicts[v.Hash] = v
+	m.verdicts[p.Hash.Hash] = p.Hash
 	m.verdictPuts++
-	return nil
-}
-
-func (m *memoryRecorder) PutApproved(_ context.Context, a store.Approved, conditional bool) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.approved = append(m.approved, a)
-	m.approvedCond = append(m.approvedCond, conditional)
-	return nil
+	if p.Approved != nil {
+		m.approved = append(m.approved, *p.Approved)
+		m.approvedCond = append(m.approvedCond, p.Conditional)
+	}
+	return m.lostPassReply
 }
 
 func (m *memoryRecorder) stepNames() []string {
