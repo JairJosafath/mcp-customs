@@ -91,6 +91,10 @@ func (m *memoryRecorder) AppendStep(_ context.Context, checkID string, step stor
 	if m.stepErr != nil {
 		return m.stepErr
 	}
+	// As DynamoDB does, refuse an item larger than it keeps.
+	if size, err := store.StepSize(checkID, step); err != nil || size > store.MaxItemSize {
+		return errors.Join(err, store.ErrItemTooLarge)
+	}
 	m.steps = append(m.steps, step)
 	m.stepsOf = append(m.stepsOf, checkID)
 	return nil
@@ -169,6 +173,7 @@ func (m *memoryReports) report() (Report, bool) {
 // installs to, lists and answers, and what it is seen doing.
 type server struct {
 	hash         string
+	initialize   string
 	tools        []string
 	results      map[string]string
 	installObs   []findings.Observation
@@ -185,6 +190,27 @@ type server struct {
 	tokens []string
 }
 
+// cutShort is a sandbox client whose invocation the timeout ends while
+// resolve is still waiting on /install: the process is gone before
+// resolve's own terminate of the sandbox can reach it. Only a later
+// invocation's terminate does.
+type cutShort struct {
+	*sandbox.Fake
+	mu  sync.Mutex
+	cut bool
+}
+
+func (c *cutShort) Terminate(ctx context.Context, vm sandbox.VM) error {
+	c.mu.Lock()
+	first := !c.cut
+	c.cut = true
+	c.mu.Unlock()
+	if first {
+		return errInterrupted
+	}
+	return c.Fake.Terminate(ctx, vm)
+}
+
 // errInterrupted is a call the invocation's timeout cut short.
 var errInterrupted = errors.New("the invocation timed out")
 
@@ -194,9 +220,10 @@ var weatherTool = `{"name":"get_weather","description":"Gets the weather for a c
 
 func cleanServer() *server {
 	return &server{
-		hash:    depsHash,
-		tools:   []string{weatherTool},
-		results: map[string]string{"get_weather": `{"content":[{"type":"text","text":"Sunny, 21°C."}]}`},
+		hash:       depsHash,
+		initialize: `{"serverInfo":{"name":"weather"},"instructions":"Use get_weather for forecasts."}`,
+		tools:      []string{weatherTool},
+		results:    map[string]string{"get_weather": `{"content":[{"type":"text","text":"Sunny, 21°C."}]}`},
 	}
 }
 
@@ -215,7 +242,7 @@ func (s *server) respond(vm sandbox.VM, req sandbox.Request) (sandbox.Response, 
 	case "/install":
 		return answer(http.StatusOK, map[string]any{"log": "added 3 packages", "dependencies": "{}", "sha256": s.hash, "observations": orEmpty(s.installObs)}), nil
 	case "/start":
-		return answer(http.StatusOK, map[string]any{"initialize": json.RawMessage(`{"serverInfo":{"name":"weather"},"instructions":"Use get_weather for forecasts."}`), "observations": []any{}}), nil
+		return answer(http.StatusOK, map[string]any{"initialize": json.RawMessage(s.initialize), "observations": []any{}}), nil
 	case "/list":
 		tools := make([]json.RawMessage, 0, len(s.tools))
 		for _, t := range s.tools {
