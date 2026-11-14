@@ -136,7 +136,8 @@ type runPayload struct {
 }
 
 // runHook takes the run's token and canaries, exactly once: it plants the
-// home from the canaries, then keeps the token, so the Harness API answers
+// home from the canaries, hands them to the egress proxy to search every
+// request for, then keeps the token, so the Harness API answers
 // only once the home is ready. A second /run, which only something inside
 // the MicroVM can send, is refused.
 func (h *Harness) runHook(w http.ResponseWriter, r *http.Request) {
@@ -155,6 +156,9 @@ func (h *Harness) runHook(w http.ResponseWriter, r *http.Request) {
 		h.log.ErrorContext(r.Context(), "The /run hook failed.", "error", err.Error())
 		write(w, http.StatusInternalServerError, answer{"message": "Could not plant the developer's home."})
 		return
+	}
+	if h.cfg.Egress != nil {
+		h.cfg.Egress.SetCanaries(canaryList(payload.Canaries))
 	}
 	h.life.token = payload.Token
 	write(w, http.StatusOK, answer{"message": "The run has started."})

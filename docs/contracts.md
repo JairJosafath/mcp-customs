@@ -50,9 +50,17 @@ The investigation's calls (`/call` again, `/source`, `/download`, `/clock`)
 and `/allow` are best effort: an error answer is told to the judge, and the
 check goes on.
 
-An observation is `{"at","kind","detail"}`, where `kind` is one of `dns`,
-`connect`, `http` (method, host, path, and the canaries found in it, with
-their encoding), `file` (path written), `sampling`, `elicitation`,
+An observation is `{"at","kind","detail"}`, where `kind` is one of `dns`
+(name, type, answers, `faked`, and the canaries found in the name),
+`connect` (a tunnel through the proxy: host, port, `intercepted`,
+`allowed`; or direct traffic the firewall refused: `via: "direct"`,
+`proto` (tcp, udp, icmp, …), address, port, the canaries in a refused
+packet's payload, `more` on the 1000th, after which only traffic holding
+a canary is recorded, and `dropped` when the kernel lost packets unread),
+`http`
+(method, host, path, `allowed`, the canaries found in it, with their
+encoding, and `unscanned`: why part of the body went unsearched, when it
+did), `file` (path written), `sampling`, `elicitation`,
 `process`, `hook` (a lifecycle hook called after `/run`: method, path,
 caller, the status it got). Bodies are not returned, only what was found
 in them.
@@ -104,7 +112,9 @@ What Lambda MicroVMs (`sandbox/Dockerfile`, `infra/sandbox.ts`,
   job inside the VM, and stopping a server that ignores the proxy needs the
   harness to own the network: iptables or a network namespace, which takes
   the image's `additionalOsCapabilities: ["ALL"]` (granted to root only,
-  never to `dev`). The image asks for none until #5 needs them.
+  never to `dev`). The image asks for them since #5: the harness puts the
+  firewall up for `dev`'s user ID before it answers `/ready`, and the
+  proxy CA's certificate (never its key) is in `/etc/mcp-customs`.
 - **Lifetime.** A MicroVM lives at most 2 hours, running and suspended
   (Lambda allows 8). A check waiting days for a person must have
   terminated its MicroVM first; suspend and resume are for pauses within
@@ -132,7 +142,9 @@ is the registered action that ran (`resolve`, `lookup`, `install`, `list`,
 `write_probes`, `judge`, `investigate` (one a turn: the move the judge
 picked), `verdict` or `failed`. A check that fails ends its sandbox, writes a
 `failed` step whose summary names the action that failed (never the
-harness's or the SDK's text), and turns `failed`. A `HASH#` item is written only when a check passes by code or a
+harness's or the SDK's text), and turns `failed`. A check writes its `verdict` step, then its report, its `HASH#` item
+and, last, `done`: a `verdict` step that can't be written fails the check
+with no `HASH#` item. A `HASH#` item is written only when a check passes by code or a
 person approves it; its `installSpec` is the JSON
 `{"kind","ref","dependencySha256","toolListSha256"}`.
 
@@ -151,11 +163,15 @@ or the observations larger than that are kept whole in the bucket as
 `call-<n>`, `observe`), and the check fails, with an `oversized` code
 finding on its `failed` step.
 
-No `STEP#` item is larger than DynamoDB's 400 KB: a step keeps at most 20
-findings of each rule and 200 in all, each rule cut to 64 bytes and its
-evidence to 512, and one finding per rule saying how many more it left
-off (`more-findings` counts those of rules it kept none of). The verdict
-is decided from every finding, and the report keeps them all. Findings
+No `STEP#` item is larger than DynamoDB's 400 KB, measured as the store
+encodes it (`store.StepSize`, after JSON writes a control character as six
+bytes): a step keeps at most 20 findings of each rule and 200 in all, each
+rule cut to 64 bytes and its evidence to 512, and fewer when those would
+take the item past 400 KB. It adds one finding per rule saying how many
+more of that rule it left off past its 20, and one `more-findings` finding
+counting the findings of any rule, kept or not, it left off once it had
+kept its most (200, or as many as fit). The verdict is decided from every
+finding, and the report keeps them all. Findings
 name a tool by its place in the listing (`tool 3`, `the result of tool
 3`), whichever step made them.
 

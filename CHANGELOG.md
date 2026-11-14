@@ -6,6 +6,23 @@ Every user-visible change, newest first. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Every character a person can't see is a code finding of a check, with its
+  escaped form as evidence: besides ANSI escapes, tag, zero-width and bidi
+  characters, now every default-ignorable code point
+  (`hidden-default-ignorable`, and the Mongolian variation selectors as
+  `hidden-variation-selector`), every other format character such as the
+  interlinear annotation characters (`hidden-format-character`), the line
+  and paragraph separators (`hidden-line-separator`), private use
+  (`hidden-private-use`) and every unassigned code point
+  (`hidden-unassigned`). Each gives at least review.
+- A step's record is bounded by its size as stored, so findings whose text
+  JSON grows, such as control characters, still fit DynamoDB's 400 KB: the
+  step keeps as many as fit and counts the rest in `more-findings`.
+- A check writes its `verdict` step before it reads `done`: a verdict step
+  that can't be written fails the check, with no approval left behind.
+
 ### Added
 
 - Re-checks of new versions: every five minutes a schedule asks the registry
@@ -71,6 +88,25 @@ Every user-visible change, newest first. The format follows
   built from a zip the stack makes, and the Checker's permission to launch,
   call, suspend, resume and terminate MicroVMs of it; the Checker's client
   for them (`src/internal/checker/sandbox`), with a fake for tests.
+- The egress proxy (`src/internal/egress`): the server under test goes
+  through the harness, which logs its DNS as `dns` observations and fakes
+  TXT and A answers for unknown names; intercepts its TLS with a CA whose
+  key never leaves the harness's memory; passes hosts on the run's
+  allowlist (`POST /allow`, and `/install`'s `allowHosts`) and answers the
+  rest with a fake 200; and records each request as an `http` observation
+  with the run's canaries found in it, and their encoding, gzip and
+  deflate bodies decoded first. A firewall (iptables, on the server's
+  user) refuses all direct traffic, IPv6 included, and records each
+  refused connection or packet (through NFLOG) as a `connect`, with the
+  canaries in its payload. The package registries are reachable only
+  while `/install` runs. A run records up to 1000 refused connections or
+  packets, then only those holding a canary. Three new code findings give
+  at least review: `tls-not-intercepted` (a client that refused the
+  proxy's CA, to a host not allowed), `body-not-scanned` (a body over
+  8 MiB, or in an encoding the proxy can't decode) and
+  `direct-traffic-unrecorded` (more refused traffic than a run records,
+  or packets the kernel dropped before the harness read them). The MicroVM image asks for
+  `additionalOsCapabilities: ["ALL"]` and ships iptables for it.
 
 ### Changed
 

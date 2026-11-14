@@ -62,6 +62,30 @@ func TestFromObservationsFindsWhatCodeCanTell(t *testing.T) {
 			},
 			[]Finding{{Code, RuleSampling, "sampling/createMessage"}, {Code, RuleElicitation, "elicitation/create"}},
 		},
+		"TLS to a host not allowed that the client wouldn't let the proxy read": {
+			[]Observation{
+				observed(ObservedConnect, map[string]any{"host": "pinned.example", "port": 443, "via": "proxy", "intercepted": false, "allowed": false}),
+				observed(ObservedConnect, map[string]any{"host": "registry.npmjs.org", "port": 443, "via": "proxy", "intercepted": false, "allowed": true}),
+				observed(ObservedConnect, map[string]any{"host": "read.example", "port": 443, "via": "proxy", "intercepted": true, "allowed": false}),
+				observed(ObservedConnect, map[string]any{"address": "203.0.113.7", "port": 443, "via": "direct", "refused": true}),
+			},
+			[]Finding{{Code, RuleTLSNotIntercepted, "TLS to pinned.example the proxy could not read"}},
+		},
+		"more direct traffic than a run records, and packets the kernel dropped": {
+			[]Observation{
+				observed(ObservedConnect, map[string]any{"address": "203.0.113.9", "port": 9, "proto": "udp", "via": "direct", "refused": true}),
+				observed(ObservedConnect, map[string]any{"address": "203.0.113.9", "port": 9, "proto": "udp", "via": "direct", "refused": true, "more": true}),
+				observed(ObservedConnect, map[string]any{"via": "direct", "refused": true, "dropped": 1}),
+			},
+			[]Finding{
+				{Code, RuleDirectUnrecorded, "more direct traffic was refused than a run records; only what held a canary was recorded after"},
+				{Code, RuleDirectUnrecorded, "the kernel dropped refused packets before the harness could read them; any of them may hold a canary"},
+			},
+		},
+		"a request body the proxy couldn't search whole": {
+			[]Observation{observed(ObservedHTTP, map[string]any{"method": "POST", "host": "big.example", "path": "/", "unscanned": "the body is over 8 MiB; only its first 8 MiB were searched"})},
+			[]Finding{{Code, RuleBodyUnscanned, "big.example: the body is over 8 MiB; only its first 8 MiB were searched"}},
+		},
 		"a process, and a file with no path": {
 			[]Observation{observed(ObservedProcess, map[string]any{"command": "sh"}), observed(ObservedFile, map[string]any{})},
 			nil,

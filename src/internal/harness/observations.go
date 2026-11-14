@@ -4,14 +4,18 @@ import (
 	"encoding/json"
 	"sync"
 	"time"
+
+	"github.com/JairJosafath/mcp-customs/src/internal/egress"
 )
 
 // ObservationKind names what was observed (docs/contracts.md).
 type ObservationKind string
 
-// The kinds of observation this harness makes. The egress proxy adds dns,
-// connect and http.
+// The kinds of observation this harness makes, the egress proxy's among them.
 const (
+	ObservedDNS         ObservationKind = egress.KindDNS
+	ObservedConnect     ObservationKind = egress.KindConnect
+	ObservedHTTP        ObservationKind = egress.KindHTTP
 	ObservedFile        ObservationKind = "file"
 	ObservedSampling    ObservationKind = "sampling"
 	ObservedElicitation ObservationKind = "elicitation"
