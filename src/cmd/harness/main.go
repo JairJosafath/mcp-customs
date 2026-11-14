@@ -55,7 +55,7 @@ func serve(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	eg, stopEgress, err := startEgress(context.Background(), account)
+	eg, stopEgress, err := startEgress(context.Background(), account, log)
 	if err != nil {
 		return err
 	}
@@ -175,8 +175,9 @@ const firewallChain = "MCP_CUSTOMS"
 const nflogGroup = 47
 
 // startEgress starts the egress proxy and puts up the firewall for uid. The
-// stop function takes both down.
-func startEgress(ctx context.Context, account harness.Account) (*egress.Egress, func(), error) {
+// stop function takes both down. If the reader of refused packets stops
+// early, the run's observations say so, and so does log.
+func startEgress(ctx context.Context, account harness.Account, log *slog.Logger) (*egress.Egress, func(), error) {
 	if err := trustOutside(trustDir, account.Home); err != nil {
 		return nil, nil, err
 	}
@@ -210,7 +211,9 @@ func startEgress(ctx context.Context, account harness.Account) (*egress.Egress, 
 	logged := make(chan struct{})
 	go func() {
 		defer close(logged)
-		_ = eg.ServeNFLog(nflog)
+		if err := eg.ServeNFLog(nflog); err != nil {
+			log.Error("The harness stopped reading refused packets.", "error", err.Error())
+		}
 	}()
 	serving := eg.Serve(l, egress.RedirectedFrom)
 	stop := func() {

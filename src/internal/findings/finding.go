@@ -37,7 +37,8 @@ const (
 	RuleTLSNotIntercepted = "tls-not-intercepted"
 	RuleBodyUnscanned     = "body-not-scanned"
 	// Direct traffic refused but not all recorded: more than a run records,
-	// or packets the kernel dropped before the harness could read them.
+	// packets the kernel dropped before the harness could read them, or
+	// any after the harness stopped reading them.
 	RuleDirectUnrecorded = "direct-traffic-unrecorded"
 	RuleAgentConfig      = "agent-config-write"
 	RuleShellStartup     = "shell-startup-write"

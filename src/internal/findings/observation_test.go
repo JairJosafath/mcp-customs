@@ -82,6 +82,10 @@ func TestFromObservationsFindsWhatCodeCanTell(t *testing.T) {
 				{Code, RuleDirectUnrecorded, "the kernel dropped refused packets before the harness could read them; any of them may hold a canary"},
 			},
 		},
+		"the harness stopped reading refused packets": {
+			[]Observation{observed(ObservedConnect, map[string]any{"via": "direct", "refused": true, "stopped": "read NFLOG group 47: no buffer"})},
+			[]Finding{{Code, RuleDirectUnrecorded, "the harness stopped reading refused packets (read NFLOG group 47: no buffer); any refused after may hold a canary"}},
+		},
 		"a request body the proxy couldn't search whole": {
 			[]Observation{observed(ObservedHTTP, map[string]any{"method": "POST", "host": "big.example", "path": "/", "unscanned": "the body is over 8 MiB; only its first 8 MiB were searched"})},
 			[]Finding{{Code, RuleBodyUnscanned, "big.example: the body is over 8 MiB; only its first 8 MiB were searched"}},

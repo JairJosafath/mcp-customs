@@ -36,9 +36,13 @@ type DNSDetail struct {
 	Answers []string `json:"answers"`
 	// Faked is true when the answer was made up: the name isn't allowed.
 	Faked bool `json:"faked"`
-	// Canaries are those found in the name, as written or with its dots
-	// taken out, as a key spread over labels would be.
+	// Canaries are those found anywhere in the datagram, and in each
+	// question's name as written or with its dots taken out, as a key
+	// spread over labels would be.
 	Canaries []findings.Match `json:"canaries,omitempty"`
+	// Unanswered says why the datagram got no answer: it isn't a DNS
+	// query. Empty when it was answered.
+	Unanswered string `json:"unanswered,omitempty"`
 }
 
 // ConnectDetail is a connect observation's detail: a tunnel asked of the
@@ -72,6 +76,9 @@ type ConnectDetail struct {
 	// Dropped counts refused packets the kernel dropped before the harness
 	// could read them (the NFLOG queue overflowed): unrecorded, unsearched.
 	Dropped int `json:"dropped,omitempty"`
+	// Stopped says why the harness stopped reading refused packets: those
+	// refused after it are unrecorded, unsearched.
+	Stopped string `json:"stopped,omitempty"`
 }
 
 // HTTPDetail is an http observation's detail: one request, and the canaries
@@ -246,6 +253,11 @@ func (e *Egress) recordDropped() {
 	if n <= maxDropped {
 		e.record(KindConnect, ConnectDetail{Via: "direct", Refused: true, Dropped: n})
 	}
+}
+
+// recordStopped records that the reader of refused packets stopped, and why.
+func (e *Egress) recordStopped(why string) {
+	e.record(KindConnect, ConnectDetail{Via: "direct", Refused: true, Stopped: why})
 }
 
 // noteFake remembers which name a faked address was given for, so a direct

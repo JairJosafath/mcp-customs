@@ -3,20 +3,38 @@ package egress
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
+	"sync"
 	"syscall"
+	"time"
 )
 
 // An OriginalDestination tells where a connection the firewall redirected
 // was headed.
 type OriginalDestination func(net.Conn) (netip.AddrPort, error)
 
+// Bounds on what the catcher reads of a direct connection.
+const (
+	// catchRead is how much of a connection's payload is searched.
+	catchRead = 64 << 10
+	// catchWait is how long the catcher waits for that payload.
+	catchWait = time.Second
+	// maxCatching bounds the connections read at once; more wait their turn.
+	maxCatching = 64
+)
+
 // ServeCatch turns away, on l, every direct connection the firewall
-// redirected there: TCP the server sent anywhere but the proxy. Each
-// becomes a connect observation naming where it was headed, and is reset.
-// It returns when l is closed.
+// redirected there: TCP the server sent anywhere but the proxy. It reads
+// what each sends, for catchWait or up to catchRead bytes, and records it
+// as a connect observation naming where it was headed and the canaries in
+// its payload, then resets it. It returns when l is closed, once every
+// connection is recorded.
 func (e *Egress) ServeCatch(l net.Listener, dst OriginalDestination) error {
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	slots := make(chan struct{}, maxCatching)
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -31,9 +49,25 @@ func (e *Egress) ServeCatch(l net.Listener, dst OriginalDestination) error {
 			d.Port = int(to.Port())
 			d.Host = e.fakeName(d.Address)
 		}
-		e.recordDirect(d)
-		reset(conn)
+		slots <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-slots }()
+			e.catch(conn, d)
+		})
 	}
+}
+
+// catch reads what conn sends, records it as d with its canaries, and
+// resets it.
+func (e *Egress) catch(conn net.Conn, d ConnectDetail) {
+	_ = conn.SetReadDeadline(time.Now().Add(catchWait))
+	// A deadline or reset ends the read; what came before it is searched.
+	payload, _ := io.ReadAll(io.LimitReader(conn, catchRead))
+	if found := e.match(payload); len(found) > 0 {
+		d.Canaries = found
+	}
+	e.recordDirect(d)
+	reset(conn)
 }
 
 // reset closes conn so the client sees the connection refused, reset

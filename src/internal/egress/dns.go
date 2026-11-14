@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,7 +23,8 @@ type Resolver interface {
 
 // Bounds on DNS.
 const (
-	maxDNSPacket  = 4096
+	// maxDNSPacket holds the largest UDP datagram, so each is read whole.
+	maxDNSPacket  = 64 << 10
 	lookupTimeout = 5 * time.Second
 	fakeTTL       = 60
 )
@@ -32,10 +34,11 @@ const (
 // direct connections to it, and records them.
 var fakeNet = netip.MustParsePrefix("198.18.0.0/15")
 
-// ServeDNS answers DNS queries on pc until it is closed. Each query becomes
-// a dns observation. Allowed names are looked up for real; for any other
-// name, A and TXT queries get fake answers, so a server that learns where
-// to send its loot from DNS still sends it, and shows where.
+// ServeDNS answers DNS queries on pc until it is closed. Each datagram
+// becomes a dns observation, query or not, searched whole for canaries.
+// Allowed names are looked up for real; for any other name, A and TXT
+// queries get fake answers, so a server that learns where to send its loot
+// from DNS still sends it, and shows where.
 func (e *Egress) ServeDNS(pc net.PacketConn) error {
 	buf := make([]byte, maxDNSPacket)
 	for {
@@ -53,31 +56,66 @@ func (e *Egress) ServeDNS(pc net.PacketConn) error {
 	}
 }
 
-// answerDNS answers one query packet; ok is false when it isn't one.
+// answerDNS records one datagram and answers its first question; ok is
+// false when it isn't a query.
 func (e *Egress) answerDNS(packet []byte) ([]byte, bool) {
 	var p dnsmessage.Parser
 	h, err := p.Start(packet)
-	if err != nil || h.Response {
-		return nil, false
+	var questions []dnsmessage.Question
+	var why string
+	switch {
+	case err != nil:
+		why = "not a DNS message"
+	case h.Response:
+		why = "a DNS response, not a query"
+	default:
+		questions = allQuestions(&p)
+		if len(questions) == 0 {
+			why = "a DNS message with no question"
+		}
 	}
-	q, err := p.Question()
-	if err != nil {
-		return nil, false
-	}
-	name := normalHost(q.Name.String())
-	answers, rcode, faked := e.lookup(name, q.Type)
-	d := DNSDetail{Name: name, Type: typeName(q.Type), Answers: answerStrings(answers), Faked: faked}
-	// The name as sent keeps its case, which base64 in a label needs.
-	raw := strings.TrimSuffix(q.Name.String(), ".")
-	if m := e.match([]byte(raw + "\n" + strings.ReplaceAll(raw, ".", ""))); len(m) > 0 {
+	d := DNSDetail{Answers: []string{}, Unanswered: why}
+	if m := e.match(searched(packet, questions)); len(m) > 0 {
 		d.Canaries = m
 	}
+	if why != "" {
+		e.record(KindDNS, d)
+		return nil, false
+	}
+	q := questions[0]
+	d.Name, d.Type = normalHost(q.Name.String()), typeName(q.Type)
+	answers, rcode, faked := e.lookup(d.Name, q.Type)
+	d.Answers, d.Faked = answerStrings(answers), faked
 	e.record(KindDNS, d)
 	reply, err := buildReply(h, q, answers, rcode)
 	if err != nil {
 		return nil, false
 	}
 	return reply, true
+}
+
+// allQuestions are the questions p holds, up to the first it can't parse.
+func allQuestions(p *dnsmessage.Parser) []dnsmessage.Question {
+	var out []dnsmessage.Question
+	for {
+		q, err := p.Question()
+		if err != nil {
+			return out
+		}
+		out = append(out, q)
+	}
+}
+
+// searched is what of a datagram is searched for canaries: all of it, and
+// each question's name as sent, which keeps its case for base64 in a
+// label, and with its dots taken out.
+func searched(packet []byte, questions []dnsmessage.Question) []byte {
+	out := slices.Clone(packet)
+	for _, q := range questions {
+		raw := strings.TrimSuffix(q.Name.String(), ".")
+		out = append(out, "\n"+raw+"\n"+strings.ReplaceAll(raw, ".", "")...)
+	}
+	return out
 }
 
 // lookup answers a query: for real when the name is allowed, faked when not.

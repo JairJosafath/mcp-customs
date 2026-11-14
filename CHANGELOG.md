@@ -8,6 +8,13 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- No canary leaves the sandbox unseen through UDP port 53, an HTTP
+  trailer or raw TCP: every datagram to port 53 is recorded and searched
+  whole, query or not (`unanswered` says why one got no answer); a chunked
+  request's trailer is searched; the first 64 KiB a refused TCP
+  connection sends is searched before it is reset; and if the harness
+  stops reading refused packets, a `connect {via: direct, stopped}`
+  observation gives `direct-traffic-unrecorded`, at least review.
 - Every character a person can't see is a code finding of a check, with its
   escaped form as evidence: besides ANSI escapes, tag, zero-width and bidi
   characters, now every default-ignorable code point
