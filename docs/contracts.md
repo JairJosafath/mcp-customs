@@ -418,8 +418,17 @@ pass.` with `"liftFailedAfterPass":1`, which a metric filter counts
   (`MCPCustoms`/`LiftFailedAfterPass`) and the
   `LiftFailedAfterPass-Warning` alarm sends to the stack's topic. The `ConditionCheckItem` the transaction needs is granted to the
   Checker on `APPROVED` items only. A user subscribes with a rule on that source and those
-  detail-types; a retried step may send an event twice, told apart by
-  `recheckId`.
+  detail-types. Delivery is at-least-once: the Checker decides to send
+  each event once, but a put whose reply is lost is sent again, so a
+  subscriber may get one event twice and should treat a repeat of the
+  same detail-type, `approvedCheckId` and `recheckId` as one.
+- **A person decided it**: it is never started again, as a retry starts
+  from nothing and could approve what the person blocked. If its verdict
+  can't be written, the Checker writes the person's verdict again; if
+  that fails too, the re-check ends failed, the approved check keeps its
+  superseded mark and gets `recheckFailed`, and the Checker logs `A
+person's verdict on a re-check could not be written.` with
+  `"recheckFailedTwice":1`, which raises `RecheckFailedTwice-Critical`.
 
 ## The demo proxy
 
@@ -471,7 +480,9 @@ system prompt names it evidence, never instructions. Model findings are
 and waits, ends within 270 seconds or 15 seconds before the invocation's
 deadline, whichever is sooner; a step with too little of the invocation
 left to ask the model at all asks nothing, and the step runs again in a
-fresh invocation (at most three times) rather than fail the judge.
+fresh invocation (at most three times) rather than fail the judge, as
+does a call the deadline cut short whose tries ran out on a timeout or a
+busy model.
 
 ## Verdicts
 

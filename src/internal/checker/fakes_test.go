@@ -24,7 +24,7 @@ import (
 // steps of that name fail, once a step named failAfter is written when
 // that is set; doneErr makes marking a check done fail, and with it every
 // write that goes in its transaction; liftErr makes lifting a superseded
-// mark fail; supersedeErr makes marking an approved check superseded
+// mark fail, and liftErrOnce only the first; supersedeErr makes marking an approved check superseded
 // fail; lostDoneReply makes marking a check done commit but answer that
 // error; lostPassReply makes a pass commit but answer that error, as a
 // reply lost on the network does; loseFirstReply makes the first
@@ -55,6 +55,7 @@ type memoryRecorder struct {
 	overtaken      bool
 	newestPolled   string
 	liftedBy       map[string]string
+	liftErrOnce    error
 }
 
 // memoryEvents keeps every event the Checker sends, superseded and lifted.
@@ -169,6 +170,10 @@ func (m *memoryRecorder) LiftSuperseded(_ context.Context, approvedID, recheckID
 	defer m.mu.Unlock()
 	if m.liftErr != nil {
 		return false, m.liftErr
+	}
+	if err := m.liftErrOnce; err != nil {
+		m.liftErrOnce = nil
+		return false, err
 	}
 	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == approvedID })
 	if i < 0 {

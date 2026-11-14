@@ -130,6 +130,9 @@ type run struct {
 	// passed says a re-check's decided verdict is pass: should it fail
 	// once done, it still lifts the mark (liftAfterPass).
 	passed bool
+	// report is the verdict's report, once finish made it: a person's
+	// verdict is written again from it (reapplyVerdict).
+	report *Report
 	// ownAPI says allow refused the stack's own API host: the judge
 	// investigates nothing after it.
 	ownAPI bool
@@ -357,14 +360,24 @@ var terminal = []error{ErrUnknownAction, ErrBadArguments, ErrBadWait, ErrTooLarg
 // (unsettled); a re-check that passed still lifts the mark
 // (liftAfterPass). Any other check
 // gets a failed step saying which action failed, and a re-check is then
-// retried once, or its second failure recorded (afterFailedRecheck). It
+// retried once, or its second failure recorded (afterFailedRecheck). A
+// check a person decided is never retried: its verdict is written again
+// (reapplyVerdict), and if that fails too, a re-check is recorded as lost
+// for good (personsVerdictLost). It
 // answers err, with any failure of its own joined.
 func (r *run) fail(ctx durable.Context, err error) error {
-	var opErr *durable.OperationError
-	if !errors.As(err, &opErr) && !slices.ContainsFunc(terminal, func(t error) bool { return errors.Is(err, t) }) {
+	if isSuspend(err) {
 		return err
 	}
 	errs := []error{err, r.endSandbox(ctx)}
+	// A person's verdict is never followed by a retry: it is written again.
+	var reapplyErr error
+	if r.human != "" {
+		reapplyErr = r.reapplyVerdict(ctx)
+		if isSuspend(reapplyErr) {
+			return reapplyErr
+		}
+	}
 	done, updateErr := durable.Step(ctx, "record-failure", func(sc durable.StepContext) (bool, error) {
 		failErr := r.deps.Store.FailCheck(sc, r.in.CheckID)
 		if errors.Is(failErr, store.ErrCheckDone) {
@@ -376,11 +389,27 @@ func (r *run) fail(ctx durable.Context, err error) error {
 		errs = append(errs, fmt.Errorf("record check %s as failed: %w", r.in.CheckID, updateErr))
 	}
 	if done && !r.unsettled {
-		r.liftAfterPass(ctx)
+		if liftErr := r.liftAfterPass(ctx); liftErr != nil {
+			return liftErr
+		}
 		return errors.Join(errs...)
 	}
-	errs = append(errs, r.record(ctx, "failed", r.failedOutcome()), r.afterFailedRecheck(ctx))
-	return errors.Join(errs...)
+	errs = append(errs, reapplyErr, r.record(ctx, "failed", r.failedOutcome()))
+	if r.human != "" {
+		return errors.Join(append(errs, r.personsVerdictLost(ctx))...)
+	}
+	return errors.Join(append(errs, r.afterFailedRecheck(ctx))...)
+}
+
+// isSuspend says err is the SDK suspending the invocation, which must
+// pass through untouched: neither a durable operation's error nor one of
+// the Checker's own that end a check (terminal).
+func isSuspend(err error) bool {
+	if err == nil {
+		return false
+	}
+	var opErr *durable.OperationError
+	return !errors.As(err, &opErr) && !slices.ContainsFunc(terminal, func(t error) bool { return errors.Is(err, t) })
 }
 
 // failedOutcome is the failed step's outcome. Its summary names the

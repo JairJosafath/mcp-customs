@@ -68,8 +68,11 @@ Every user-visible change, newest first. The format follows
   a retry, still lifts the approved check's superseded mark and says so.
   A lift retried after it committed still sends its event. A judge call
   that starts late in an invocation ends before Lambda's deadline, and
-  one with too little time left runs again in a fresh invocation instead
-  of ending the check at review.
+  one with too little time left, or that the deadline cut short, runs
+  again in a fresh invocation instead of ending the check at review. A
+  re-check a person decided is never retried: if its verdict can't be
+  written, it is written again, and if that fails the alarm goes off. A
+  lift that succeeds on its own retry no longer raises the lift alarm.
 
 - Follow-ups from the reviews of #66 and #70 (#74). A re-check whose pass
   committed but was answered as an error no longer asks for a retry or

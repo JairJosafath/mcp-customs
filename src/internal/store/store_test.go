@@ -161,7 +161,7 @@ func (f *fakeDynamo) holds(condition *string, key [2]string, values row) error {
 		version, _ := readStr(values, ":version")
 		existing, _ := readStr(item, "polled")
 		ok = !exists || existing == version
-	case liftCondition:
+	case "#supersededBy = :recheck OR (attribute_not_exists(#supersededBy) AND #liftedBy = :recheck)":
 		want, _ := readStr(values, ":recheck")
 		marked, _ := readStr(item, "supersededBy")
 		_, isMarked := item["supersededBy"]

@@ -51,3 +51,26 @@ func TestACallWithTooLittleTimeLeftAsksNothingAndSaysSo(t *testing.T) {
 		t.Errorf("error %v after tries %v, want checker.ErrNoTime and no try", err, c.grants)
 	}
 }
+
+func TestACallTheDeadlineCutShortThatTimesOutRunsAgainInAFreshInvocation(t *testing.T) {
+	// The review's case: 60 s left gives one 45 s try, and a model that
+	// answers in 50 s would have answered in a fresh invocation.
+	c := &fakeClock{now: time.Unix(0, 0)}
+	j := New(&slowModel{clock: c, takes: 50 * time.Second}, model)
+	j.clock = c
+	j.wait = func(_ context.Context, d time.Duration) error {
+		c.now = c.now.Add(d)
+		return nil
+	}
+	ctx := deadlineContext{Context: t.Context(), deadline: c.now.Add(time.Minute)}
+	if _, err := j.Next(ctx, checker.Investigation{}); !errors.Is(err, checker.ErrNoTime) {
+		t.Errorf("error %v after tries %v, want checker.ErrNoTime", err, c.grants)
+	}
+}
+
+func TestACallWithItsWholeBudgetThatTimesOutFailsTheJudge(t *testing.T) {
+	j, _, _ := lateJudge(t, time.Hour)
+	if _, err := j.Next(t.Context(), checker.Investigation{}); err == nil || errors.Is(err, checker.ErrNoTime) {
+		t.Errorf("error %v, want a failure that is not checker.ErrNoTime", err)
+	}
+}

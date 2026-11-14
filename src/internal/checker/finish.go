@@ -42,6 +42,7 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 	// A re-check that passed lifts the mark even when its verdict step
 	// fails after the pass committed (fail).
 	r.passed = r.in.Recheck != nil && decided.Verdict == verdict.Pass
+	r.report = &report
 	if err := r.record(ctx, "verdict", outcome{Summary: summary, Findings: decided.Findings}); err != nil {
 		return "", err
 	}
@@ -52,7 +53,8 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 		return "", fmt.Errorf("write the verdict of check %s: %w", r.in.CheckID, err)
 	}
 	if err := r.settleSuperseded(ctx, decided.Verdict); err != nil {
-		if decided.Verdict != verdict.Pass {
+		// The SDK suspending for the lift's own retry is no failed lift.
+		if decided.Verdict != verdict.Pass || isSuspend(err) {
 			return "", err
 		}
 		// The pass is done and approved: a lift or its event that fails
@@ -65,14 +67,20 @@ func (r *run) finish(ctx durable.Context, decided verdict.Result, by string) (ve
 // liftAfterPass lifts the mark for a re-check whose pass is done though
 // its verdict step failed, as when the pass committed but its reply was
 // lost. The lift is conditional, so repeating it is safe; one that fails
-// is logged, as the pass stands.
-func (r *run) liftAfterPass(ctx durable.Context) {
+// is logged, as the pass stands. It answers only the SDK suspending, for
+// the lift's own retry, which the caller passes on.
+func (r *run) liftAfterPass(ctx durable.Context) error {
 	if !r.passed {
-		return
+		return nil
 	}
-	if err := r.lift(ctx); err != nil {
+	err := r.lift(ctx)
+	if isSuspend(err) {
+		return err
+	}
+	if err != nil {
 		r.logLiftFailed(ctx, err)
 	}
+	return nil
 }
 
 // logLiftFailed logs a lift that failed after a pass: the entry raises an

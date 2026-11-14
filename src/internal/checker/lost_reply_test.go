@@ -61,3 +61,20 @@ func TestAPersonsBlockWhoseDoneReplyIsLostAsksNoRetry(t *testing.T) {
 		t.Errorf("approved check %+v, events %+v; want it superseded once", c0, w.events.superseded)
 	}
 }
+
+func TestALiftThatSucceedsOnItsRetryRaisesNoAlarm(t *testing.T) {
+	for name, lostPass := range map[string]error{"the pass answered": nil, "the pass's reply lost": errors.New("connection reset")} {
+		t.Run(name, func(t *testing.T) {
+			w := reviewedRecheck()
+			w.rec.lostPassReply = lostPass
+			w.rec.liftErrOnce = errors.New("throttled")
+			_, logs := approvedRecheck(t, w)
+			if strings.Contains(logs.String(), LiftFailedKey) {
+				t.Errorf("logs %s, want no %s entry: the lift's own retry succeeded", logs, LiftFailedKey)
+			}
+			if c0, _, _ := w.rec.GetCheck(t.Context(), "c0"); c0.SupersededBy != "" || len(w.events.lifted) != 1 {
+				t.Errorf("approved check %+v, lifted %+v; want the mark lifted and one event", c0, w.events.lifted)
+			}
+		})
+	}
+}

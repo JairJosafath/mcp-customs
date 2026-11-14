@@ -59,9 +59,9 @@ func wait(ctx context.Context, d time.Duration) error {
 // or a try ran past its deadline, within its budget, and never once ctx
 // has ended. With too little of the invocation left for one try, it asks
 // nothing and answers checker.ErrNoTime, so the step runs again in a
-// fresh invocation.
+// fresh invocation; so does a call the deadline cut short (lateErr).
 func (j *Judge) converse(ctx context.Context, in *bedrockruntime.ConverseInput) (*bedrockruntime.ConverseOutput, error) {
-	end := j.callEnd(ctx)
+	end, cut := j.callEnd(ctx)
 	if end.Sub(j.clock.Now()) < minAttempt {
 		return nil, fmt.Errorf("ask %s: %w", j.model, checker.ErrNoTime)
 	}
@@ -73,7 +73,7 @@ func (j *Judge) converse(ctx context.Context, in *bedrockruntime.ConverseInput) 
 		}
 		err = fmt.Errorf("ask %s, attempt %d: %w", j.model, attempt, err)
 		if attempt == attempts || ctx.Err() != nil || (!timedOut && !isBusy(err)) || end.Sub(j.clock.Now())-backoff < minAttempt {
-			return nil, err
+			return nil, lateErr(err, cut && ctx.Err() == nil && (timedOut || isBusy(err)))
 		}
 		if waitErr := j.wait(ctx, backoff); waitErr != nil {
 			return nil, errors.Join(err, waitErr)
@@ -83,13 +83,24 @@ func (j *Judge) converse(ctx context.Context, in *bedrockruntime.ConverseInput) 
 }
 
 // callEnd is when a call that starts now must end: callBudget from now,
-// or deadlineMargin before ctx's deadline, Lambda's, if that is sooner.
-func (j *Judge) callEnd(ctx context.Context) time.Time {
-	end := j.clock.Now().Add(callBudget)
+// or deadlineMargin before ctx's deadline, Lambda's, if that is sooner,
+// which it says (cut).
+func (j *Judge) callEnd(ctx context.Context) (end time.Time, cut bool) {
+	end = j.clock.Now().Add(callBudget)
 	if deadline, ok := ctx.Deadline(); ok && deadline.Add(-deadlineMargin).Before(end) {
-		return deadline.Add(-deadlineMargin)
+		return deadline.Add(-deadlineMargin), true
 	}
-	return end
+	return end, false
+}
+
+// lateErr is err, marked checker.ErrNoTime when late: a call the deadline
+// cut short, whose tries ran out on a timeout or a busy model, gets its
+// whole budget in a fresh invocation rather than fail the judge.
+func lateErr(err error, late bool) error {
+	if !late {
+		return err
+	}
+	return fmt.Errorf("%w: %w", checker.ErrNoTime, err)
 }
 
 // try sends in once, within limit, and says whether a deadline ended it.
