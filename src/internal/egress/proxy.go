@@ -7,12 +7,14 @@ import (
 	"compress/zlib"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +23,10 @@ import (
 
 // Bounds on what the proxy reads and waits for.
 const (
+	// defaultReadTimeout bounds how long the proxy waits for a whole
+	// request, body included: a body held open is recorded, as read so
+	// far, when it ends.
+	defaultReadTimeout = 30 * time.Second
 	// maxScan is how much of a request body is searched for canaries.
 	maxScan = 8 << 20
 	// handshakeTimeout bounds a client's TLS handshake with the proxy.
@@ -28,6 +34,89 @@ const (
 	// idleTimeout closes a tunnel the client stopped using.
 	idleTimeout = time.Minute
 )
+
+// readTimeout is Config.ReadTimeout, or defaultReadTimeout.
+func (e *Egress) readTimeout() time.Duration {
+	if e.cfg.ReadTimeout > 0 {
+		return e.cfg.ReadTimeout
+	}
+	return defaultReadTimeout
+}
+
+// A handshake is the TLS handshake a client sent, as read before the
+// tunnel: its records' payloads joined, and whether its ClientHello
+// carries an encrypted one (ECH), which can't be searched.
+type handshake struct {
+	data []byte
+	ech  bool
+}
+
+// TLS constants readHandshake needs.
+const (
+	recordHandshake       = 22
+	recordHeaderLen       = 5
+	msgClientHello        = 1
+	extEncryptedHello     = 0xfe0d
+	connectRequestEndMark = "\r\n\r\n"
+)
+
+// readHandshake reads raw, a CONNECT request and the TLS records the
+// client sent after it, for the handshake.
+func readHandshake(raw []byte) handshake {
+	i := bytes.Index(raw, []byte(connectRequestEndMark))
+	if i < 0 {
+		return handshake{}
+	}
+	b := raw[i+len(connectRequestEndMark):]
+	var h handshake
+	for len(b) >= recordHeaderLen {
+		n := int(binary.BigEndian.Uint16(b[3:]))
+		if len(b) < recordHeaderLen+n {
+			n = len(b) - recordHeaderLen
+		}
+		if b[0] == recordHandshake {
+			h.data = append(h.data, b[recordHeaderLen:recordHeaderLen+n]...)
+		}
+		b = b[recordHeaderLen+n:]
+	}
+	h.ech = slices.Contains(helloExtensions(h.data), extEncryptedHello)
+	return h
+}
+
+// helloExtensions are the extension types of the ClientHello msg starts
+// with, as far as it parses.
+func helloExtensions(msg []byte) []uint16 {
+	if len(msg) < 4 || msg[0] != msgClientHello {
+		return nil
+	}
+	// Type, length, version, random; then the session ID, the cipher
+	// suites and the compression methods, each after its length.
+	b := msg[min(len(msg), 4+2+32):]
+	for _, size := range []int{1, 2, 1} {
+		if len(b) < size {
+			return nil
+		}
+		n := int(b[0])
+		if size == 2 {
+			n = int(binary.BigEndian.Uint16(b))
+		}
+		if len(b) < size+n {
+			return nil
+		}
+		b = b[size+n:]
+	}
+	if len(b) < 2 {
+		return nil
+	}
+	b = b[2:]
+	var out []uint16
+	for len(b) >= 4 {
+		out = append(out, binary.BigEndian.Uint16(b))
+		n := int(binary.BigEndian.Uint16(b[2:]))
+		b = b[min(len(b), 4+n):]
+	}
+	return out
+}
 
 // fakeBody is what a host that isn't allowed answers: a plain success, so
 // the server carries on as if its request went through.
@@ -55,19 +144,21 @@ func (e *Egress) Proxy() http.Handler {
 // as if it were the host.
 func (e *Egress) tunnel(w http.ResponseWriter, r *http.Request) {
 	host, port := splitHostPort(r.Host, 443)
-	// The CONNECT request as sent is searched, as is the server name.
+	// The CONNECT request is searched, as is everything the client sends
+	// in the clear before the tunnel is read: its TLS handshake.
 	var seen bytes.Buffer
-	if rc := rawConnOf(r.Context()); rc != nil {
-		seen.Write(rc.handOff())
-	}
 	seen.WriteString(r.Host + "\n")
 	_ = r.Header.Write(&seen)
+	rc := rawConnOf(r.Context())
 	conn, _, err := http.NewResponseController(w).Hijack()
 	if err != nil {
 		http.Error(w, "cannot tunnel", http.StatusInternalServerError)
 		return
 	}
 	defer func() { _ = conn.Close() }()
+	// The server's read deadline was for the CONNECT request; the tunnel
+	// keeps its own.
+	_ = conn.SetDeadline(time.Time{})
 	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
 		return
 	}
@@ -86,12 +177,24 @@ func (e *Egress) tunnel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), handshakeTimeout)
 	err = tlsConn.HandshakeContext(ctx)
 	cancel()
-	// The server name is sent in the clear, so a key may ride in it: it is
-	// searched as sent and with its dots taken out.
-	seen.WriteString(serverName + "\n" + strings.ReplaceAll(serverName, ".", ""))
+	// The ClientHello is sent in the clear, so a key may ride in any of
+	// it (the server name, ALPN, the session ID, an unknown extension): the
+	// handshake as sent is searched, its records joined, and the server
+	// name with its dots taken out.
+	seen.WriteString(serverName + "\n" + strings.ReplaceAll(serverName, ".", "") + "\n")
+	var hello handshake
+	if rc != nil {
+		raw := rc.handOff()
+		hello = readHandshake(raw)
+		seen.Write(raw)
+		seen.Write(hello.data)
+	}
 	d := ConnectDetail{Host: host, ServerName: serverName, Port: port, Via: "proxy", Intercepted: err == nil, Allowed: e.isAllowed(host)}
 	if found := e.match(seen.Bytes()); len(found) > 0 {
 		d.Canaries = found
+	}
+	if hello.ech {
+		d.Unscanned = "the ClientHello carries an encrypted ClientHello, which can't be searched"
 	}
 	e.record(KindConnect, d)
 	if err != nil {
@@ -102,6 +205,7 @@ func (e *Egress) tunnel(w http.ResponseWriter, r *http.Request) {
 			e.forward(w, r, "https", r.Host)
 		}),
 		ReadHeaderTimeout: handshakeTimeout,
+		ReadTimeout:       e.readTimeout(),
 		IdleTimeout:       idleTimeout,
 		ConnContext:       withRawConn,
 	}
@@ -164,12 +268,19 @@ func (e *Egress) recordNotProxied(r *http.Request) {
 	var seen bytes.Buffer
 	_ = r.Header.Write(&seen)
 	seen.WriteString(r.Method + " " + r.URL.RequestURI() + "\n")
+	var unscanned string
 	if rc := rawConnOf(r.Context()); rc != nil {
-		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, maxScan))
-		raw, _ := rc.take()
+		n, err := io.Copy(io.Discard, io.LimitReader(r.Body, maxScan+1))
+		raw, over := rc.take()
 		seen.Write(raw)
+		switch {
+		case n > maxScan || over:
+			unscanned = fmt.Sprintf("the request is over %d MiB; only its first %d MiB were searched", maxScan>>20, maxScan>>20)
+		case err != nil:
+			unscanned = "the body could not be read whole; what was read was searched"
+		}
 	}
-	e.record(KindHTTP, HTTPDetail{Method: r.Method, Host: normalHost(r.Host), Path: r.URL.Path, Canaries: e.match(seen.Bytes())})
+	e.record(KindHTTP, HTTPDetail{Method: r.Method, Host: normalHost(r.Host), Path: r.URL.Path, Canaries: e.match(seen.Bytes()), Unscanned: unscanned})
 }
 
 // upstreamURL is where an allowed request goes: built from the host and

@@ -94,6 +94,13 @@ func TestFromObservationsFindsWhatCodeCanTell(t *testing.T) {
 			[]Observation{observed(ObservedConnect, map[string]any{"address": "203.0.113.9", "port": 4444, "proto": "tcp", "via": "direct", "refused": true, "unscanned": "it sent over 64 KiB; only the first 64 KiB were searched"})},
 			[]Finding{{Code, RuleBodyUnscanned, "203.0.113.9: it sent over 64 KiB; only the first 64 KiB were searched"}},
 		},
+		"a tunnel not read whose ClientHello couldn't be searched": {
+			[]Observation{observed(ObservedConnect, map[string]any{"host": "loot.example", "port": 443, "via": "proxy", "intercepted": false, "allowed": false, "unscanned": "the ClientHello carries an encrypted ClientHello, which can't be searched"})},
+			[]Finding{
+				{Code, RuleTLSNotIntercepted, "TLS to loot.example the proxy could not read"},
+				{Code, RuleBodyUnscanned, "loot.example: the ClientHello carries an encrypted ClientHello, which can't be searched"},
+			},
+		},
 		"a process, and a file with no path": {
 			[]Observation{observed(ObservedProcess, map[string]any{"command": "sh"}), observed(ObservedFile, map[string]any{})},
 			nil,

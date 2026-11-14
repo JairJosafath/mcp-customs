@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/canary"
 	"github.com/JairJosafath/mcp-customs/src/internal/findings"
@@ -121,6 +122,9 @@ type Config struct {
 	// ServerEnv is what the server's environment needs to go through the
 	// proxy and trust the CA (see Env).
 	ServerEnv []string
+	// ReadTimeout bounds how long the proxy waits for a whole request,
+	// body included; 30 seconds when zero.
+	ReadTimeout time.Duration
 }
 
 // Egress is the proxy for one run. It is safe for concurrent use.

@@ -53,8 +53,9 @@ An observation is `{"at","kind","detail"}`, where `kind` is one of `dns`
 `faked`, the canaries found anywhere in the datagram or in any question's
 name, and `unanswered`: why it got no answer, when it isn't a query),
 `connect` (a tunnel through the proxy: host, `serverName` (the TLS
-SNI), port, `intercepted`, `allowed`, and the canaries in the CONNECT
-request and server name; or direct traffic the firewall refused:
+SNI), port, `intercepted`, `allowed`, the canaries in the CONNECT
+request and the whole TLS handshake as sent, and `unscanned` when the
+ClientHello carries an encrypted one; or direct traffic the firewall refused:
 `via: "direct"`, `proto` (tcp, udp, icmp, …), address, port, the
 canaries in a refused packet's payload or the first 64 KiB a refused TCP
 connection sent, `unscanned` when that read was cut short, `more` on the
@@ -67,7 +68,8 @@ DNS),
 as sent, trailer and chunk extensions included, with their encoding, and
 `unscanned`: why part of it went unsearched, when it did; bytes the proxy
 couldn't read as a request are an `http` observation of their own, with
-the canaries in them and `unscanned`), `file` (path written), `sampling`, `elicitation`,
+the canaries in them and `unscanned`; a request not read whole within 30
+seconds is recorded as read so far, `unscanned`), `file` (path written), `sampling`, `elicitation`,
 `process`, `hook` (a lifecycle hook called after `/run`: method, path,
 caller, the status it got). Bodies are not returned, only what was found
 in them.

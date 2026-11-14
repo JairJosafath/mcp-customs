@@ -25,6 +25,10 @@ Every user-visible change, newest first. The format follows
   connection whose read was cut short, or that came while 64 others were
   being read, gives `body-not-scanned`; and a DNS reader that stops is
   recorded as the NFLOG reader is.
+- A tunnel's whole TLS handshake is searched as sent, so a token in ALPN,
+  the session ID or any extension is found, and an encrypted ClientHello
+  gives `body-not-scanned`; a request body held open is recorded, as read
+  so far and unscanned, when the proxy's 30-second read timeout ends it.
 - Every character a person can't see is a code finding of a check, with its
   escaped form as evidence: besides ANSI escapes, tag, zero-width and bidi
   characters, now every default-ignorable code point

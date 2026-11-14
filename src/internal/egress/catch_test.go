@@ -96,11 +96,15 @@ func TestADirectConnectionPastTheReadersIsRecordedAtOnceAsUnscanned(t *testing.T
 		<-served
 	})
 	// Silent connections hold every reader until its wait ends; one more
-	// is recorded before any of them.
-	for range maxCatching + 1 {
+	// is recorded before any of them. It is reset at once, so its dial may
+	// already see the reset: that is the outcome, not a failure.
+	for i := range maxCatching + 1 {
 		conn, err := net.Dial("tcp", l.Addr().String())
 		if err != nil {
-			t.Fatal(err)
+			if i < maxCatching {
+				t.Fatal(err)
+			}
+			continue
 		}
 		t.Cleanup(func() { _ = conn.Close() })
 	}

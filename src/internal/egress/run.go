@@ -93,7 +93,7 @@ func port(a net.Addr) int {
 // Serve serves the proxy, DNS and the catcher on l until stop is called,
 // which closes them and waits for them to end.
 func (e *Egress) Serve(l *Listeners, dst OriginalDestination) (stop func()) {
-	srv := &http.Server{Handler: e.Proxy(), ReadHeaderTimeout: handshakeTimeout, IdleTimeout: idleTimeout, ConnContext: withRawConn}
+	srv := &http.Server{Handler: e.Proxy(), ReadHeaderTimeout: handshakeTimeout, ReadTimeout: e.readTimeout(), IdleTimeout: idleTimeout, ConnContext: withRawConn}
 	var wg sync.WaitGroup
 	wg.Go(func() { _ = srv.Serve(rawListener{Listener: l.Proxy, e: e}) })
 	wg.Go(func() { _ = e.ServeDNS(l.DNS) })
