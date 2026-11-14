@@ -24,7 +24,8 @@ import (
 // steps of that name fail, once a step named failAfter is written when
 // that is set; doneErr makes marking a check done fail, and with it every
 // write that goes in its transaction; liftErr makes lifting a superseded
-// mark fail; lostPassReply makes a pass commit but answer that error, as a
+// mark fail; supersedeErr makes marking an approved check superseded
+// fail; lostPassReply makes a pass commit but answer that error, as a
 // reply lost on the network does; loseFirstReply makes the first
 // create succeed but answer an error, as a reply lost on the network does.
 type memoryRecorder struct {
@@ -44,6 +45,7 @@ type memoryRecorder struct {
 	failAfter      string
 	doneErr        error
 	liftErr        error
+	supersedeErr   error
 	lostPassReply  error
 	loseFirstReply bool
 	puts           int
@@ -142,6 +144,9 @@ func (m *memoryRecorder) UpdateCheck(_ context.Context, id string, u store.Check
 func (m *memoryRecorder) MarkSuperseded(_ context.Context, approvedID string, s store.Superseding) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.supersedeErr != nil {
+		return false, m.supersedeErr
+	}
 	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == approvedID })
 	if i < 0 || (m.newestPolled != "" && m.newestPolled != s.Version) {
 		return false, nil

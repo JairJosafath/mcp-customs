@@ -2,6 +2,8 @@ package checker
 
 import (
 	"errors"
+	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -147,5 +149,17 @@ func TestARetryThatPassesLiftsTheMarkTheFailedRecheckLeft(t *testing.T) {
 	}
 	if len(w.events.lifted) != 1 || w.events.lifted[0].RecheckID != retry.CheckID {
 		t.Errorf("lifted events %+v, want one, from the retry", w.events.lifted)
+	}
+}
+
+func TestARecheckAtReviewThatCantSupersedeFailsAndIsRetried(t *testing.T) {
+	srv := cleanServer()
+	srv.fail = map[string]int{"/install": http.StatusUnprocessableEntity}
+	w := newWorld(srv)
+	w.rec.checks = []store.Check{{ID: "c0", Submission: npm, Status: store.StatusDone, Verdict: "pass"}}
+	w.rec.supersedeErr = errors.New("throttled")
+	runFailing(t, w, newVersion(false))
+	if !slices.Equal(w.rec.retries, []string{"npm#weather-mcp@1.0.1"}) {
+		t.Errorf("retries asked %v, want one: the approved check still stands", w.rec.retries)
 	}
 }
