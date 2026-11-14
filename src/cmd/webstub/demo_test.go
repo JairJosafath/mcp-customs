@@ -82,9 +82,9 @@ func TestEachDemoServerEndsAsItsScriptSays(t *testing.T) {
 		name, ref, decision, verdict, finding string
 		installSpec                           bool
 	}{
-		{"the weather server waits, and a person blocks it", "weather-mcp@1.0.0", "block", "block", "ssh-private-key, base64", false},
+		{"the weather server waits, and a person blocks it", "weather-mcp@1.0.0", "block", "block", "ssh-private-key, base64, to weather-cdn.example (http)", false},
 		{"the mail server's v1.0.0 passes alone", "mail-mcp@1.0.0", "", "pass", "", true},
-		{"the mail server's v1.0.1 waits, and a person blocks it", "mail-mcp@1.0.1", "block", "block", "email, plain", false},
+		{"the mail server's v1.0.1 waits, and a person blocks it", "mail-mcp@1.0.1", "block", "block", "email, plain, to mail-sink.example (http)", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

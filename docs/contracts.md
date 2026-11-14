@@ -23,6 +23,7 @@ pull request.
 | `src/internal/poller`               | The poll: each approved package's registry asked for its latest version, a re-check started for a new one          |
 | `src/internal/store`                | DynamoDB and S3 access shared by the Checker and the web function                                                  |
 | `src/internal/web`                  | Handlers and `html/template` pages                                                                                 |
+| `src/internal/demoscene`            | What the Checker writes for each demo check, played by `src/cmd/webstub`; a Checker test holds it to the Checker   |
 | `src/demo/weather`, `src/demo/mail` | The demo MCP servers, each its own `main`                                                                          |
 | `sandbox/Dockerfile`                | The MicroVM image: Go, Node, Python, the harness, a fake developer home                                            |
 | `infra/`                            | One CDK app: the Checker (durable), the web function behind the HTTP API, the table, the bucket, the MicroVM image |

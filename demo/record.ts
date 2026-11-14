@@ -167,10 +167,13 @@ async function play(run: Run, name: SceneName, opts: Options): Promise<Omit<Scen
         { weather: opts.weather, mail: opts.mail, 'mail-next': opts.mailNext }[name],
       );
     }
-    await settle(run, want);
+    await settle(run, name, want);
     await then(run);
     return { scene: name, url: run.page.url(), verdict: want };
   } catch (err: unknown) {
+    if (err instanceof WrongVerdict) {
+      return { scene: name, url: run.page.url(), verdict: 'gave up', error: err.message };
+    }
     const why = err instanceof Error ? (err.message.split('\n')[0] ?? '') : String(err);
     return {
       scene: name,
@@ -178,6 +181,14 @@ async function play(run: Run, name: SceneName, opts: Options): Promise<Omit<Scen
       verdict: 'gave up',
       error: `${name}: gave up: ${why}`,
     };
+  }
+}
+
+/** A check that settled at another verdict than its scene's narration needs. */
+class WrongVerdict extends Error {
+  constructor(scene: SceneName, want: string, got: string) {
+    super(`scene ${scene}: expected ${want}, got ${got}`);
+    this.name = 'WrongVerdict';
   }
 }
 
@@ -202,9 +213,9 @@ async function submit({ page, left, hold }: Run, s: Server): Promise<void> {
 /**
  * Watches the timeline until the check settles. A check waiting for a
  * person is answered with the decision the scene expects (block); then
- * the verdict must be want.
+ * the verdict must be want, or the scene fails with WrongVerdict.
  */
-async function settle(run: Run, want: 'pass' | 'block'): Promise<void> {
+async function settle(run: Run, name: SceneName, want: 'pass' | 'block'): Promise<void> {
   const { page, left } = run;
   await page.locator(SETTLED).waitFor({ state: 'attached', timeout: left() });
   const status = await page.locator('body').getAttribute('data-status');
@@ -220,8 +231,12 @@ async function settle(run: Run, want: 'pass' | 'block'): Promise<void> {
     await page.getByRole('button', { name: 'Block' }).click({ timeout: left() });
     await page.locator('body[data-status="done"]').waitFor({ state: 'attached', timeout: left() });
   }
-  const verdict = page.locator(`strong.verdict-${want}`);
+  const verdict = page.locator('strong[class^="verdict-"]');
   await verdict.waitFor({ timeout: left() });
+  const got = (await verdict.textContent({ timeout: left() }))?.trim() ?? '';
+  if (got !== want) {
+    throw new WrongVerdict(name, want, got);
+  }
   await show(run, verdict);
   // A re-check started by the poller links the approved version.
   const recheck = page.locator('p.recheck');
