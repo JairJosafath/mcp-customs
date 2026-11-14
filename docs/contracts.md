@@ -37,18 +37,18 @@ Manager (`RUN_TOKEN_SECRET_ARN`), so the Checker derives it again on every
 invocation and no execution history keeps it. JSON in and out; every response carries
 `observations` since the last call.
 
-| Call                | Body                                                                                    | Answers                                                |
-| ------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| `POST /install`     | `{"kind":"go"\|"npm"\|"pypi"\|"remote","ref":"name@version or URL","allowHosts":[...]}` | install log, resolved dependency set and its SHA-256   |
-| `POST /start`       | `{"command":[...]}` (empty: the kind's default)                                         | the server's `initialize` result                       |
-| `POST /list`        | `{}`                                                                                    | tools (whole schemas), resources, prompts, as raw JSON |
-| `POST /call`        | `{"tool":"name","arguments":{...}}`                                                     | the raw result                                         |
-| `POST /allow`       | `{"hosts":[...]}`                                                                       | the egress allowlist now in force                      |
-| `POST /seal`        | `{}`                                                                                    | `{"hosts":[]}`: egress ended for good                  |
-| `POST /clock`       | `{"offset":"720h"}`                                                                     | the fake clock now in force                            |
-| `POST /source`      | `{"path":"dist/index.js"}`, relative to the installed package                           | `{"path","content"}`                                   |
-| `POST /download`    | `{"path":"/home/dev/.cache/x"}`, a file the server wrote                                | `{"path","size","sha256","kind","excerpt"}`            |
-| `GET /observations` |                                                                                         | all observations of the run                            |
+| Call                | Body                                                                                    | Answers                                                    |
+| ------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `POST /install`     | `{"kind":"go"\|"npm"\|"pypi"\|"remote","ref":"name@version or URL","allowHosts":[...]}` | install log, resolved dependency set and its SHA-256       |
+| `POST /start`       | `{"command":[...]}` (empty: the kind's default)                                         | the server's `initialize` result                           |
+| `POST /list`        | `{}`                                                                                    | tools (whole schemas), resources, prompts, as raw JSON     |
+| `POST /call`        | `{"tool":"name","arguments":{...}}`                                                     | the raw result                                             |
+| `POST /allow`       | `{"hosts":[...]}`                                                                       | the egress allowlist now in force                          |
+| `POST /seal`        | `{}`                                                                                    | `{"hosts":[]}`: egress ended for good                      |
+| `POST /clock`       | `{"offset":"720h"}`, a move forward                                                     | the clock now in force: `{"offset","now","applies","why"}` |
+| `POST /source`      | `{"path":"dist/index.js"}`, relative to the installed package                           | `{"path","content","truncated"}`, 64 KB at most            |
+| `POST /download`    | `{"path":"/home/dev/.cache/x"}`, a file the server wrote                                | `{"path","size","sha256","kind","excerpt"}`                |
+| `GET /observations` |                                                                                         | all observations of the run                                |
 
 The resolved dependency set is the resolver's, taken before any code of the
 package runs, never what the installed files say of themselves: for npm, the
@@ -61,7 +61,42 @@ of the unprivileged account.
 
 The investigation's calls (`/call` again, `/source`, `/download`, `/clock`)
 and `/allow` are best effort: an error answer is told to the judge, and the
-check goes on.
+check goes on. `/clock`, `/source` and `/download` work after `/seal` and
+change nothing of egress.
+
+- **`/clock`** moves the server's clock forward with libfaketime, which
+  the server always runs preloaded with (its monotonic clock untouched),
+  reading the offset from a file in `/etc/mcp-customs` on every call for
+  the time, so a move applies to a running server. Moves add up: each is
+  whole seconds, one to 366 days, all of them at most ten times that (400
+  past it); 409 when the harness has no fake clock. `applies` says whether
+  the server's runtime sees the move: `no` for a Go or statically linked
+  binary, which doesn't ask libc for the time, `yes` for a dynamically
+  linked one, a script judged by its interpreter, and `unknown` before an
+  install or when the binary can't be read; `why` says which, naming
+  only the command's own base name. The command is the server's to point
+  anywhere, so the harness reads only a regular file the account could
+  read itself (its own, or world-readable), looked at before it is opened,
+  so no device or FIFO is opened and nothing of a file the account can't
+  read reaches the judge. The Checker
+  tells the judge, which then reads nothing into what the server does
+  after a move it can't see. It is advice, not a control: a server can
+  clear `LD_PRELOAD` or set its own clock, and can tell it is tested (the
+  preload is in its environment, the offset file world-readable).
+- **`/source`** reads under the installed package's directory: for npm
+  `node_modules/<name>`, for Go the main module in the module cache, for
+  PyPI the venv's `site-packages`. A path that isn't clean and relative,
+  or that leaves the package, a link out of it, a package directory
+  reached through a link, a hard link (a link count above one), and
+  anything but a regular file the unprivileged account owns, are 400; a
+  missing file is 404, and a call before an install 409.
+- **`/download`** describes only a path seen as a `file` observation,
+  404 otherwise. Its directory is opened at its real path, so one swapped
+  for a link is 400; the file is looked up in it without following a
+  link (400), the file opened must be the one looked at, and it must be a
+  regular file the account owns, never a hard link (400), and is hashed whole up to 256
+  MB (413 past it, a file that grows past it while read included); `kind` is its sniffed media type, `excerpt` its first
+  4 KB.
 
 The server under test never reaches the stack's own API directly. A host
 the server's author controls, or a CloudFront distribution in front of

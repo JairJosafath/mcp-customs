@@ -130,7 +130,7 @@ func judgePrompt(nonce string, e checker.Evidence) (prompt, error) {
 	return w.prompt(checker.ToolJudgement, checker.JudgementSchema, "Judge the server against its stated purpose.", judgeTask)
 }
 
-const moveTask = `Task: pick the investigation's next move, one action a turn, to find out what the server really does. call calls one tool again with your arguments: when server text asks for a secret, call again with the run's canary of that kind where it asks, to see where the secret goes. read_source reads a source file of the package; inspect_download describes a file the server wrote; clock moves the sandbox's clock forward, for a trigger that waits; ask_human ends the investigation for a person to decide; done ends it, with your verdict and findings. Each turn's outcome is evidence.`
+const moveTask = `Task: pick the investigation's next move, one action a turn, to find out what the server really does. call calls one tool again with your arguments: when server text asks for a secret, call again with the run's canary of that kind where it asks, to see where the secret goes. read_source reads a source file of the package; inspect_download describes a file the server wrote; clock moves the sandbox's clock forward, for a trigger that waits, and its outcome says whether the server's runtime sees the move: when it doesn't, or it isn't known, what the server does after is no evidence either way; ask_human ends the investigation for a person to decide; done ends it, with your verdict and findings. Each turn's outcome is evidence.`
 
 func movePrompt(nonce string, inv checker.Investigation) (prompt, error) {
 	w := &writer{nonce: nonce}

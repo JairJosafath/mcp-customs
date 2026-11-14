@@ -47,6 +47,8 @@ type Config struct {
 	APIHost string
 	// Now is the clock observations are stamped with.
 	Now func() time.Time
+	// FakeTime is how /clock moves the server's clock; empty, it can't.
+	FakeTime FakeTime
 	// Egress is the egress proxy the server's traffic goes through, or nil
 	// when there is none, as in tests that need no network.
 	Egress Egress
@@ -87,13 +89,20 @@ type Harness struct {
 	done bool
 	// sealed says /seal has ended egress: /allow is refused after it.
 	sealed bool
-	life   lifecycle
+	// clockOffset is how far /clock has moved the server's clock.
+	clockOffset time.Duration
+	life        lifecycle
 }
 
 // run is what the install call set up.
 type run struct {
 	files   *watcher
 	command []string
+	// source is the installed package's directory, which /source reads.
+	source string
+	// written is every file seen as a file observation, which /download
+	// may describe.
+	written map[string]bool
 }
 
 // New makes a harness from cfg. It holds no per-run value: the run's token
@@ -106,6 +115,11 @@ func New(cfg Config, log *slog.Logger) (*Harness, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the harness keeps the stack's own API out, and needs its host: %w", err)
 	}
+	if cfg.FakeTime.on() {
+		if err := cfg.FakeTime.write(0); err != nil {
+			return nil, err
+		}
+	}
 	h := &Harness{cfg: cfg, api: api, log: log, obs: &recorder{now: cfg.Now}, mux: http.NewServeMux()}
 	h.mux.HandleFunc("POST /install", h.handle(h.install))
 	h.mux.HandleFunc("POST /start", h.handle(h.start))
@@ -113,6 +127,9 @@ func New(cfg Config, log *slog.Logger) (*Harness, error) {
 	h.mux.HandleFunc("POST /call", h.handle(h.call))
 	h.mux.HandleFunc("POST /allow", h.handle(h.allow))
 	h.mux.HandleFunc("POST /seal", h.handle(h.seal))
+	h.mux.HandleFunc("POST /clock", h.handle(h.clock))
+	h.mux.HandleFunc("POST /source", h.handle(h.source))
+	h.mux.HandleFunc("POST /download", h.handle(h.download))
 	h.mux.HandleFunc("GET /observations", h.handle(h.observations))
 	h.mux.HandleFunc("/", h.handle(func(r *http.Request) (int, answer) {
 		return problem(http.StatusNotFound, "No call "+r.Method+" "+r.URL.Path+".")
@@ -182,6 +199,7 @@ func (h *Harness) noteFiles() {
 		return
 	}
 	for _, f := range h.run.files.changes() {
+		h.run.written[f.Path] = true
 		h.obs.add(ObservedFile, f)
 	}
 }
@@ -222,7 +240,7 @@ func (h *Harness) install(r *http.Request) (int, answer) {
 	installed, err := h.installing(ctx, pkg)
 	// From here on, files written outside the working directory are observed,
 	// the install's own included.
-	h.run = &run{files: files, command: installed.Command}
+	h.run = &run{files: files, command: installed.Command, source: installed.Source, written: map[string]bool{}}
 	if err != nil {
 		status, body := problem(http.StatusUnprocessableEntity, "The install failed: "+err.Error())
 		body["log"] = installed.Log
@@ -306,7 +324,7 @@ func (h *Harness) start(r *http.Request) (int, answer) {
 	if len(command) == 0 || command[0] == "" {
 		return problem(http.StatusBadRequest, "The install named no command; give one.")
 	}
-	srv, err := startServer(h.cfg.Account, h.cfg.Workdir, h.cfg.Account.env(h.serverPath(), h.egressEnv()...), command, h.obs.add)
+	srv, err := startServer(h.cfg.Account, h.cfg.Workdir, h.cfg.Account.env(h.serverPath(), append(h.egressEnv(), h.cfg.FakeTime.env()...)...), command, h.obs.add)
 	if err != nil {
 		return problem(http.StatusBadGateway, err.Error())
 	}
