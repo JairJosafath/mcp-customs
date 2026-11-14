@@ -4,9 +4,40 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{.Service}}</title>
+    <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
     <h1>{{.Service}}</h1>
-    <p>{{.Service}} is up.</p>
+    <p>
+      Check an MCP server before an agent may use it: {{.Service}} runs it in a sandbox, watches
+      what it does, and answers pass, review or block.
+    </p>
+    {{with .Message}}
+    <p class="message" role="alert">{{.}}</p>
+    {{end}}
+    <form method="post" action="/checks">
+      <label for="kind">Kind</label>
+      <select id="kind" name="kind">
+        {{range .Kinds}}
+        <option value="{{.Value}}">{{.Label}}</option>
+        {{end}}
+      </select>
+      <label for="ref">Pinned name@version, or an https:// URL</label>
+      <input
+        id="ref"
+        name="ref"
+        type="text"
+        required
+        maxlength="512"
+        value="{{.Ref}}"
+        placeholder="weather-mcp@1.0.0"
+      />
+      <button type="submit">Check it</button>
+    </form>
+    <p class="muted">
+      Agents and scripts: <code>POST /api/checks</code> with
+      <code>{"kind":"npm","ref":"weather-mcp@1.0.0"}</code>, then
+      <code>GET /api/checks/&lt;id&gt;</code>.
+    </p>
   </body>
 </html>

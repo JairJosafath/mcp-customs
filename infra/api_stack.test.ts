@@ -6,11 +6,13 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import {
   ApiStack,
+  CALLBACK_ACTION,
   DURABLE_EXECUTION_ACTIONS,
   JUDGE_INFERENCE_PROFILE,
   JUDGE_MODEL,
   JUDGE_MODEL_REGIONS,
   REPORT_PREFIXES,
+  WEB_ROUTES,
 } from './api_stack';
 import { copyVaultName } from './backups';
 import { PASS_CONNECTOR_ACTION, SANDBOX_ACTIONS } from './sandbox';
@@ -341,17 +343,63 @@ describe('ApiStack', () => {
     });
   });
 
-  it('lets the web function only write its logs', () => {
+  it('lets the web function only read checks, steps and reports, start the Checker, answer its callbacks, read the reviewer key and write its logs', () => {
+    const webActions = [
+      '"dynamodb:GetItem"',
+      '"dynamodb:Query"',
+      '"s3:GetObject"',
+      '"lambda:InvokeFunction"',
+      `"${CALLBACK_ACTION}"`,
+      '"secretsmanager:GetSecretValue"',
+      '"logs:CreateLogStream"',
+      '"logs:PutLogEvents"',
+    ];
     const role = idOf(development, 'AWS::IAM::Role', 'WebRole');
-    expect(actionsOf(development, role)).toEqual(['"logs:CreateLogStream"', '"logs:PutLogEvents"']);
+    expect(actionsOf(development, role)).toEqual([...webActions].sort());
     expect(actionsOf(production, idOf(production, 'AWS::IAM::Role', 'WebRole'))).toEqual(
-      [
-        '"logs:CreateLogStream"',
-        '"logs:PutLogEvents"',
-        '"xray:PutTelemetryRecords"',
-        '"xray:PutTraceSegments"',
-      ].sort(),
+      [...webActions, '"xray:PutTelemetryRecords"', '"xray:PutTraceSegments"'].sort(),
     );
+    // Each on the one resource it needs: the reports, the Checker at
+    // $LATEST, the Checker's own executions, the reviewer key.
+    const checker = idOf(development, 'AWS::Lambda::Function', 'Checker');
+    const bucket = idOf(development, 'AWS::S3::Bucket', 'Reports');
+    const key = idOf(development, 'AWS::SecretsManager::Secret', 'ReviewerKey');
+    development.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: {
+        Statement: [
+          {
+            Action: 's3:GetObject',
+            Effect: 'Allow',
+            Resource: { 'Fn::Join': ['', [{ 'Fn::GetAtt': [bucket, 'Arn'] }, '/reports/*']] },
+          },
+          {
+            Action: 'lambda:InvokeFunction',
+            Effect: 'Allow',
+            Resource: { 'Fn::Join': ['', [{ 'Fn::GetAtt': [checker, 'Arn'] }, ':$LATEST']] },
+          },
+          {
+            Action: CALLBACK_ACTION,
+            Effect: 'Allow',
+            Resource: { 'Fn::Join': ['', [{ 'Fn::GetAtt': [checker, 'Arn'] }, ':*']] },
+          },
+          { Action: 'secretsmanager:GetSecretValue', Effect: 'Allow', Resource: { Ref: key } },
+        ],
+      },
+    });
+    const web = idOf(development, 'AWS::Lambda::Function', 'Web');
+    development.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: {
+        Variables: {
+          CHECKER_FUNCTION_ARN: {
+            'Fn::Join': ['', [{ 'Fn::GetAtt': [checker, 'Arn'] }, ':$LATEST']],
+          },
+          REVIEWER_KEY_SECRET_ARN: { Ref: key },
+          DYNAMODB_TABLE_NAME: Match.anyValue(),
+          REPORTS_BUCKET_NAME: Match.anyValue(),
+        },
+      },
+    });
+    expect(development.findResources('AWS::Lambda::Function')[web]).toBeDefined();
   });
 
   it('gives no function role a managed policy, in either tier', () => {
@@ -369,15 +417,25 @@ describe('ApiStack', () => {
     }
   });
 
-  it('routes GET / and GET /api/* to the web function, open to the public', () => {
+  it('routes the pages, the form, Approve and Block and the JSON API to the web function, open to the public', () => {
     const web = idOf(production, 'AWS::Lambda::Function', 'Web');
-    for (const routeKey of ['GET /', 'GET /api/{proxy+}']) {
+    const routeKeys = WEB_ROUTES.map(([method, routePath]) => `${method} ${routePath}`);
+    expect(routeKeys).toEqual([
+      'GET /',
+      'POST /checks',
+      'GET /checks/{id}',
+      'POST /checks/{id}/decision',
+      'GET /static/{file}',
+      'GET /api/{proxy+}',
+      'POST /api/checks',
+    ]);
+    for (const routeKey of routeKeys) {
       production.hasResourceProperties('AWS::ApiGatewayV2::Route', {
         RouteKey: routeKey,
         AuthorizationType: 'NONE',
       });
     }
-    production.resourceCountIs('AWS::ApiGatewayV2::Route', 2);
+    production.resourceCountIs('AWS::ApiGatewayV2::Route', WEB_ROUTES.length);
     production.resourceCountIs('AWS::ApiGatewayV2::Integration', 1);
     production.hasResourceProperties('AWS::ApiGatewayV2::Integration', {
       IntegrationUri: { 'Fn::GetAtt': [web, 'Arn'] },

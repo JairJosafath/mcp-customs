@@ -8,6 +8,17 @@ Every user-visible change, newest first. The format follows
 
 ### Added
 
+- The web page and API: submit a pinned package or an https URL from the
+  form on `/` or `POST /api/checks`, which start the Checker asynchronously
+  and answer the check's ID (`400` with a message for bad input); watch a
+  check's steps on `/checks/<id>` as they are written, then its verdict and
+  report; Approve or Block a check waiting for a person with the reviewer key,
+  which sends the Checker's durable callback; `GET /api/checks/<id>` answers
+  the verdict as JSON, with the install spec for a pass. All text from a
+  check is shown escaped, every invisible character as a visible escape,
+  under a strict Content-Security-Policy. A remote URL must name a public
+  host; a second decision, or one for a check no longer waiting, answers
+  `409`.
 - The judge: Claude on Amazon Bedrock, through the Converse API and a JSON
   Schema tool, in place of the stub. It writes each tool's probe arguments
   from its schema and description, planting the run's canaries where a

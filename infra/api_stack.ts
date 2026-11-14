@@ -56,6 +56,29 @@ export const REPORTS_BUCKET_NAME = 'REPORTS_BUCKET_NAME';
 /** The environment variable that hands the Checker the ARN of the key its run tokens are derived from. */
 export const RUN_TOKEN_SECRET_ARN = 'RUN_TOKEN_SECRET_ARN';
 
+/** The environment variable that hands the web function the Checker's qualified ARN, to start checks. */
+export const CHECKER_FUNCTION_ARN = 'CHECKER_FUNCTION_ARN';
+
+/** The environment variable that hands the web function the ARN of the reviewer key. */
+export const REVIEWER_KEY_SECRET_ARN = 'REVIEWER_KEY_SECRET_ARN';
+
+/** The Lambda API call the web function makes to answer a check waiting for a person. */
+export const CALLBACK_ACTION = 'lambda:SendDurableExecutionCallbackSuccess';
+
+/**
+ * The web function's routes, open to the public. Approve and Block (`POST
+ * /checks/{id}/decision`) take the reviewer key, which the function checks.
+ */
+export const WEB_ROUTES = [
+  ['GET', '/'],
+  ['POST', '/checks'],
+  ['GET', '/checks/{id}'],
+  ['POST', '/checks/{id}/decision'],
+  ['GET', '/static/{file}'],
+  ['GET', '/api/{proxy+}'],
+  ['POST', '/api/checks'],
+] as const;
+
 /** The environment variable that names the judge's model to the Checker. */
 export const JUDGE_MODEL_ID = 'JUDGE_MODEL_ID';
 
@@ -302,8 +325,8 @@ export class ApiStack extends Stack {
     this.grantJudge(checker);
     // One MicroVM per check, from the harness image.
     new Sandbox(this, 'Sandbox', { logRetention: rules.logRetention }).grantLaunch(checker);
-    // Nothing invokes the Checker yet: the web function starts checks in a
-    // later issue, and a durable execution keeps its own failures.
+    // The web function starts checks asynchronously, and a durable
+    // execution keeps its own failures.
     Validations.of(checker).acknowledge({
       id: 'Serverless-LambdaDLQ',
       reason:
@@ -316,6 +339,7 @@ export class ApiStack extends Stack {
       memorySize: 256,
       rules,
     });
+    this.grantWeb(web, { table, reports, checker });
 
     const api = this.httpApi(web, rules);
     this.url = api.apiEndpoint;
@@ -390,6 +414,73 @@ export class ApiStack extends Stack {
     return LambdaFunction.fromFunctionAttributes(this, 'ReportsAutoDeleteFunction', {
       functionArn: handler.getAtt('Arn').toString(),
       sameEnvironment: true,
+    });
+  }
+
+  /**
+   * Lets `web` do only what it does: read a check's META (GetItem) and its
+   * steps (Query), read a check's report under `reports/`, start the Checker
+   * at `$LATEST` asynchronously, send a waiting check's callback, and read
+   * the reviewer key a person enters to Approve or Block, once at start.
+   */
+  private grantWeb(
+    web: LambdaFunction,
+    { table, reports, checker }: { table: Table; reports: Bucket; checker: LambdaFunction },
+  ): void {
+    web.addEnvironment(DYNAMODB_TABLE_NAME, table.tableName);
+    web.addEnvironment(REPORTS_BUCKET_NAME, reports.bucketName);
+    web.addEnvironment(CHECKER_FUNCTION_ARN, `${checker.functionArn}:$LATEST`);
+    table.grant(web, 'dynamodb:GetItem', 'dynamodb:Query');
+
+    const key = new Secret(this, 'ReviewerKey', {
+      description: 'The key a person enters on a check’s page to Approve or Block it.',
+      generateSecretString: { passwordLength: 40, excludePunctuation: true },
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+    Validations.of(key).acknowledge({
+      id: 'AwsSolutions-SMG4',
+      reason:
+        'The reviewer key is a password the owner reads from Secrets Manager and types in; there is no system to rotate it with, and changing it is a manual step that takes effect on the web function’s next cold start.',
+    });
+    web.addEnvironment(REVIEWER_KEY_SECRET_ARN, key.secretArn);
+
+    const policy = new Policy(this, 'WebAccess', {
+      statements: [
+        new PolicyStatement({
+          actions: ['s3:GetObject'],
+          resources: [reports.arnForObjects('reports/*')],
+        }),
+        new PolicyStatement({
+          actions: ['lambda:InvokeFunction'],
+          resources: [`${checker.functionArn}:$LATEST`],
+        }),
+        // Lambda authorizes a callback against the ARN of the durable
+        // execution that made it: the Checker's qualified ARN and its path.
+        new PolicyStatement({
+          actions: [CALLBACK_ACTION],
+          resources: [`${checker.functionArn}:*`],
+        }),
+        new PolicyStatement({
+          actions: ['secretsmanager:GetSecretValue'],
+          resources: [key.secretArn],
+        }),
+      ],
+    });
+    web.role?.attachInlinePolicy(policy);
+    const cfnBucket = reports.node.defaultChild;
+    const cfnChecker = checker.node.defaultChild;
+    if (!(cfnBucket instanceof CfnBucket) || !(cfnChecker instanceof CfnFunction)) {
+      throw new Error(`${web.node.path}'s access names a bucket and a function it can't find.`);
+    }
+    Validations.of(policy).acknowledge({
+      id: `AwsSolutions-IAM5[Resource::<${this.getLogicalId(cfnBucket)}.Arn>/reports/*]`,
+      reason:
+        'The web function reads the report of the check a page shows, reports/<check-id>.json, a key known only per request; the wildcard reaches only that prefix of the reports bucket, and only to get.',
+    });
+    Validations.of(policy).acknowledge({
+      id: `AwsSolutions-IAM5[Resource::<${this.getLogicalId(cfnChecker)}.Arn>:*]`,
+      reason:
+        'Lambda authorizes a callback against the ARN of the durable execution that made it, the Checker’s qualified ARN followed by the execution’s own path, unknown until it starts; the wildcard reaches only the Checker’s own executions, and only to send a callback’s success.',
     });
   }
 
@@ -495,9 +586,9 @@ export class ApiStack extends Stack {
   }
 
   /**
-   * The HTTP API: `GET /` and `GET /api/{proxy+}` call `web`, open to the
-   * public. Any other route is signed with IAM (SigV4), the scaffold's
-   * default, and the stage logs and throttles every request.
+   * The HTTP API: `WEB_ROUTES` call `web`, open to the public. Any other
+   * route is signed with IAM (SigV4), the scaffold's default, and the stage
+   * logs and throttles every request.
    */
   private httpApi(web: LambdaFunction, rules: TierRules): HttpApi {
     const accessLogs = new LogGroup(this, 'ApiAccessLogs', {
@@ -519,17 +610,17 @@ export class ApiStack extends Stack {
       },
     });
     const integration = new HttpLambdaIntegration('Web', web);
-    for (const routePath of ['/', '/api/{proxy+}']) {
+    for (const [method, routePath] of WEB_ROUTES) {
       for (const route of api.addRoutes({
         path: routePath,
-        methods: [HttpMethod.GET],
+        methods: [HttpMethod[method]],
         integration,
         authorizer: new HttpNoneAuthorizer(),
       })) {
         Validations.of(route).acknowledge({
           id: 'AwsSolutions-APIG4',
           reason:
-            'MCP Customs is a public service: anyone may read its pages and its JSON API, as the demo and the judges do, without an AWS identity. The stage is throttled; routes that change state come later, with their own authorization.',
+            'MCP Customs is a public service: anyone may submit a server and read its check, as the demo, the judges and agent platforms do, without an AWS identity. The stage is throttled; Approve and Block take the reviewer key, which the web function checks before it sends a callback.',
         });
       }
     }
