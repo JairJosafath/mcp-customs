@@ -110,8 +110,23 @@ One DynamoDB table (`DYNAMODB_TABLE_NAME`), keys `pk` and `sk`:
 | A step    | `CHECK#<id>`    | `STEP#<seq>` | what ran, its findings, a one-line summary (the web page's timeline) |
 | A verdict | `HASH#<sha256>` | `VERDICT`    | the approved check's ID, its tool-list hash, the install spec        |
 
+A check's `status` is `running`, `waiting` (for a person's Approve or
+Block, under its `callbackId`), `done` or `failed`. A `STEP#` item's `name`
+is the registered action that ran (`resolve`, `lookup`, `install`, `list`,
+`scan`, `probe`, `observe`, `ask_human`, `wait`), or `start`, `judge` or
+`verdict`. A `HASH#` item is written only when a check passes by code or a
+person approves it; its `installSpec` is the JSON
+`{"kind","ref","dependencySha256","toolListSha256"}`.
+
 Reports go to the bucket as `reports/<check-id>.json`. Raw observations as
 `observations/<check-id>.json`.
+
+## A person's answer
+
+The web function answers a `waiting` check by sending its `callbackId`
+(`SendDurableExecutionCallbackSuccess`) the JSON
+`{"decision":"approve"}` or `{"decision":"block"}`. Anything else, or no
+answer within 7 days, leaves the verdict code decided.
 
 ## Verdicts
 

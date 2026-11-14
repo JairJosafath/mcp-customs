@@ -8,8 +8,16 @@ Every user-visible change, newest first. The format follows
 
 ### Added
 
-- The Checker, a Lambda durable function (`src/cmd/checker`), which for now
-  records a check as `running` and its first step; the web function
+- The Checker runs a whole check without a model: it resolves and installs
+  the server in its sandbox, looks up an approved verdict by the hash of the
+  whole resolved dependency set, passes a dependency set and tool list seen
+  before after `resolve`, `lookup` and `list` alone, and otherwise installs,
+  lists, scans all server text, probes each tool, reads the observations and
+  decides the verdict by code; a verdict short of pass waits up to a week for
+  a person's Approve or Block. Each step is a `STEP#` item with a one-line
+  summary; the report and observations go to the bucket, an approval to
+  `HASH#`. A check waiting for a person has the status `waiting`.
+- The Checker, a Lambda durable function (`src/cmd/checker`); the web function
   (`src/cmd/web`), which serves `GET /` and `GET /api/health`, open to the
   public; the shared store of checks, steps and verdicts
   (`src/internal/store`); and a bucket for reports, in one stack.

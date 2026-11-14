@@ -4,7 +4,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { ApiStack, DURABLE_EXECUTION_ACTIONS } from './api_stack';
+import { ApiStack, DURABLE_EXECUTION_ACTIONS, REPORT_PREFIXES } from './api_stack';
 import { copyVaultName } from './backups';
 import { PASS_CONNECTOR_ACTION, SANDBOX_ACTIONS } from './sandbox';
 import type { Operations, Tier } from './standard';
@@ -168,6 +168,7 @@ describe('ApiStack', () => {
   it('runs the Checker as a durable function whose execution outlasts a week of waiting', () => {
     const checker = idOf(production, 'AWS::Lambda::Function', 'Checker');
     const table = idOf(production, 'AWS::DynamoDB::Table', 'Table');
+    const bucket = idOf(production, 'AWS::S3::Bucket', 'Reports');
     expect(production.findResources('AWS::Lambda::Function')[checker]).toMatchObject({
       Properties: {
         Handler: 'bootstrap',
@@ -176,7 +177,23 @@ describe('ApiStack', () => {
         MemorySize: 256,
         Timeout: 300,
         DurableConfig: { ExecutionTimeout: 8 * 24 * 60 * 60, RetentionPeriodInDays: 30 },
-        Environment: { Variables: { DYNAMODB_TABLE_NAME: { Ref: table } } },
+        Environment: {
+          Variables: { DYNAMODB_TABLE_NAME: { Ref: table }, REPORTS_BUCKET_NAME: { Ref: bucket } },
+        },
+      },
+    });
+    // Its reports and observations, and nothing else in the bucket.
+    production.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          {
+            Action: 's3:PutObject',
+            Effect: 'Allow',
+            Resource: REPORT_PREFIXES.map((prefix) => ({
+              'Fn::Join': ['', [{ 'Fn::GetAtt': [bucket, 'Arn'] }, `/${prefix}*`]],
+            })),
+          },
+        ]),
       },
     });
     const config = new Capture();
@@ -229,12 +246,14 @@ describe('ApiStack', () => {
     });
   });
 
-  it('lets the Checker only put and get items, checkpoint its own executions, run its sandboxes and write its logs', () => {
+  it('lets the Checker only put, get and update items, put reports, checkpoint its own executions, run its sandboxes and write its logs', () => {
     const role = idOf(development, 'AWS::IAM::Role', 'CheckerRole');
     expect(actionsOf(development, role)).toEqual(
       [
         '"dynamodb:GetItem"',
         '"dynamodb:PutItem"',
+        '"dynamodb:UpdateItem"',
+        '"s3:PutObject"',
         ...DURABLE_EXECUTION_ACTIONS.map((action) => `"${action}"`),
         ...[...SANDBOX_ACTIONS, PASS_CONNECTOR_ACTION].map((action) => `"${action}"`),
         '"logs:CreateLogStream"',
