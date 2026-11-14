@@ -43,6 +43,15 @@ function connectorArn(name: string): unknown {
   };
 }
 
+/** The directory synth zipped as the image's code. */
+function assetDir(): string {
+  const uri = JSON.stringify(
+    template.findResources('AWS::Lambda::MicrovmImage')[image]?.['Properties'],
+  );
+  const hash = /([0-9a-f]{64})\.zip/.exec(uri)?.[1] ?? '';
+  return path.join(outdir, `asset.${hash}`);
+}
+
 let outdir: string;
 let template: Template;
 let image: string;
@@ -106,11 +115,7 @@ describe('Sandbox', () => {
   });
 
   it('zips the Dockerfile and the harness built for arm64 Linux', () => {
-    const uri = JSON.stringify(
-      template.findResources('AWS::Lambda::MicrovmImage')[image]?.['Properties'],
-    );
-    const hash = /([0-9a-f]{64})\.zip/.exec(uri)?.[1] ?? '';
-    const dir = path.join(outdir, `asset.${hash}`);
+    const dir = assetDir();
     expect(readdirSync(dir).sort()).toEqual(['Dockerfile', 'harness']);
     // An ELF executable for AArch64: e_machine 183 at offset 18.
     const binary = readFileSync(path.join(dir, 'harness'));
@@ -126,14 +131,60 @@ describe('Sandbox', () => {
     expect(dockerfile).toContain('/usr/local/lib/faketime/libfaketime.so.1');
   });
 
+  describe('the zipped Dockerfile', () => {
+    let dockerfile: string;
+    beforeAll(() => {
+      dockerfile = readFileSync(path.join(assetDir(), 'Dockerfile'), 'utf8');
+    });
+
+    it('pins the base image by digest, and dnf to the base’s release and versions', () => {
+      expect(dockerfile).toMatch(
+        /^FROM public\.ecr\.aws\/lambda\/microvms:al2023-minimal\.[0-9.]+@sha256:[0-9a-f]{64}$/m,
+      );
+      const release = /^ARG AL2023_RELEASE=(2023\.\d+\.\d{8})$/m.exec(dockerfile)?.[1];
+      expect(release).toBeDefined();
+      expect(dockerfile).toContain('echo "${AL2023_RELEASE}" > /etc/dnf/vars/releasever');
+      // Every package dnf installs names its version and release.
+      const installs = [...dockerfile.matchAll(/dnf install -y ([^&]*)/g)].map((m) => m[1] ?? '');
+      expect(installs).toHaveLength(2);
+      for (const install of installs) {
+        const packages = install.split(/\s+/).filter((word) => /^[a-z]/.test(word));
+        expect(packages.length).toBeGreaterThan(1);
+        for (const name of packages) {
+          expect(name).toMatch(/-(\d+:)?[0-9.]+-[0-9.]+amzn2023[0-9.]*$/);
+        }
+      }
+    });
+
+    it('pins Python’s patch version, and checks the one it installed', () => {
+      expect(dockerfile).toMatch(/^ARG PYTHON_VERSION=\d+\.\d+\.\d+$/m);
+      expect(dockerfile).toContain('uv python install --default "${PYTHON_VERSION}"');
+      expect(dockerfile).toContain('print(platform.python_version())\')" = "${PYTHON_VERSION}"');
+    });
+
+    it.each([
+      ['setpriv, for no_new_privs', 'test -x /usr/bin/setpriv'],
+      ['iptables on nf_tables', 'iptables --version | grep -q nf_tables'],
+      ['ip6tables on nf_tables', 'ip6tables --version | grep -q nf_tables'],
+      ['the NFLOG target', 'test -f /usr/lib64/xtables/libxt_NFLOG.so'],
+      ['libfaketime', 'test -f /usr/local/lib/faketime/libfaketime.so.1'],
+      ['Go and npm', 'go version && npm --version'],
+    ])('fails its build without %s', (_, check) => {
+      expect(dockerfile).toContain(check);
+    });
+
+    it('finds iptables, in /usr/sbin, on the harness’s PATH but not the server’s', () => {
+      const imagePath = /^ENV PATH=(\S+)$/m.exec(dockerfile)?.[1]?.split(':') ?? [];
+      expect(imagePath).toContain('/usr/sbin');
+      expect(dockerfile).toMatch(/dnf install[^&]*iptables-nft-/);
+    });
+  });
+
   it('lets the build role read only the zip and write only the image’s build logs, kept a set time', () => {
     const role = idOf(template, 'AWS::IAM::Role', 'SandboxBuildRole');
-    template.hasResourceProperties('AWS::IAM::Role', {
-      AssumeRolePolicyDocument: {
-        Statement: [Match.objectLike({ Principal: { Service: 'lambda.amazonaws.com' } })],
-      },
-      ManagedPolicyArns: Match.absent(),
-    });
+    expect(template.findResources('AWS::IAM::Role')[role]?.['Properties']).not.toHaveProperty(
+      'ManagedPolicyArns',
+    );
     const logs = idOf(template, 'AWS::Logs::LogGroup', 'SandboxBuildLogs');
     template.hasResourceProperties('AWS::Logs::LogGroup', {
       LogGroupName: '/aws/lambda-microvms/test-harness',
@@ -158,6 +209,41 @@ describe('Sandbox', () => {
         ],
       },
     });
+  });
+
+  it('lets only Lambda, building this account’s image, assume the build role', () => {
+    const role = idOf(template, 'AWS::IAM::Role', 'SandboxBuildRole');
+    const imageArn = (suffix: string): unknown => ({
+      'Fn::Join': [
+        '',
+        [
+          'arn:',
+          { Ref: 'AWS::Partition' },
+          ':lambda:',
+          { Ref: 'AWS::Region' },
+          ':',
+          { Ref: 'AWS::AccountId' },
+          `:microvm-image:test-harness${suffix}`,
+        ],
+      ],
+    });
+    expect(template.findResources('AWS::IAM::Role')[role]).toHaveProperty(
+      ['Properties', 'AssumeRolePolicyDocument'],
+      {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Action: 'sts:AssumeRole',
+            Effect: 'Allow',
+            Principal: { Service: 'lambda.amazonaws.com' },
+            Condition: {
+              StringEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } },
+              ArnLikeIfExists: { 'aws:SourceArn': [imageArn(''), imageArn(':*')] },
+            },
+          },
+        ],
+      },
+    );
   });
 
   it('grants the Checker exactly the launch, call, suspend, resume and terminate calls on the image, and the two connectors', () => {

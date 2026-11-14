@@ -75,6 +75,10 @@ var ErrNotRunning = errors.New("the MicroVM did not reach RUNNING")
 // JSON: Lambda's own 403 or 502, for instance.
 var ErrNotJSON = errors.New("the MicroVM endpoint answered without JSON")
 
+// ErrTooLarge says the harness answered more than maxResponseBytes: the
+// answer is not read, so whether it was JSON is unknown.
+var ErrTooLarge = errors.New("the MicroVM endpoint answered more than 16 MiB")
+
 // MicroVMs is the Client on AWS Lambda MicroVMs.
 type MicroVMs struct {
 	api   API
@@ -160,9 +164,13 @@ func (m *MicroVMs) Call(ctx context.Context, vm VM, req Request) (Response, erro
 	}
 	// The body is only read: closing it can't lose anything worth an error.
 	defer func() { _ = resp.Body.Close() }()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	// One byte past the limit tells an answer that fills it from one over it.
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return Response{}, fmt.Errorf("read the answer to %s %s from MicroVM %s: %w", req.Method, req.Path, vm.ID, err)
+	}
+	if len(b) > maxResponseBytes {
+		return Response{}, fmt.Errorf("%s %s on MicroVM %s answered %d: %w", req.Method, req.Path, vm.ID, resp.StatusCode, ErrTooLarge)
 	}
 	if !json.Valid(b) {
 		return Response{}, fmt.Errorf("%s %s on MicroVM %s answered %d: %w", req.Method, req.Path, vm.ID, resp.StatusCode, ErrNotJSON)

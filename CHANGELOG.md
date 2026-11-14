@@ -18,6 +18,13 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- The harness finds `iptables` and `ip6tables`: the MicroVM image's PATH
+  now has `/usr/sbin`, where Amazon Linux 2023 keeps them, so the firewall
+  comes up (#20). The image's base is pinned by digest, dnf to the base's
+  release and each package's version, Python to 3.13.18, and its build
+  fails without anything the harness needs to start. The build role trusts
+  Lambda only for this account's image. A harness answer over 16 MiB is
+  reported as too large (`ErrTooLarge`), not as one without JSON.
 - Nothing leaves the sandbox after the Checker's last read of its
   observations: once the investigation ends, the Checker seals egress
   (`POST /seal`: the allowlist emptied for good, every new tunnel

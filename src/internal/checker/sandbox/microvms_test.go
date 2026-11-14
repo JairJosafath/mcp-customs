@@ -101,6 +101,11 @@ func (d *fakeDoer) Do(req *http.Request) (*http.Response, error) {
 	return &http.Response{StatusCode: d.status, Body: io.NopCloser(strings.NewReader(d.body))}, nil
 }
 
+// jsonOfSize is a valid JSON string of exactly n bytes.
+func jsonOfSize(n int) string {
+	return `"` + strings.Repeat("a", n-2) + `"`
+}
+
 // newTestMicroVMs is a MicroVMs on fakes, whose waits return at once and
 // are counted.
 func newTestMicroVMs(api *fakeAPI, doer *fakeDoer) (*MicroVMs, *int) {
@@ -279,6 +284,8 @@ func TestCallAnswersTheHarnessStatusOrWhyThereIsNone(t *testing.T) {
 		{"a GET without a body", Request{Method: http.MethodGet, Path: "/observations"}, http.StatusOK, `{"observations":[]}`, nil, http.StatusOK, nil},
 		{"the harness's 401", Request{Method: http.MethodPost, Path: "/list", Body: struct{}{}}, http.StatusUnauthorized, `{"error":"unauthorized"}`, nil, http.StatusUnauthorized, nil},
 		{"Lambda's 502 without JSON", Request{Method: http.MethodPost, Path: "/list"}, http.StatusBadGateway, "Bad Gateway", nil, 0, ErrNotJSON},
+		{"an answer of exactly the limit", Request{Method: http.MethodGet, Path: "/observations"}, http.StatusOK, jsonOfSize(maxResponseBytes), nil, http.StatusOK, nil},
+		{"an answer over the limit", Request{Method: http.MethodGet, Path: "/observations"}, http.StatusOK, jsonOfSize(maxResponseBytes + 1), nil, 0, ErrTooLarge},
 		{"no path", Request{Method: http.MethodPost}, http.StatusOK, `{}`, nil, 0, ErrBadRequest},
 		{"no token from Lambda", Request{Method: http.MethodPost, Path: "/list"}, http.StatusOK, `{}`, errors.New("denied"), 0, nil},
 	}
