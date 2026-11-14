@@ -24,6 +24,7 @@
     "cdk-nag": "3.0.2",
     "constructs": "10.8.1",
     "eslint": "10.11.0",
+    "playwright": "1.63.0",
     "prettier": "3.9.9",
     "tsx": "4.23.15",
     "typescript": "6.0.3",

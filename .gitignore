@@ -1,3 +1,6 @@
 node_modules/
 # What cdk synth writes: the templates and the built function
 cdk.out/
+
+# What demo/record.ts records
+demo/video/

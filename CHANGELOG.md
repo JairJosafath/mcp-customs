@@ -6,6 +6,15 @@ Every user-visible change, newest first. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `demo/record.ts` records the demo against a deployed stack: the weather
+  server blocked with the SSH key seen leaving base64-encoded, the mail
+  server's v1.0.0 passed and its v1.0.1 blocked, as a 1280×720 video under
+  2:50 (#38). `demo/script.md` is its narration and `docs/results.md` the
+  write-up's skeleton. `src/cmd/webstub` serves the web page with a fake
+  store and Checker, for the recorder's test; it is never deployed.
+
 ### Fixed
 
 - The dependency set a check reports and hashes is the resolver's, not what
