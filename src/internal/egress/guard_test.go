@@ -115,3 +115,26 @@ func TestGuardReachesTheAPIOnlyForARequestMarkedAsAnInstallsGet(t *testing.T) {
 	}
 	_ = conn.Close()
 }
+
+func TestGuardRefusesANameThatResolvesInsideANetwork(t *testing.T) {
+	answers := map[string][][]string{
+		"169.254.169.254.nip.io":   {{"169.254.169.254"}},
+		"127.0.0.1.nip.io":         {{"127.0.0.1"}},
+		"169-254-169-254.sslip.io": {{"169.254.169.254"}},
+		"localtest.me":             {{"127.0.0.1", "::1"}},
+		"private.attacker.net":     {{"198.51.100.8", "10.0.0.5"}},
+		"metadata-v6.attacker.net": {{"fd00:ec2::254"}},
+		"mapped-lo.attacker.net":   {{"::ffff:127.0.0.1"}},
+	}
+	for host := range answers {
+		var dialed []string
+		_, err := testGuard(answers, &dialed).DialContext(t.Context(), "tcp", net.JoinHostPort(host, "443"))
+		if !errors.Is(err, ErrRefusedAddress) || len(dialed) != 0 {
+			t.Errorf("%s: err %v, dialed %v; want refused, nothing dialed", host, err, dialed)
+		}
+	}
+	var dialed []string
+	if _, err := testGuard(nil, &dialed).DialContext(t.Context(), "tcp", "169.254.169.254:80"); !errors.Is(err, ErrRefusedAddress) || len(dialed) != 0 {
+		t.Errorf("the metadata address itself: err %v, dialed %v; want refused", err, dialed)
+	}
+}

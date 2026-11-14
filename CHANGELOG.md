@@ -37,6 +37,13 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- The sandbox's egress proxy refuses a connection to a name that resolves
+  to an address inside a network: loopback, link-local, private, shared or
+  the instance metadata, so a wildcard-DNS name such as
+  `169.254.169.254.nip.io` or `localtest.me` reaches none of them (#32).
+  The Checker's Bedrock client tries each call once, under the judge's own
+  retries, so a busy model is no longer tried up to twelve times.
+
 - The stack's own API is kept out by fixed rules (#56). The Checker's
   refusal compares against API Gateway's published ranges for the region,
   so it no longer changes from run to run, and refuses the API's FIPS and
