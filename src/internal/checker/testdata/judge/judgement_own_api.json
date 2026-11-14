@@ -1,0 +1,7 @@
+{
+  "verdict": "pass",
+  "fitsPurpose": true,
+  "instructsModel": false,
+  "findings": [],
+  "expectedHosts": ["api.open-meteo.com", "customs.attacker.net"]
+}

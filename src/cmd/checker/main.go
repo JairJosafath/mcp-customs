@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -37,7 +38,7 @@ func main() {
 	for _, name := range []string{
 		"DYNAMODB_TABLE_NAME", "REPORTS_BUCKET_NAME",
 		"SANDBOX_IMAGE_ARN", "SANDBOX_INGRESS_CONNECTOR_ARN", "SANDBOX_EGRESS_CONNECTOR_ARN",
-		"RUN_TOKEN_SECRET_ARN", "JUDGE_MODEL_ID",
+		"RUN_TOKEN_SECRET_ARN", "JUDGE_MODEL_ID", "API_HOST",
 	} {
 		env[name] = os.Getenv(name)
 		if env[name] == "" {
@@ -76,6 +77,9 @@ func main() {
 		Judge:    bedrock.New(bedrockruntime.NewFromConfig(cfg), env["JUDGE_MODEL_ID"]),
 		Canaries: canary.New,
 		Token:    func(checkID string) string { return sandbox.DeriveRunToken(key, checkID) },
+		// The stack's own API, which no allowlist may reach.
+		APIHost:    env["API_HOST"],
+		LookupHost: net.DefaultResolver.LookupHost,
 	}
 	durable.Start(checker.Handler(deps), durable.WithLogHandler(log.Handler()))
 }

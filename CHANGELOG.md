@@ -25,6 +25,11 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- The server under test can never be allowed to reach MCP Customs' own
+  API (#53). The Checker refuses an allowlist holding the stack's API host,
+  or a name that resolves to it, as an `allow-own-api` code finding that
+  ends the investigation at review; the harness's `POST /allow` refuses
+  the same host with 403.
 - A seal or last read that works but whose step can't be written ends
   at review with `step-not-recorded`, not `not-sealed` (which said egress
   stayed open) and not a failed check (#48). A seal or last read that

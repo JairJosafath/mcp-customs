@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import { ApiStack } from './api_stack';
 import {
+  API_HOST,
   HOOKS_PORT,
   PASS_CONNECTOR_ACTION,
   SANDBOX_ACTIONS,
@@ -289,6 +290,23 @@ describe('Sandbox', () => {
           },
         },
       },
+    });
+  });
+
+  it('hands the Checker and the harness the API’s own host, which neither lets an allowlist hold', () => {
+    const api = Object.keys(template.findResources('AWS::ApiGatewayV2::Api'))[0] ?? '';
+    const host = {
+      'Fn::Join': [
+        '',
+        [{ Ref: api }, '.execute-api.', { Ref: 'AWS::Region' }, '.', { Ref: 'AWS::URLSuffix' }],
+      ],
+    };
+    const checker = idOf(template, 'AWS::Lambda::Function', 'Checker');
+    expect(template.findResources('AWS::Lambda::Function')[checker]).toMatchObject({
+      Properties: { Environment: { Variables: { [API_HOST]: host } } },
+    });
+    template.hasResourceProperties('AWS::Lambda::MicrovmImage', {
+      EnvironmentVariables: Match.arrayWith([{ Key: API_HOST, Value: host }]),
     });
   });
 });
