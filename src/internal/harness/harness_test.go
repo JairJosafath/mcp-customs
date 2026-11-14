@@ -20,6 +20,9 @@ import (
 
 const testToken = "run-token-1"
 
+// testAPIHost is the stack's own API host in tests.
+const testAPIHost = "abc123.execute-api.eu-west-1.amazonaws.com"
+
 var testNow = time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
 
 // testCanaries are one of each kind, in the shape internal/canary makes.
@@ -89,6 +92,7 @@ func newIdleRunWith(t *testing.T, inst Installer, change func(*Config)) testRun 
 		Now:            func() time.Time { return testNow },
 		InstallTimeout: time.Minute,
 		CallTimeout:    time.Minute,
+		APIHost:        testAPIHost,
 	}
 	if change != nil {
 		change(&cfg)

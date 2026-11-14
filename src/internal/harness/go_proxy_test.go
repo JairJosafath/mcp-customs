@@ -172,7 +172,7 @@ func TestTheHarnessGivesAGoInstallTheDemoProxyItWasConfiguredWith(t *testing.T) 
 	} {
 		h, err := New(Config{
 			Account: Account{Name: "dev", Home: t.TempDir()}, Workdir: t.TempDir(),
-			Installer: Toolchain{}, Now: time.Now, GoProxy: tc.goProxy,
+			Installer: Toolchain{}, Now: time.Now, GoProxy: tc.goProxy, APIHost: testAPIHost,
 		}, slog.New(slog.DiscardHandler))
 		if err != nil {
 			t.Fatal(err)

@@ -21,6 +21,7 @@ import (
 
 	"github.com/JairJosafath/mcp-customs/src/internal/canary"
 	"github.com/JairJosafath/mcp-customs/src/internal/egress"
+	"github.com/JairJosafath/mcp-customs/src/internal/ownapi"
 )
 
 // Config is what a harness needs to know, read once at start.
@@ -41,7 +42,8 @@ type Config struct {
 	// the stack's demo proxy, then the public one. Empty keeps Go's own.
 	GoProxy string
 	// APIHost is the stack's own API host, API_HOST: /allow and /install
-	// refuse to allow it. Empty refuses nothing.
+	// refuse to allow any name of it. New refuses a host that isn't API
+	// Gateway's, an empty one too, so the harness never starts without it.
 	APIHost string
 	// Now is the clock observations are stamped with.
 	Now func() time.Time
@@ -75,6 +77,7 @@ type Egress interface {
 // one at a time. Close stops the server under test.
 type Harness struct {
 	cfg  Config
+	api  ownapi.API
 	log  *slog.Logger
 	obs  *recorder
 	mux  *http.ServeMux
@@ -99,7 +102,11 @@ func New(cfg Config, log *slog.Logger) (*Harness, error) {
 	if cfg.Account.Home == "" || cfg.Workdir == "" || cfg.Installer == nil || cfg.Now == nil {
 		return nil, errors.New("the harness needs an account's home, a working directory, an installer and a clock")
 	}
-	h := &Harness{cfg: cfg, log: log, obs: &recorder{now: cfg.Now}, mux: http.NewServeMux()}
+	api, err := ownapi.Parse(cfg.APIHost)
+	if err != nil {
+		return nil, fmt.Errorf("the harness keeps the stack's own API out, and needs its host: %w", err)
+	}
+	h := &Harness{cfg: cfg, api: api, log: log, obs: &recorder{now: cfg.Now}, mux: http.NewServeMux()}
 	h.mux.HandleFunc("POST /install", h.handle(h.install))
 	h.mux.HandleFunc("POST /start", h.handle(h.start))
 	h.mux.HandleFunc("POST /list", h.handle(h.list))
@@ -212,13 +219,7 @@ func (h *Harness) install(r *http.Request) (int, answer) {
 	files := newWatcher(append([]string{h.cfg.Account.Home}, h.cfg.WatchRoots...), h.cfg.Workdir)
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.InstallTimeout)
 	defer cancel()
-	if h.cfg.Egress != nil {
-		h.cfg.Egress.Installing(true)
-	}
-	installed, err := h.cfg.Installer.Install(ctx, pkg, h.sandbox())
-	if h.cfg.Egress != nil {
-		h.cfg.Egress.Installing(false)
-	}
+	installed, err := h.installing(ctx, pkg)
 	// From here on, files written outside the working directory are observed,
 	// the install's own included.
 	h.run = &run{files: files, command: installed.Command}
@@ -433,16 +434,6 @@ func (h *Harness) allow(r *http.Request) (int, answer) {
 		return problem(http.StatusConflict, "Egress is sealed; no host can be allowed.")
 	}
 	return http.StatusOK, answer{"hosts": h.cfg.Egress.Allow(req.Hosts...)}
-}
-
-// checkHosts refuses anything in hosts that is not a host name.
-func checkHosts(hosts []string) error {
-	for _, host := range hosts {
-		if host == "" || strings.ContainsAny(host, "/ :@") {
-			return fmt.Errorf("%q is not a host name", host)
-		}
-	}
-	return nil
 }
 
 // canaryList is the run's canaries as internal/canary has them.

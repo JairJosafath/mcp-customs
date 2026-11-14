@@ -63,14 +63,31 @@ The investigation's calls (`/call` again, `/source`, `/download`, `/clock`)
 and `/allow` are best effort: an error answer is told to the judge, and the
 check goes on.
 
-The server under test never reaches the stack's own API. Before `allow`
-calls `/allow`, the Checker refuses an allowlist holding its API host
-(`API_HOST`), or a name that resolves to one of that host's addresses
-(or any name, when the API host doesn't resolve): no `/allow` is sent,
-the `allow` step records an `allow-own-api` code finding, at least
-review, and the judge investigates nothing more. The harness, given the
-same host as the image's `API_HOST`, answers `/allow`, and `/install`'s
-`allowHosts`, 403 when they name it.
+The server under test never reaches the stack's own API directly. A host
+the server's author controls, or a CloudFront distribution in front of
+the API, can still relay to it, and no host or address filter can stop
+that: the API's own authorization is the control there. Every layer reads
+a host the same way: only a plain ASCII name (letters, digits, inner
+hyphens, labels of 1 to 63 characters, no `xn--` label, not an IP
+address) is allowed, so no IDNA mapping turns one into the API's. Before
+`allow` calls `/allow`, the Checker refuses an allowlist holding any other
+host, or any name of its
+API (`API_HOST`, and its FIPS, dual-stack and VPC endpoint forms), or a
+name that resolves into API Gateway's published address ranges for the
+API's region (embedded from `ip-ranges.json`, so the answer is the same
+from run to run), or any name when `API_HOST` isn't an execute-api host:
+no `/allow` is sent, the `allow` step records an `allow-own-api` code
+finding, at least review, and the judge investigates nothing more. The
+harness, given the same host as the image's `API_HOST`, refuses to start
+without it (the image build fails at `/ready`), answers `/allow`, and
+`/install`'s `allowHosts`, 403 when they name the API in any form and 400
+for an IP address. Its egress proxy dials each allowed request at an
+address it resolved and checked, and refuses any in those ranges or among
+the addresses of the API's standard and dual-stack names (IPv4 embedded in
+IPv6 read as itself), so rebinding and a custom domain don't reach it
+either. The one request it lets reach the API is an install's GET or HEAD
+under the demo Go proxy's prefix, which the proxy marks as it admits it;
+its connection is never kept for another request.
 
 `/seal` ends egress for good: the allowlist (the registries' too) is
 emptied, every new CONNECT is refused (recorded as a refused `connect`,

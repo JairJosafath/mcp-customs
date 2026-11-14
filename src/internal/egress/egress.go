@@ -20,6 +20,7 @@ import (
 
 	"github.com/JairJosafath/mcp-customs/src/internal/canary"
 	"github.com/JairJosafath/mcp-customs/src/internal/findings"
+	"github.com/JairJosafath/mcp-customs/src/internal/ownapi"
 )
 
 // The kinds of observation the egress proxy makes.
@@ -216,7 +217,8 @@ func (e *Egress) SetCanaries(c canary.Set) {
 }
 
 // Allow adds hosts to the allowlist and answers the allowlist now in force,
-// sorted. A host is a DNS name, matched exactly, in any case. Once sealed,
+// sorted. A host is a plain ASCII DNS name (ownapi.ValidHost), matched
+// exactly, in any case; anything else is dropped. Once sealed,
 // it adds none and answers an empty list.
 func (e *Egress) Allow(hosts ...string) []string {
 	e.mu.Lock()
@@ -225,7 +227,8 @@ func (e *Egress) Allow(hosts ...string) []string {
 		return []string{}
 	}
 	for _, h := range hosts {
-		if h = normalHost(h); h != "" {
+		// Only a plain ASCII name is kept, as every other layer reads it.
+		if h = normalHost(h); ownapi.ValidHost(h) == nil {
 			e.allowed[h] = true
 		}
 	}
@@ -276,7 +279,15 @@ func (e *Egress) requestAllowedLocked(method, host string, u *url.URL) bool {
 	if e.allowed[h] || (e.installing && e.install[h]) {
 		return true
 	}
-	if !e.installing || (method != http.MethodGet && method != http.MethodHead) || path.Clean(u.Path) != u.Path {
+	return e.installGetLocked(method, host, u)
+}
+
+// installGetLocked says, with e.mu held, whether a request is let through
+// only as an install's GET or HEAD under one of host's InstallGet
+// prefixes: the one kind of request Guard lets reach the stack's own API.
+func (e *Egress) installGetLocked(method, host string, u *url.URL) bool {
+	h := normalHost(host)
+	if e.isSealed() || !e.installing || (method != http.MethodGet && method != http.MethodHead) || path.Clean(u.Path) != u.Path {
 		return false
 	}
 	// The path as sent, too: a module path's capitals are escaped as "!",
