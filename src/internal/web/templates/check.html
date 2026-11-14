@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Check {{.CheckID}} · {{.Service}}</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="/static/check.js" defer></script>
+  </head>
+  <body data-check-id="{{.CheckID}}" data-status="{{.Status}}" data-steps="{{len .Steps}}">
+    <p><a href="/">{{.Service}}</a></p>
+    <h1>Check <code>{{.CheckID}}</code></h1>
+    {{if not .Found}}
+    <p>
+      No check {{.CheckID}} yet. A check just submitted appears here once it starts; this page
+      reloads when it does.
+    </p>
+    {{else}}
+    <p class="muted">
+      Every piece of text below comes from the server under test or its check, shown as text; hidden
+      characters show as escapes such as <code>\u200B</code>.
+    </p>
+    <p>Server: <code>{{.Submission.Kind}}</code> <code>{{.Submission.Ref}}</code></p>
+    <p>Status: <strong>{{.Status}}</strong></p>
+    {{with .Verdict}}
+    <p>
+      Verdict: <strong class="verdict-{{.}}">{{.}}</strong>{{with $.DecidedBy}}, decided by
+      {{.}}{{end}}
+    </p>
+    {{end}} {{if .Waiting}}
+    <section>
+      <h2>Waiting for a person</h2>
+      <p>
+        Code could not pass this server alone. Read the steps and findings, then approve or block
+        it.
+      </p>
+      <form method="post" action="/checks/{{.CheckID}}/decision">
+        <label for="reviewerKey">Reviewer key</label>
+        <input id="reviewerKey" name="reviewerKey" type="password" required autocomplete="off" />
+        <button type="submit" name="decision" value="approve">Approve</button>
+        <button type="submit" name="decision" value="block">Block</button>
+      </form>
+    </section>
+    {{end}}
+    <h2>Steps</h2>
+    <ol class="steps">
+      {{range .Steps}}
+      <li>
+        <code>{{.Name}}</code>: <span>{{.Summary}}</span>
+        {{if .Findings}}
+        <ul>
+          {{range .Findings}}
+          <li>
+            <code>{{.Source}}</code> <code>{{.Rule}}</code>:
+            <pre>{{.Evidence}}</pre>
+          </li>
+          {{end}}
+        </ul>
+        {{end}}
+      </li>
+      {{else}}
+      <li class="muted">No step yet.</li>
+      {{end}}
+    </ol>
+    {{if .Verdict}}
+    <h2>Report</h2>
+    {{if .Findings}}
+    <table>
+      <thead>
+        <tr>
+          <th>Source</th>
+          <th>Rule</th>
+          <th>Evidence</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Findings}}
+        <tr>
+          <td>{{.Source}}</td>
+          <td><code>{{.Rule}}</code></td>
+          <td><pre>{{.Evidence}}</pre></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p>No findings.</p>
+    {{end}} {{with .InstallSpecJSON}}
+    <h3>Install spec</h3>
+    <p>Install exactly what was approved:</p>
+    <pre>{{.}}</pre>
+    {{end}} {{with .Bound}}
+    <p class="muted">{{.}}</p>
+    {{end}} {{end}} {{end}}
+  </body>
+</html>
