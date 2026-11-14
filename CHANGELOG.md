@@ -8,6 +8,15 @@ Every user-visible change, newest first. The format follows
 
 ### Added
 
+- The web page and API: submit a pinned package or an https URL from the
+  form on `/` or `POST /api/checks`, which start the Checker asynchronously
+  and answer the check's ID (`400` with a message for bad input); watch a
+  check's steps on `/checks/<id>` as they are written, then its verdict and
+  report; Approve or Block a check waiting for a person with the reviewer key,
+  which sends the Checker's durable callback; `GET /api/checks/<id>` answers
+  the verdict as JSON, with the install spec for a pass. All text from a
+  check is shown escaped, hidden characters as visible escapes, under a
+  strict Content-Security-Policy.
 - The Checker runs a whole check without a model: it resolves and installs
   the server in its sandbox, looks up an approved verdict by the hash of the
   whole resolved dependency set, passes a dependency set and tool list seen
