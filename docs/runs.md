@@ -65,5 +65,8 @@ the deadline. Cost and tokens come from each session's own report.
 | #36   | reviewer    | session_01SZoxcp3zrcJdDq3Mkeikns | 2026-11-14 12:56 | 1      | changes requested: DNS socket overflow, unparseable bytes unrecorded, SNI never searched            | $2.47               |
 | #23   | merge       |                                  | 2026-11-14 13:04 |        | PR #35 merged; PyPI seen-before gate lifted; follow-ups #39                                         |                     |
 | #38   | implementer | session_01SZoxcowQjAYcEXWU7pMpcX | 2026-11-14 13:04 | 1      | running: demo recording script, narration, results skeleton                                         |                     |
-| #10   | reviewer    | session_01SZoxcpE36Z6b89iW3kwyk9 | 2026-11-14 13:13 | 2      | running                                                                                             |                     |
+| #10   | reviewer    | session_01SZoxcpE36Z6b89iW3kwyk9 | 2026-11-14 13:13 | 2      | changes requested: only a merge conflict with #35; the real v1.0.1 leaks under the proxy            | $2.25               |
 | #36   | implementer | session_01SZoxckWZfZSmTfyKLkUVFU | 2026-11-14 13:22 | 2      | running: fail closed on every byte                                                                  |                     |
+| #36   | reviewer    | session_01SZoxcmQRMYVki6cL84aRdx | 2026-11-14 13:38 | 2      | running                                                                                             |                     |
+| #10   | implementer | session_01SZoxcoGEXZmKxE3Gg7XSXH | 2026-11-14 13:39 | 3      | running: merge main, keep re-checks off the shortcut                                                |                     |
+| #38   | reviewer    | session_01SZoxcjnZ4nTH9bgUr6U1NG | 2026-11-14 13:39 | 1      | running                                                                                             |                     |
