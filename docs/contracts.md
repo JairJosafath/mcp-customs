@@ -18,6 +18,8 @@ pull request.
 | `src/internal/verdict`              | The verdict rules: code findings the model can't clear; the model only stricter; error gives review                |
 | `src/internal/harness`              | The harness: MCP client, package install, egress proxy, observations                                               |
 | `src/internal/checker`              | The fixed checks, the action registry and interpreter, the judge and its investigation loop                        |
+| `src/internal/demoproxy`            | The demo Go module proxy's files: each demo version as a module whose default build is that version                |
+| `src/cmd/demopublish`               | Writes those files for `make demo-publish`, which copies them to the bucket                                        |
 | `src/internal/poller`               | The poll: each approved package's registry asked for its latest version, a re-check started for a new one          |
 | `src/internal/store`                | DynamoDB and S3 access shared by the Checker and the web function                                                  |
 | `src/internal/web`                  | Handlers and `html/template` pages                                                                                 |
@@ -195,7 +197,9 @@ EventBridge Scheduler schedule runs the poller every few minutes
 and asks the kind's registry for the latest version: npm's
 `<registry>/<name>/latest`, the Go module proxy's `<proxy>/<module>/@latest`,
 PyPI's `<index>/pypi/<name>/json`, set by `NPM_REGISTRY_URL`, `GO_PROXY_URL`
-and `PYPI_URL` (https; the public ones when unset). A remote server has no
+and `PYPI_URL` (https; the public ones when unset). `GO_PROXY_URL` is a
+GOPROXY-style list, each proxy asked after the one before answered 404 or
+410; the stack sets it to its demo proxy, then the public one. A remote server has no
 versions and is not polled. A latest version that is neither the approved
 one nor `polled` starts the Checker with
 
@@ -206,6 +210,25 @@ then sets `polled`. A re-check never passes as seen before: it is
 installed, listed, compared with the approved tool list, probed and judged
 like a new server, whatever its tool list. Its pass puts the new version's
 `APPROVED` item; anything else leaves the earlier approval as it was.
+
+## The demo proxy
+
+The demo servers' versions are served by the stack, so the live rug pull
+needs no public registry: a Go module proxy (the GOPROXY protocol's static
+files, `<module>/@v/list`, `@v/<version>.info`, `.mod`, `.zip` and
+`<module>/@latest`, paths escaped) under the bucket's `goproxy/` prefix,
+served read-only by the web function at `GET /goproxy/{proxy+}`, 404 for
+anything else. The demos are the modules
+`github.com/JairJosafath/mcp-customs/demo/mail` (v1.0.0, v1.0.1) and
+`.../demo/weather` (v1.0.0): each version's module holds the demo's
+package built for that version, its build line taken off, and
+`src/demo/mcp` as `internal/mcp`, so `go install module@version` builds
+that version with no tag. `make demo-publish VERSION=<v>` writes every
+version up to `<v>`. The stack hands `GO_PROXY_URL`,
+`<API>/goproxy,https://proxy.golang.org`, to the poller and to the
+MicroVM image; the harness gives a Go install `GOPROXY` set to it,
+`GONOSUMDB` set to the demo path alone, and allows its hosts while an
+install runs.
 
 ## A person's answer
 

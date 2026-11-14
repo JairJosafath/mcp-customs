@@ -37,6 +37,9 @@ type Config struct {
 	Path string
 	// Installer installs the server.
 	Installer Installer
+	// GoProxy is the GOPROXY-style list a Go install resolves through:
+	// the stack's demo proxy, then the public one. Empty keeps Go's own.
+	GoProxy string
 	// Now is the clock observations are stamped with.
 	Now func() time.Time
 	// Egress is the egress proxy the server's traffic goes through, or nil
@@ -226,7 +229,7 @@ func (h *Harness) install(r *http.Request) (int, answer) {
 // temporary files kept in the working directory.
 func (h *Harness) sandbox() Sandbox {
 	w := h.cfg.Workdir
-	env := h.cfg.Account.env(h.serverPath(), append(h.egressEnv(),
+	env := h.cfg.Account.env(h.serverPath(), append(append(h.egressEnv(),
 		"GOPATH="+filepath.Join(w, ".go"),
 		"GOBIN="+filepath.Join(w, "bin"),
 		"GOCACHE="+filepath.Join(w, ".cache", "go-build"),
@@ -234,7 +237,7 @@ func (h *Harness) sandbox() Sandbox {
 		"npm_config_cache="+filepath.Join(w, ".npm"),
 		"PIP_CACHE_DIR="+filepath.Join(w, ".cache", "pip"),
 		"TMPDIR="+h.installTemp(),
-	)...)
+	), goProxyEnv(h.cfg.GoProxy)...)...)
 	return Sandbox{
 		Workdir: w,
 		Env:     env,

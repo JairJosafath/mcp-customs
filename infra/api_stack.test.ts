@@ -343,7 +343,7 @@ describe('ApiStack', () => {
     });
   });
 
-  it('lets the web function only read checks, steps and reports, start the Checker, answer its callbacks, read the reviewer key and write its logs', () => {
+  it('lets the web function only read checks, steps, reports and the demo proxy, start the Checker, answer its callbacks, read the reviewer key and write its logs', () => {
     const webActions = [
       '"dynamodb:GetItem"',
       '"dynamodb:Query"',
@@ -370,7 +370,10 @@ describe('ApiStack', () => {
           {
             Action: 's3:GetObject',
             Effect: 'Allow',
-            Resource: { 'Fn::Join': ['', [{ 'Fn::GetAtt': [bucket, 'Arn'] }, '/reports/*']] },
+            Resource: [
+              { 'Fn::Join': ['', [{ 'Fn::GetAtt': [bucket, 'Arn'] }, '/reports/*']] },
+              { 'Fn::Join': ['', [{ 'Fn::GetAtt': [bucket, 'Arn'] }, '/goproxy/*']] },
+            ],
           },
           {
             Action: 'lambda:InvokeFunction',
@@ -417,7 +420,7 @@ describe('ApiStack', () => {
     }
   });
 
-  it('routes the pages, the form, Approve and Block and the JSON API to the web function, open to the public', () => {
+  it('routes the pages, the form, Approve and Block, the JSON API and the demo proxy to the web function, open to the public', () => {
     const web = idOf(production, 'AWS::Lambda::Function', 'Web');
     const routeKeys = WEB_ROUTES.map(([method, routePath]) => `${method} ${routePath}`);
     expect(routeKeys).toEqual([
@@ -428,6 +431,7 @@ describe('ApiStack', () => {
       'GET /static/{file}',
       'GET /api/{proxy+}',
       'POST /api/checks',
+      'GET /goproxy/{proxy+}',
     ]);
     for (const routeKey of routeKeys) {
       production.hasResourceProperties('AWS::ApiGatewayV2::Route', {

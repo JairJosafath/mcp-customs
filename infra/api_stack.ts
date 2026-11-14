@@ -56,7 +56,18 @@ export const WEB_ROUTES = [
   ['GET', '/static/{file}'],
   ['GET', '/api/{proxy+}'],
   ['POST', '/api/checks'],
+  ['GET', '/goproxy/{proxy+}'],
 ] as const;
+
+/**
+ * Where the reports bucket keeps the demo Go module proxy's files, which
+ * the web function serves read-only under `/goproxy/`. Only `make
+ * demo-publish`, run with the deployer's credentials, writes them.
+ */
+export const GO_PROXY_PREFIX = 'goproxy/';
+
+/** The public Go module proxy, asked after the demo proxy answers 404. */
+export const PUBLIC_GO_PROXY = 'https://proxy.golang.org';
 
 /** The environment variable that names the judge's model to the Checker. */
 export const JUDGE_MODEL_ID = 'JUDGE_MODEL_ID';
@@ -213,8 +224,6 @@ export class ApiStack extends Stack {
     this.grantRunTokenKey(checker, rules);
     this.grantDurableExecution(checker);
     this.grantJudge(checker);
-    // One MicroVM per check, from the harness image.
-    new Sandbox(this, 'Sandbox', { logRetention: rules.logRetention }).grantLaunch(checker);
     // The web function starts checks asynchronously, and a durable
     // execution keeps its own failures.
     Validations.of(checker).acknowledge({
@@ -233,8 +242,16 @@ export class ApiStack extends Stack {
 
     const api = this.httpApi(web, rules);
     this.url = api.apiEndpoint;
+    // The demo servers' versions, served by the stack itself, then every
+    // other Go module from the public proxy (docs/contracts.md, "The demo proxy").
+    const goProxy = `${api.apiEndpoint}/goproxy,${PUBLIC_GO_PROXY}`;
 
-    const recheck = new Recheck(this, 'Recheck', { table, checker, rules });
+    // One MicroVM per check, from the harness image.
+    new Sandbox(this, 'Sandbox', { logRetention: rules.logRetention, goProxy }).grantLaunch(
+      checker,
+    );
+
+    const recheck = new Recheck(this, 'Recheck', { table, checker, rules, goProxy });
 
     const alarms = this.addAlarms(alerts.email, api, [
       ['Checker', checker, CHECKER_TIMEOUT],
@@ -265,6 +282,10 @@ export class ApiStack extends Stack {
     new CfnOutput(this, 'EntryPoint', {
       value: this.url,
       description: 'The URL of the HTTP API.',
+    });
+    new CfnOutput(this, 'ReportsBucketName', {
+      value: reports.bucketName,
+      description: `The reports bucket, which also holds the demo Go module proxy under ${GO_PROXY_PREFIX}: make demo-publish writes it.`,
     });
   }
 
@@ -314,7 +335,8 @@ export class ApiStack extends Stack {
 
   /**
    * Lets `web` do only what it does: read a check's META (GetItem) and its
-   * steps (Query), read a check's report under `reports/`, start the Checker
+   * steps (Query), read a check's report under `reports/` and the demo
+   * proxy's files under `GO_PROXY_PREFIX`, start the Checker
    * at `$LATEST` asynchronously, send a waiting check's callback, and read
    * the reviewer key a person enters to Approve or Block, once at start.
    */
@@ -343,7 +365,10 @@ export class ApiStack extends Stack {
       statements: [
         new PolicyStatement({
           actions: ['s3:GetObject'],
-          resources: [reports.arnForObjects('reports/*')],
+          resources: [
+            reports.arnForObjects('reports/*'),
+            reports.arnForObjects(`${GO_PROXY_PREFIX}*`),
+          ],
         }),
         new PolicyStatement({
           actions: ['lambda:InvokeFunction'],
@@ -371,6 +396,11 @@ export class ApiStack extends Stack {
       id: `AwsSolutions-IAM5[Resource::<${this.getLogicalId(cfnBucket)}.Arn>/reports/*]`,
       reason:
         'The web function reads the report of the check a page shows, reports/<check-id>.json, a key known only per request; the wildcard reaches only that prefix of the reports bucket, and only to get.',
+    });
+    Validations.of(policy).acknowledge({
+      id: `AwsSolutions-IAM5[Resource::<${this.getLogicalId(cfnBucket)}.Arn>/${GO_PROXY_PREFIX}*]`,
+      reason:
+        'The web function serves the demo Go module proxy, goproxy/<module>/@v/<version>.zip and its kin, whose keys are the module paths and versions a request names; the wildcard reaches only that prefix of the reports bucket, and only to get. Nothing in the stack writes it.',
     });
     Validations.of(policy).acknowledge({
       id: `AwsSolutions-IAM5[Resource::<${this.getLogicalId(cfnChecker)}.Arn>:*]`,
@@ -515,7 +545,7 @@ export class ApiStack extends Stack {
         Validations.of(route).acknowledge({
           id: 'AwsSolutions-APIG4',
           reason:
-            'MCP Customs is a public service: anyone may submit a server and read its check, as the demo, the judges and agent platforms do, without an AWS identity. The stage is throttled; Approve and Block take the reviewer key, which the web function checks before it sends a callback.',
+            'MCP Customs is a public service: anyone may submit a server and read its check, as the demo, the judges and agent platforms do, without an AWS identity. The stage is throttled; Approve and Block take the reviewer key, which the web function checks before it sends a callback. The demo Go module proxy under /goproxy/ is read-only, and read by the go command in the sandbox and the poller, neither of which signs a request.',
         });
       }
     }

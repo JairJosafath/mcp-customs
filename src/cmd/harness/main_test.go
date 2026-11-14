@@ -73,3 +73,23 @@ func TestTheProxysTrustDirectoryIsOutsideTheServersHome(t *testing.T) {
 		t.Errorf("a sibling of the home was refused: %v", err)
 	}
 }
+
+func TestAnInstallMayReachTheHostsOfTheGoProxyList(t *testing.T) {
+	cases := []struct {
+		list  string
+		hosts []string
+		err   bool
+	}{
+		{"", nil, false},
+		{"https://abc.execute-api.us-east-1.amazonaws.com/goproxy,https://proxy.golang.org", []string{"abc.execute-api.us-east-1.amazonaws.com", "proxy.golang.org"}, false},
+		{"https://demo.example:8443/goproxy", []string{"demo.example"}, false},
+		{"https://demo.example,direct", nil, true},
+		{"http://demo.example", nil, true},
+	}
+	for _, c := range cases {
+		hosts, err := hostsOf(c.list)
+		if (err != nil) != c.err || strings.Join(hosts, " ") != strings.Join(c.hosts, " ") {
+			t.Errorf("%q: %v, %v; want %v, error %v", c.list, hosts, err, c.hosts, c.err)
+		}
+	}
+}

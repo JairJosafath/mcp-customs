@@ -47,9 +47,11 @@ func main() {
 		log.Error("Reading the reviewer key failed.", "secret", env["REVIEWER_KEY_SECRET_ARN"], "error", fmt.Sprint(err))
 		os.Exit(1)
 	}
+	objects := s3.NewFromConfig(cfg)
 	h := web.New(web.Deps{
 		Checks:      store.New(dynamodb.NewFromConfig(cfg), env["DYNAMODB_TABLE_NAME"]),
-		Reports:     store.NewReportReader(s3.NewFromConfig(cfg), env["REPORTS_BUCKET_NAME"]),
+		Reports:     store.NewReportReader(objects, env["REPORTS_BUCKET_NAME"]),
+		Proxy:       store.NewProxyReader(objects, env["REPORTS_BUCKET_NAME"]),
 		Checker:     web.NewLambdaChecker(awslambda.NewFromConfig(cfg), env["CHECKER_FUNCTION_ARN"]),
 		ReviewerKey: []byte(aws.ToString(secret.SecretString)),
 		NewID:       web.NewCheckID,

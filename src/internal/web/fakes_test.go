@@ -38,6 +38,19 @@ func (f *fakeReports) GetReport(_ context.Context, id string) ([]byte, bool, err
 	return []byte(r), true, nil
 }
 
+// fakeProxy answers the demo proxy's files by path, and err for every one.
+type fakeProxy struct {
+	files map[string]string
+	err   error
+	asked []string
+}
+
+func (f *fakeProxy) GetProxyFile(_ context.Context, path string) ([]byte, bool, error) {
+	f.asked = append(f.asked, path)
+	body, ok := f.files[path]
+	return []byte(body), ok, f.err
+}
+
 type started struct {
 	id string
 	s  store.Submission
@@ -84,6 +97,7 @@ type fixture struct {
 	checks  *fakeChecks
 	reports *fakeReports
 	checker *fakeChecker
+	proxy   *fakeProxy
 	h       *Handler
 }
 
@@ -93,12 +107,14 @@ func newFixture(t *testing.T) *fixture {
 		checks:  &fakeChecks{checks: map[string]store.Check{}, steps: map[string][]store.Step{}},
 		reports: &fakeReports{reports: map[string]string{}},
 		checker: &fakeChecker{},
+		proxy:   &fakeProxy{files: map[string]string{}},
 	}
 	ids := 0
 	f.h = New(Deps{
 		Checks:      f.checks,
 		Reports:     f.reports,
 		Checker:     f.checker,
+		Proxy:       f.proxy,
 		ReviewerKey: []byte(testReviewerKey),
 		NewID: func() (string, error) {
 			ids++

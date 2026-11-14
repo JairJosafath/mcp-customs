@@ -37,6 +37,15 @@ Every user-visible change, newest first. The format follows
 
 ### Added
 
+- The stack serves the demo servers' versions itself, as a Go module proxy
+  at `GET /goproxy/...` read from its bucket, so the live rug pull needs no
+  account on a public registry (#40). `make demo-publish VERSION=v1.0.1`
+  publishes the mail demo's v1.0.1, a module whose default build is the rug
+  pull; the poller sees it and starts the re-check. `GO_PROXY_URL` is now a
+  GOPROXY-style list, the stack's demo proxy and then the public one, for
+  the poller and the sandbox's `go install`, which skips the checksum
+  database for the demo modules alone.
+
 - Re-checks of new versions: every five minutes a schedule asks the registry
   of each approved npm, Go or PyPI package for its latest version and starts
   a check of a new one, linked to the approved check. A re-check is probed in
