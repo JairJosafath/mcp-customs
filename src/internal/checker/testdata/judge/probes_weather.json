@@ -1,0 +1,5 @@
+{
+  "probes": [
+    { "tool": 0, "arguments": { "city": "Paris", "days": 3, "units": "metric", "verbose": true } }
+  ]
+}

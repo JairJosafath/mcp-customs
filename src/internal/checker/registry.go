@@ -12,8 +12,8 @@ import (
 )
 
 // Action names one registered thing a check can do. The fixed checks run
-// them in an order code decides; the judge's investigation (#8) picks them
-// one a turn, by name.
+// them in an order code decides; the judge's investigation picks call,
+// read_source, inspect_download, clock or ask_human, one a turn, by name.
 type Action string
 
 // The registered actions.
@@ -27,6 +27,13 @@ const (
 	ActObserve  Action = "observe"
 	ActAskHuman Action = "ask_human"
 	ActWait     Action = "wait"
+	// The investigation's: one tool called again, a source file read, a
+	// download inspected, the clock moved; and the judge's allowlist set.
+	ActCall            Action = "call"
+	ActReadSource      Action = "read_source"
+	ActInspectDownload Action = "inspect_download"
+	ActClock           Action = "clock"
+	ActAllow           Action = "allow"
 )
 
 // Operation is the durable operation an action runs as.
@@ -66,6 +73,12 @@ var registry = map[Action]entry{
 	ActObserve:  {OpStep, observe},
 	ActAskHuman: {OpCallback, askHuman},
 	ActWait:     {OpWait, wait},
+
+	ActCall:            {OpStep, call},
+	ActReadSource:      {OpStep, readSource},
+	ActInspectDownload: {OpStep, inspectDownload},
+	ActClock:           {OpStep, clock},
+	ActAllow:           {OpStep, allow},
 }
 
 // OperationOf answers the durable operation action runs as, and false for
