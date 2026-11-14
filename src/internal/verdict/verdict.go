@@ -44,6 +44,7 @@ var codeFloors = map[string]Verdict{
 	findings.RuleNotSealed:         Review,
 	findings.RuleOwnAPIHost:        Review,
 	findings.RuleStepNotRecorded:   Review,
+	findings.RuleTruncated:         Review,
 	findings.RuleInstallFailed:     Review,
 }
 

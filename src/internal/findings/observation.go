@@ -27,6 +27,7 @@ const (
 	ObservedSampling    = "sampling"
 	ObservedElicitation = "elicitation"
 	ObservedProcess     = "process"
+	ObservedTruncated   = "truncated"
 )
 
 // agentConfigs are files an agent reads its servers or instructions from:
@@ -55,7 +56,8 @@ var shellStartups = []string{
 // FromObservations makes the code findings of what the server was seen
 // doing: a canary in any network observation, a write to an agent's
 // config or a shell's startup file, and every sampling or elicitation
-// request, which the judge may explain but not clear. Each finding is made
+// request, and every kind the harness stopped recording, which the judge
+// may explain but not clear. Each finding is made
 // once, however often it was seen.
 func FromObservations(observations []Observation, canaries canary.Set) []Finding {
 	var found []Finding
@@ -83,6 +85,8 @@ func FromObservations(observations []Observation, canaries canary.Set) []Finding
 			add(Finding{Source: Code, Rule: RuleSampling, Evidence: requestMethod(o.Detail, "sampling/createMessage")})
 		case ObservedElicitation:
 			add(Finding{Source: Code, Rule: RuleElicitation, Evidence: requestMethod(o.Detail, "elicitation/create")})
+		case ObservedTruncated:
+			add(Finding{Source: Code, Rule: RuleTruncated, Evidence: truncatedWhy(o.Detail)})
 		}
 	}
 	return found
@@ -197,4 +201,17 @@ func requestMethod(raw json.RawMessage, fallback string) string {
 		return fallback
 	}
 	return detail.Method
+}
+
+// truncatedWhy says which kind a truncated observation stopped recording,
+// and why.
+func truncatedWhy(raw json.RawMessage) string {
+	var detail struct {
+		Kind string `json:"kind"`
+		Why  string `json:"why"`
+	}
+	if json.Unmarshal(raw, &detail) != nil || detail.Kind == "" {
+		return "the harness stopped recording observations"
+	}
+	return "the harness stopped recording " + detail.Kind + " observations: " + detail.Why
 }

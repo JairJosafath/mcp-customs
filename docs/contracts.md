@@ -173,6 +173,31 @@ seconds is recorded as read so far, `unscanned`), `file` (path written), `sampli
 caller, the status it got). Bodies are not returned, only what was found
 in them.
 
+What a run records is capped, so a server can't exhaust the harness or
+make an answer larger than the 16 MiB the Checker reads: 5,000
+observations of a kind, 100 of `sampling` and of `elicitation`, 2 MiB of
+a kind and 8 MiB of all kinds together, each observation counted as
+encoded; 64 of the server's requests answered at once (more are dropped
+unanswered), and 200,000 files in a look of the file watch. Each is far
+above what a real server does. A `sampling` or `elicitation` observation
+keeps the request's params whole up to 64 KiB, and past that their start
+as a string, with `cut: true`. Reaching a cap stops recording that kind
+(`file` for the watch, `request` for the requests dropped), with one
+`truncated` observation: `{"kind","why"}`, the kind no longer recorded
+and why. Each is an `observations-truncated` code finding, at least
+review. Past a cap, an observation that would raise a block finding (a
+canary leaving, a write to an agent's config or a shell's startup file)
+is still recorded, up to 200 of a kind and 2 MiB in all, so a flood can't
+turn a block into a review. One over 32 KiB encoded, such as a request
+with a padded path, is kept compact rather than dropped:
+`{"host","path","canaries","cut":true}`, its host and path cut to 1 KiB
+and the canaries found in the whole of it. A run makes at most 32
+`truncated` observations, each naming the kind and why in the harness's
+words, at most 64 and 256 bytes, never the server's text. So every
+answer's observations together stay under 10.1 MiB, every byte escaped. When the run ends, every process of the unprivileged
+account is killed, those that left the server's process group or session
+included.
+
 ## The MicroVM
 
 What Lambda MicroVMs (`sandbox/Dockerfile`, `infra/sandbox.ts`,

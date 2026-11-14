@@ -120,7 +120,7 @@ func New(cfg Config, log *slog.Logger) (*Harness, error) {
 			return nil, err
 		}
 	}
-	h := &Harness{cfg: cfg, api: api, log: log, obs: &recorder{now: cfg.Now}, mux: http.NewServeMux()}
+	h := &Harness{cfg: cfg, api: api, log: log, obs: newRecorder(cfg.Now), mux: http.NewServeMux()}
 	h.mux.HandleFunc("POST /install", h.handle(h.install))
 	h.mux.HandleFunc("POST /start", h.handle(h.start))
 	h.mux.HandleFunc("POST /list", h.handle(h.list))
@@ -156,7 +156,8 @@ func (h *Harness) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
-// Close stops the server under test, if it runs. Calls after it answer 503.
+// Close stops the server under test, if it runs, and kills every process
+// of the account. Calls after it answer 503.
 func (h *Harness) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -164,6 +165,13 @@ func (h *Harness) Close() {
 	if h.srv != nil {
 		h.srv.close()
 		h.srv = nil
+	}
+	// What the server started outside its process group, in a session of
+	// its own, ends with the run too.
+	if h.cfg.Account.Switch {
+		if err := h.cfg.Account.killAll(context.Background()); err != nil {
+			h.log.Error("Could not kill the account's processes at the end of the run.", "error", err)
+		}
 	}
 }
 
@@ -201,6 +209,9 @@ func (h *Harness) noteFiles() {
 	for _, f := range h.run.files.changes() {
 		h.run.written[f.Path] = true
 		h.obs.add(ObservedFile, f)
+	}
+	if h.run.files.truncated {
+		h.obs.truncate(ObservedFile, fmt.Sprintf("the file watch stopped at %d files; files past them go unseen", h.run.files.max))
 	}
 }
 
@@ -324,7 +335,7 @@ func (h *Harness) start(r *http.Request) (int, answer) {
 	if len(command) == 0 || command[0] == "" {
 		return problem(http.StatusBadRequest, "The install named no command; give one.")
 	}
-	srv, err := startServer(h.cfg.Account, h.cfg.Workdir, h.cfg.Account.env(h.serverPath(), append(h.egressEnv(), h.cfg.FakeTime.env()...)...), command, h.obs.add)
+	srv, err := startServer(h.cfg.Account, h.cfg.Workdir, h.cfg.Account.env(h.serverPath(), append(h.egressEnv(), h.cfg.FakeTime.env()...)...), command, h.obs)
 	if err != nil {
 		return problem(http.StatusBadGateway, err.Error())
 	}

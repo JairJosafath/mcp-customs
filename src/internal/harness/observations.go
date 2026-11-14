@@ -2,7 +2,6 @@ package harness
 
 import (
 	"encoding/json"
-	"sync"
 	"time"
 
 	"github.com/JairJosafath/mcp-customs/src/internal/egress"
@@ -19,6 +18,12 @@ const (
 	ObservedFile        ObservationKind = "file"
 	ObservedSampling    ObservationKind = "sampling"
 	ObservedElicitation ObservationKind = "elicitation"
+	// ObservedTruncated says the harness stopped recording a kind, once per
+	// kind: what the server did of it after may be unseen.
+	ObservedTruncated ObservationKind = "truncated"
+	// ObservedRequest is never recorded itself: it names, in a truncated
+	// observation, the server's requests the harness stopped answering.
+	ObservedRequest ObservationKind = "request"
 )
 
 // An Observation is one thing the server under test was seen doing.
@@ -40,22 +45,16 @@ type FileDetail struct {
 type RequestDetail struct {
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params"`
+	// Cut says Params is the start of the request's params, as a string:
+	// the whole was over maxRequestParams.
+	Cut bool `json:"cut,omitempty"`
 }
 
-// recorder keeps a run's observations and which of them were answered
-// already. It is safe for concurrent use: the MCP reader adds to it while a
-// call waits.
-type recorder struct {
-	mu   sync.Mutex
-	now  func() time.Time
-	list []Observation
-	sent int
-}
-
-func (r *recorder) add(kind ObservationKind, detail any) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.list = append(r.list, Observation{At: r.now().UTC(), Kind: kind, Detail: detail})
+// TruncatedDetail is a truncated observation's detail: the kind no longer
+// recorded, and why.
+type TruncatedDetail struct {
+	Kind ObservationKind `json:"kind"`
+	Why  string          `json:"why"`
 }
 
 // fresh returns the observations not answered yet, and marks them answered.

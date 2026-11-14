@@ -25,7 +25,7 @@ type server struct {
 
 // startServer starts args as the account in dir, with exactly env, and
 // speaks MCP to it over its stdin and stdout.
-func startServer(a Account, dir string, env, args []string, observe func(ObservationKind, any)) (*server, error) {
+func startServer(a Account, dir string, env, args []string, obs observer) (*server, error) {
 	ctx, stop := context.WithCancel(context.Background())
 	cmd := a.command(ctx, dir, env, args)
 	stdin, err := cmd.StdinPipe()
@@ -44,7 +44,7 @@ func startServer(a Account, dir string, env, args []string, observe func(Observa
 		stop()
 		return nil, fmt.Errorf("start %s: %w", args[0], err)
 	}
-	s.conn = newConn(stdin, stdout, observe)
+	s.conn = newConn(stdin, stdout, obs)
 	go func() {
 		// The reader has read stdout to its end before Wait closes it.
 		<-s.conn.closed
