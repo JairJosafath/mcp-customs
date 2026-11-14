@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -27,23 +28,60 @@ func TestSealEmptiesTheAllowlistForGoodAndCanBeRepeated(t *testing.T) {
 	}
 }
 
+// within waits for ch, failing the test after observeWithin rather than
+// hanging until go test's deadline.
+func within[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), observeWithin)
+	defer cancel()
+	select {
+	case v := <-ch:
+		return v
+	case <-ctx.Done():
+		t.Fatalf("%s did not happen within %v", what, observeWithin)
+		var zero T
+		return zero
+	}
+}
+
+func TestSealClearsTheInstallTimeRegistryHosts(t *testing.T) {
+	e := New(Config{InstallAllow: RegistryHosts})
+	e.Installing(true)
+	if !e.isAllowed("registry.npmjs.org") {
+		t.Fatal("the registry is not allowed while an install runs")
+	}
+	e.Seal()
+	e.mu.Lock()
+	installing, registries := e.installing, len(e.install)
+	e.mu.Unlock()
+	if installing || registries != 0 {
+		t.Errorf("after the seal installing = %v with %d registry hosts, want neither", installing, registries)
+	}
+}
+
 // heldUpstream holds every request it is sent until the request's context
-// ends, and says when one arrives.
+// ends, and says when one arrives. When the test ends first, it lets go,
+// so a seal that cuts nothing fails the test instead of hanging it.
 type heldUpstream struct {
 	arrived chan struct{}
 	cut     chan struct{}
+	test    context.Context
 }
 
 func (h *heldUpstream) RoundTrip(r *http.Request) (*http.Response, error) {
 	h.arrived <- struct{}{}
-	<-r.Context().Done()
-	close(h.cut)
-	return nil, r.Context().Err()
+	select {
+	case <-r.Context().Done():
+		close(h.cut)
+		return nil, r.Context().Err()
+	case <-h.test.Done():
+		return nil, h.test.Err()
+	}
 }
 
 func TestSealCutsARequestBeingSentOn(t *testing.T) {
 	ca := newCA(t)
-	up := &heldUpstream{arrived: make(chan struct{}, 1), cut: make(chan struct{})}
+	up := &heldUpstream{arrived: make(chan struct{}, 1), cut: make(chan struct{}), test: t.Context()}
 	e := New(Config{CA: ca, Upstream: up, Allow: []string{"api.weather.example"}})
 	proxy := httptest.NewServer(e.Proxy())
 	t.Cleanup(proxy.Close)
@@ -57,10 +95,15 @@ func TestSealCutsARequestBeingSentOn(t *testing.T) {
 		_ = resp.Body.Close()
 		done <- resp.StatusCode
 	}()
-	<-up.arrived
-	e.Seal()
-	<-up.cut
-	if status := <-done; status != http.StatusBadGateway {
+	within(t, up.arrived, "the request reaching the upstream")
+	sealed := make(chan struct{})
+	go func() {
+		e.Seal()
+		close(sealed)
+	}()
+	within(t, up.cut, "the seal cutting the request")
+	within(t, sealed, "the seal answering")
+	if status := within(t, done, "the client's answer"); status != http.StatusBadGateway {
 		t.Errorf("the request being sent on answered %d, want 502: the seal cuts it", status)
 	}
 }
@@ -116,5 +159,54 @@ func TestAfterTheSealNoRequestLeavesAndNoTunnelIsMadeButBothAreSearched(t *testi
 	})
 	if !refused {
 		t.Errorf("connect observations %+v, want the new tunnel recorded as refused", rec.of(KindConnect))
+	}
+}
+
+func TestARequestAllowedBeforeTheSealNeverReachesTheHostAfterSealReturns(t *testing.T) {
+	ca := newCA(t)
+	up := &fakeUpstream{}
+	rec := newRecorded()
+	e := New(Config{CA: ca, Upstream: up, Allow: []string{"api.weather.example"}})
+	e.Observe(rec.observe)
+	e.SetCanaries(testCanaries)
+	// The server slows the search of its request, as a large body does,
+	// so the seal comes between the allow decision and the send.
+	searched, release := make(chan struct{}), make(chan struct{})
+	e.beforePass = func() {
+		close(searched)
+		<-release
+	}
+	proxy := httptest.NewServer(e.Proxy())
+	t.Cleanup(proxy.Close)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		resp, err := proxyClient(proxy.URL, ca).Post("http://api.weather.example/late", "text/plain", strings.NewReader(testCanaries.Get(canary.GitHubToken)))
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	within(t, searched, "the request's search")
+	sealReturned := make(chan struct{})
+	go func() {
+		e.Seal()
+		close(sealReturned)
+	}()
+	within(t, e.sealed.Done(), "the seal starting")
+	close(release)
+	within(t, sealReturned, "the seal answering")
+	recorded := slices.ContainsFunc(rec.of(KindHTTP), func(o any) bool {
+		d, ok := o.(HTTPDetail)
+		return ok && d.Path == "/late" && len(d.Canaries) > 0
+	})
+	within(t, done, "the client's answer")
+	up.mu.Lock()
+	got := slices.Clone(up.got)
+	up.mu.Unlock()
+	if len(got) != 0 {
+		t.Errorf("the real host got %q after the seal, want nothing", got)
+	}
+	if !recorded {
+		t.Error("the request was not recorded, with its canary, by the time the seal answered")
 	}
 }

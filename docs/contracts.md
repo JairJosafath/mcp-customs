@@ -62,7 +62,9 @@ check goes on.
 
 `/seal` ends egress for good: the allowlist (the registries' too) is
 emptied, every new CONNECT is refused (recorded as a refused `connect`,
-searched), and a request still being sent on to an allowed host is cut.
+searched), and a request still being sent on to an allowed host is cut;
+`/seal` answers only once every request allowed before it is done,
+recorded and cut, so none reaches its host after.
 DNS is still answered with fakes and every request still searched and
 recorded, so what the server tries after is seen; nothing leaves. Sealing
 again answers the same; `/allow` after it answers 409, and a harness
