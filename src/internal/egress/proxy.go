@@ -103,7 +103,7 @@ func (e *Egress) forward(w http.ResponseWriter, r *http.Request, scheme, hostpor
 	_ = r.Header.Write(&seen)
 	seen.WriteString(r.Method + " " + r.URL.RequestURI() + "\n")
 	seen.Write(head)
-	decoded, unscanned := decodeBody(r.Header.Get("Content-Encoding"), head)
+	decoded, unscanned := decodeBody(r.Header.Values("Content-Encoding"), head)
 	seen.Write(decoded)
 	if more {
 		unscanned = fmt.Sprintf("the body is over %d MiB; only its first %d MiB were searched", maxScan>>20, maxScan>>20)
@@ -190,50 +190,82 @@ func readScanned(body io.Reader) ([]byte, io.Reader, bool, error) {
 	return head[:min(len(head), maxScan)], io.MultiReader(bytes.NewReader(head), body), more, nil
 }
 
-// decodeBody is head decoded as encoding says, up to maxScan bytes, for
-// searching, and why some of it went unsearched, if it did.
-func decodeBody(encoding string, head []byte) ([]byte, string) {
-	var r io.Reader
-	switch e := strings.ToLower(strings.TrimSpace(encoding)); e {
-	case "", "identity":
+// maxCodings bounds how many content codings one body is decoded through.
+const maxCodings = 4
+
+// decodeBody is head decoded through every coding the Content-Encoding
+// header lines name (values), last applied first, up to maxScan bytes, for
+// searching; and why some of it went unsearched, if it did.
+func decodeBody(values []string, head []byte) ([]byte, string) {
+	var codings []string
+	for _, v := range values {
+		for c := range strings.SplitSeq(v, ",") {
+			if c = strings.ToLower(strings.TrimSpace(c)); c != "" && c != "identity" {
+				codings = append(codings, c)
+			}
+		}
+	}
+	if len(codings) == 0 {
 		return nil, ""
+	}
+	if len(codings) > maxCodings {
+		return nil, fmt.Sprintf("the body is encoded %d times; at most %d are decoded", len(codings), maxCodings)
+	}
+	data := head
+	for i := len(codings) - 1; i >= 0; i-- {
+		out, why := decodeOnce(codings[i], data)
+		if why != "" {
+			return out, why
+		}
+		data = out
+	}
+	return data, ""
+}
+
+// decodeOnce is data decoded from one content coding, up to maxScan bytes,
+// and why it isn't whole, if it isn't.
+func decodeOnce(coding string, data []byte) ([]byte, string) {
+	var r io.Reader
+	switch coding {
 	case "gzip", "x-gzip":
-		gz, err := gzip.NewReader(bytes.NewReader(head))
+		gz, err := gzip.NewReader(bytes.NewReader(data))
 		if err != nil {
 			return nil, "the gzip body could not be decoded"
 		}
 		r = gz
 	case "deflate":
 		// HTTP's deflate is zlib-wrapped; some clients send it raw.
-		if z, err := zlib.NewReader(bytes.NewReader(head)); err == nil {
+		if z, err := zlib.NewReader(bytes.NewReader(data)); err == nil {
 			r = z
 		} else {
-			r = flate.NewReader(bytes.NewReader(head))
+			r = flate.NewReader(bytes.NewReader(data))
 		}
 	default:
-		return nil, fmt.Sprintf("the body's encoding %q can't be decoded", e)
+		return nil, fmt.Sprintf("the body's encoding %q can't be decoded", coding)
 	}
 	out, err := io.ReadAll(io.LimitReader(r, maxScan+1))
 	switch {
 	case len(out) > maxScan:
 		return out[:maxScan], fmt.Sprintf("the decoded body is over %d MiB; only its first %d MiB were searched", maxScan>>20, maxScan>>20)
 	case err != nil && !errors.Is(err, io.ErrUnexpectedEOF):
-		return out, "the " + encoding + " body could not be decoded whole"
+		return out, "the " + coding + " body could not be decoded whole"
 	case err != nil:
-		return out, "the " + encoding + " body is cut short; what decoded was searched"
+		return out, "the " + coding + " body is cut short; what decoded was searched"
 	}
 	return out, ""
 }
 
-// splitHostPort splits "host:port", giving port def when there is none.
+// splitHostPort splits "host:port", giving port def when there is none. A
+// port that isn't one leaves the whole string as the host, which no
+// allowlist names: "pypi.org:443.evil.example" is not pypi.org.
 func splitHostPort(hostport string, def int) (string, int) {
 	host, p, err := net.SplitHostPort(hostport)
 	if err != nil {
 		return normalHost(hostport), def
 	}
 	port, err := strconv.Atoi(p)
-	if err != nil {
-		port = def
+	if err != nil || port < 1 || port > 65535 {
+		return normalHost(hostport), def
 	}
 	return normalHost(host), port
 }

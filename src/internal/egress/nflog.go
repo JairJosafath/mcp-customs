@@ -27,23 +27,24 @@ type NFLog struct {
 
 // Netlink and nfnetlink_log constants (linux/netfilter/nfnetlink_log.h).
 const (
-	netlinkNetfilter   = 12
-	nfnlSubsysULOG     = 4
-	nfulnlMsgPacket    = 0
-	nfulnlMsgConfig    = 1
-	nfulaCfgCmd        = 1
-	nfulaCfgMode       = 2
-	nfulaPayload       = 9
-	nfulaCfgQThresh    = 5
-	nfulnlCfgCmdBind   = 1
-	nfulnlCopyPacket   = 2
-	nlmsgHeaderLen     = 16
-	nfgenmsgLen        = 4
-	nlaHeaderLen       = 4
-	nlmsgError         = 2
-	nlmsgDone          = 3
-	copyRange          = 0xffff
-	nflogReceiveBuffer = 1 << 20
+	netlinkNetfilter = 12
+	nfnlSubsysULOG   = 4
+	nfulnlMsgPacket  = 0
+	nfulnlMsgConfig  = 1
+	nfulaCfgCmd      = 1
+	nfulaCfgMode     = 2
+	nfulaPayload     = 9
+	nfulaCfgQThresh  = 5
+	nfulnlCfgCmdBind = 1
+	nfulnlCopyPacket = 2
+	nlmsgHeaderLen   = 16
+	nfgenmsgLen      = 4
+	nlaHeaderLen     = 4
+	nlmsgError       = 2
+	nlmsgDone        = 3
+	copyRange        = 0xffff
+	// nflogReceiveBuffer holds about a thousand full-size packets.
+	nflogReceiveBuffer = 64 << 20
 )
 
 // OpenNFLog binds to the NFLOG group and asks for whole packets.
@@ -57,7 +58,12 @@ func OpenNFLog(group uint16) (*NFLog, error) {
 		_ = n.Close()
 		return nil, fmt.Errorf("bind the netlink socket: %w", err)
 	}
-	_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, nflogReceiveBuffer)
+	// SO_RCVBUFFORCE passes the system's rmem_max; it needs CAP_NET_ADMIN,
+	// which binding the group needs too.
+	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUFFORCE, nflogReceiveBuffer); err != nil {
+		_ = n.Close()
+		return nil, fmt.Errorf("size the netlink socket's buffer: %w", err)
+	}
 	bind := nla(nfulaCfgCmd, []byte{nfulnlCfgCmdBind})
 	mode := make([]byte, 6)
 	binary.BigEndian.PutUint32(mode, copyRange)
@@ -143,8 +149,11 @@ func (e *Egress) ServeNFLog(n *NFLog) error {
 	for {
 		got, err := n.read(buf)
 		switch {
-		case errors.Is(err, syscall.EINTR) || errors.Is(err, syscall.ENOBUFS):
-			// ENOBUFS: the kernel dropped packets it couldn't queue.
+		case errors.Is(err, syscall.EINTR):
+			continue
+		case errors.Is(err, syscall.ENOBUFS):
+			// The queue overflowed: the kernel dropped packets unread.
+			e.recordDropped()
 			continue
 		case err != nil && n.closed.Load():
 			return nil

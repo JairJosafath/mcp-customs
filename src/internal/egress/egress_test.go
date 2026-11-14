@@ -62,15 +62,21 @@ func (r *recorded) observe(kind string, detail any) {
 	}
 }
 
-// waitFor waits until cond holds of what was observed, which another
-// goroutine records, with no timer: the test's own deadline bounds it.
+// observeWithin is how long a test waits for an observation that another
+// goroutine records, so one that never comes fails the test in seconds,
+// not at go test's deadline.
+const observeWithin = 10 * time.Second
+
+// waitFor waits until cond holds of what was observed, up to observeWithin.
 func (r *recorded) waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), observeWithin)
+	defer cancel()
 	for !cond() {
 		select {
 		case <-r.more:
-		case <-t.Context().Done():
-			t.Fatal("gave up waiting for an observation")
+		case <-ctx.Done():
+			t.Fatalf("no observation came within %v", observeWithin)
 		}
 	}
 }
@@ -486,6 +492,25 @@ func jsonEqual(t *testing.T, got, want any) bool {
 	return bytes.Equal(a, b)
 }
 
+func TestDNSNamesAreSearchedForCanariesInTheCaseTheyWereSent(t *testing.T) {
+	token := testCanaries.Get(canary.GitHubToken)
+	label := base64.RawURLEncoding.EncodeToString([]byte(token))
+	rec := newRecorded()
+	e := New(Config{Resolver: fakeResolver{}})
+	e.Observe(rec.observe)
+	e.SetCanaries(testCanaries)
+	if _, ok := e.answerDNS(dnsQuery(t, label+".loot.example", dnsmessage.TypeTXT)); !ok {
+		t.Fatal("no reply")
+	}
+	d, _ := rec.of(KindDNS)[0].(DNSDetail)
+	if !slices.Contains(d.Canaries, findings.Match{Canary: canary.GitHubToken, Encoding: findings.Base64URL}) {
+		t.Errorf("canaries in a base64url label = %+v, want the token", d.Canaries)
+	}
+	if d.Name != strings.ToLower(label)+".loot.example" {
+		t.Errorf("name = %q; the allowlist and fakes still see it lowercased", d.Name)
+	}
+}
+
 func TestDNSNamesAreSearchedForCanaries(t *testing.T) {
 	token := testCanaries.Get(canary.GitHubToken)
 	h := hex.EncodeToString([]byte(token))
@@ -544,22 +569,29 @@ func TestCompressedBodiesAreSearchedDecoded(t *testing.T) {
 		_, _ = io.WriteString(w, "key="+key)
 		_ = w.Close()
 	}
+	var twice bytes.Buffer
+	outer := gzip.NewWriter(&twice)
+	_, _ = outer.Write(gz.Bytes())
+	_ = outer.Close()
 	fw, _ := flate.NewWriter(&raw, flate.BestSpeed)
 	_, _ = io.WriteString(fw, "key="+key)
 	_ = fw.Close()
 	for name, tc := range map[string]struct {
-		encoding string
+		encoding []string
 		body     []byte
 	}{
-		"gzip":         {"gzip", gz.Bytes()},
-		"zlib deflate": {"deflate", zl.Bytes()},
-		"raw deflate":  {"deflate", raw.Bytes()},
+		"gzip":                         {[]string{"gzip"}, gz.Bytes()},
+		"zlib deflate":                 {[]string{"deflate"}, zl.Bytes()},
+		"raw deflate":                  {[]string{"deflate"}, raw.Bytes()},
+		"gzip twice, on one line":      {[]string{"gzip, gzip"}, twice.Bytes()},
+		"gzip twice, on two lines":     {[]string{"gzip", "gzip"}, twice.Bytes()},
+		"identity and gzip, two lines": {[]string{"identity", "gzip"}, gz.Bytes()},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ca := newCA(t)
 			e := New(Config{CA: ca, Upstream: &fakeUpstream{}})
 			e.SetCanaries(testCanaries)
-			d := post(t, e, ca, "https://loot.example/", tc.body, http.Header{"Content-Encoding": {tc.encoding}})
+			d := post(t, e, ca, "https://loot.example/", tc.body, http.Header{"Content-Encoding": tc.encoding})
 			if !slices.Contains(d.Canaries, findings.Match{Canary: canary.SSHPrivateKey, Encoding: findings.Plain}) || d.Unscanned != "" {
 				t.Errorf("a %s body: canaries %+v, unscanned %q; want the key found and the body searched whole", name, d.Canaries, d.Unscanned)
 			}
@@ -577,6 +609,8 @@ func TestBodiesThatCantBeSearchedWholeSaySo(t *testing.T) {
 		"a key after 8 MiB of padding": {append(bytes.Repeat([]byte{' '}, maxScan), key...), "", "over 8 MiB"},
 		"brotli":                       {[]byte("\x1b\x00"), "br", `encoding "br"`},
 		"gzip that isn't":              {[]byte("not gzip"), "gzip", "could not be decoded"},
+		"gzip then brotli":             {[]byte("x"), "gzip, br", `encoding "br"`},
+		"five codings":                 {[]byte("x"), "gzip, gzip, gzip, gzip, gzip", "encoded 5 times"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ca := newCA(t)
@@ -687,5 +721,69 @@ func TestDirectTrafficRecordsStopAtTheirBound(t *testing.T) {
 	}
 	if last, _ := obs[maxDirect-1].(ConnectDetail); !last.More {
 		t.Error("the last recorded must say more were refused unrecorded")
+	}
+}
+
+func TestARequestWhoseUpstreamCantBeBuiltIsNotSentOn(t *testing.T) {
+	for name, hostport := range map[string]string{
+		"a port that isn't one names another host": "pypi.org:443.evil.example",
+		"a host the URL builder refuses":           "pypi.org@evil.example",
+	} {
+		t.Run(name, func(t *testing.T) {
+			up := &fakeUpstream{}
+			rec := newRecorded()
+			e := New(Config{Upstream: up, Allow: []string{"pypi.org", "pypi.org@evil.example"}})
+			e.Observe(rec.observe)
+			w := httptest.NewRecorder()
+			e.forward(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/simple/", strings.NewReader("x")), "https", hostport)
+			obs := rec.of(KindHTTP)
+			if len(obs) != 1 {
+				t.Fatalf("http observations = %+v", obs)
+			}
+			if d, _ := obs[0].(HTTPDetail); d.Allowed {
+				t.Errorf("%s recorded allowed: %+v", hostport, d)
+			}
+			if w.Body.String() != fakeBody || len(up.got) != 0 {
+				t.Errorf("answer %q, upstream got %q; want the fake and nothing sent", w.Body.String(), up.got)
+			}
+		})
+	}
+}
+
+func TestPastTheBoundDirectTrafficIsStillSearchedAndCanariesRecorded(t *testing.T) {
+	rec := newRecorded()
+	e := New(Config{})
+	e.Observe(rec.observe)
+	junk := ConnectDetail{Address: "203.0.113.9", Port: 9, Proto: "udp", Via: "direct", Refused: true}
+	for range maxDirect + 50 {
+		e.recordDirect(junk)
+	}
+	loot := junk
+	loot.Canaries = []findings.Match{{Canary: canary.GitHubToken, Encoding: findings.Plain}}
+	for range maxDirectCanaries + 5 {
+		e.recordDirect(loot)
+	}
+	obs := rec.of(KindConnect)
+	if len(obs) != maxDirect+maxDirectCanaries {
+		t.Fatalf("%d direct observations, want %d junk then %d with a canary", len(obs), maxDirect, maxDirectCanaries)
+	}
+	if d, _ := obs[maxDirect].(ConnectDetail); len(d.Canaries) != 1 {
+		t.Errorf("the first after the bound = %+v, want the one with the canary", d)
+	}
+}
+
+func TestDroppedPacketsAreRecordedUpToTheirBound(t *testing.T) {
+	rec := newRecorded()
+	e := New(Config{})
+	e.Observe(rec.observe)
+	for range maxDropped + 3 {
+		e.recordDropped()
+	}
+	obs := rec.of(KindConnect)
+	if len(obs) != maxDropped {
+		t.Fatalf("%d dropped observations, want %d", len(obs), maxDropped)
+	}
+	if d, _ := obs[0].(ConnectDetail); d.Via != "direct" || !d.Refused || d.Dropped != 1 {
+		t.Errorf("dropped = %+v", d)
 	}
 }

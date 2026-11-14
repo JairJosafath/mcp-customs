@@ -26,6 +26,7 @@ var codeFloors = map[string]Verdict{
 	findings.RuleShellStartup:      Block,
 	findings.RuleTLSNotIntercepted: Review,
 	findings.RuleBodyUnscanned:     Review,
+	findings.RuleDirectUnrecorded:  Review,
 	findings.RuleSampling:          Review,
 	findings.RuleElicitation:       Review,
 	findings.RuleANSIEscape:        Review,

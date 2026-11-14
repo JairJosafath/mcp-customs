@@ -73,10 +73,13 @@ Every user-visible change, newest first. The format follows
   user) refuses all direct traffic, IPv6 included, and records each
   refused connection or packet (through NFLOG) as a `connect`, with the
   canaries in its payload. The package registries are reachable only
-  while `/install` runs. Two new code findings give at least review:
-  `tls-not-intercepted` (a client that refused the proxy's CA, to a host
-  not allowed) and `body-not-scanned` (a body over 8 MiB, or in an
-  encoding the proxy can't decode). The MicroVM image asks for
+  while `/install` runs. A run records up to 1000 refused connections or
+  packets, then only those holding a canary. Three new code findings give
+  at least review: `tls-not-intercepted` (a client that refused the
+  proxy's CA, to a host not allowed), `body-not-scanned` (a body over
+  8 MiB, or in an encoding the proxy can't decode) and
+  `direct-traffic-unrecorded` (more refused traffic than a run records,
+  or packets the kernel dropped before the harness read them). The MicroVM image asks for
   `additionalOsCapabilities: ["ALL"]` and ships iptables for it.
 
 ### Changed

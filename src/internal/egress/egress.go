@@ -65,9 +65,13 @@ type ConnectDetail struct {
 	Refused bool `json:"refused"`
 	// Canaries are those found in a refused packet's payload.
 	Canaries []findings.Match `json:"canaries,omitempty"`
-	// More is true on the last direct observation a run records: later
-	// refused packets are refused but not recorded.
+	// More is true on the last direct observation a run records in full:
+	// later refused traffic is still searched, and recorded only when it
+	// holds a canary.
 	More bool `json:"more,omitempty"`
+	// Dropped counts refused packets the kernel dropped before the harness
+	// could read them (the NFLOG queue overflowed): unrecorded, unsearched.
+	Dropped int `json:"dropped,omitempty"`
 }
 
 // HTTPDetail is an http observation's detail: one request, and the canaries
@@ -114,6 +118,9 @@ type Egress struct {
 	observe    Observer
 	fakes      map[string]string
 	direct     int
+	// directCanaries counts the direct traffic recorded past maxDirect.
+	directCanaries int
+	dropped        int
 }
 
 // New makes the proxy. Nothing is observed until Observe names an observer.
@@ -199,20 +206,46 @@ func (e *Egress) match(data []byte) []findings.Match {
 }
 
 // maxDirect bounds the direct traffic one run records, so a flood of
-// refused packets can't flood the observations.
-const maxDirect = 1000
+// refused packets can't flood the observations. Past it, traffic is still
+// searched, and up to maxDirectCanaries more are recorded that hold a
+// canary.
+const (
+	maxDirect         = 1000
+	maxDirectCanaries = 100
+)
 
-// recordDirect records refused direct traffic, up to maxDirect times.
+// recordDirect records refused direct traffic: everything up to maxDirect,
+// then only what holds a canary.
 func (e *Egress) recordDirect(d ConnectDetail) {
 	e.mu.Lock()
 	e.direct++
 	n := e.direct
+	keep := n <= maxDirect
+	if !keep && len(d.Canaries) > 0 && e.directCanaries < maxDirectCanaries {
+		e.directCanaries++
+		keep = true
+	}
 	e.mu.Unlock()
-	if n > maxDirect {
+	if !keep {
 		return
 	}
 	d.More = n == maxDirect
 	e.record(KindConnect, d)
+}
+
+// maxDropped bounds how many times one run records dropped packets.
+const maxDropped = 10
+
+// recordDropped records that the kernel dropped refused packets before
+// the harness could read them: each time it says so, up to maxDropped.
+func (e *Egress) recordDropped() {
+	e.mu.Lock()
+	e.dropped++
+	n := e.dropped
+	e.mu.Unlock()
+	if n <= maxDropped {
+		e.record(KindConnect, ConnectDetail{Via: "direct", Refused: true, Dropped: n})
+	}
 }
 
 // noteFake remembers which name a faked address was given for, so a direct

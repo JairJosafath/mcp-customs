@@ -53,7 +53,9 @@ An observation is `{"at","kind","detail"}`, where `kind` is one of `dns`
 `connect` (a tunnel through the proxy: host, port, `intercepted`,
 `allowed`; or direct traffic the firewall refused: `via: "direct"`,
 `proto` (tcp, udp, icmp, …), address, port, the canaries in a refused
-packet's payload, and `more` on the last one a run records), `http`
+packet's payload, `more` on the 1000th, after which only traffic holding
+a canary is recorded, and `dropped` when the kernel lost packets unread),
+`http`
 (method, host, path, `allowed`, the canaries found in it, with their
 encoding, and `unscanned`: why part of the body went unsearched, when it
 did), `file` (path written), `sampling`, `elicitation`,

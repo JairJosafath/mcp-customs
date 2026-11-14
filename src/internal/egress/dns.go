@@ -67,7 +67,9 @@ func (e *Egress) answerDNS(packet []byte) ([]byte, bool) {
 	name := normalHost(q.Name.String())
 	answers, rcode, faked := e.lookup(name, q.Type)
 	d := DNSDetail{Name: name, Type: typeName(q.Type), Answers: answerStrings(answers), Faked: faked}
-	if m := e.match([]byte(name + "\n" + strings.ReplaceAll(name, ".", ""))); len(m) > 0 {
+	// The name as sent keeps its case, which base64 in a label needs.
+	raw := strings.TrimSuffix(q.Name.String(), ".")
+	if m := e.match([]byte(raw + "\n" + strings.ReplaceAll(raw, ".", ""))); len(m) > 0 {
 		d.Canaries = m
 	}
 	e.record(KindDNS, d)
