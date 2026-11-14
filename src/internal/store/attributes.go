@@ -56,6 +56,8 @@ func checkRow(pk string, c Check) row {
 		"sandboxId":      str(c.SandboxID),
 		"recheckOf":      str(c.RecheckOf),
 		"recheckOfRef":   str(c.RecheckOfRef),
+		"supersededBy":   str(c.SupersededBy),
+		"recheckFailed":  str(c.RecheckFailed),
 	}
 }
 
@@ -73,7 +75,10 @@ func checkFrom(r row) (Check, error) {
 	})
 	c.Status = Status(status)
 	// Checks made before these were kept have none.
-	for name, field := range map[string]*string{"sandboxId": &c.SandboxID, "recheckOf": &c.RecheckOf, "recheckOfRef": &c.RecheckOfRef} {
+	for name, field := range map[string]*string{
+		"sandboxId": &c.SandboxID, "recheckOf": &c.RecheckOf, "recheckOfRef": &c.RecheckOfRef,
+		"supersededBy": &c.SupersededBy, "recheckFailed": &c.RecheckFailed,
+	} {
 		if value, ok := r[name].(*types.AttributeValueMemberS); ok {
 			*field = value.Value
 		}

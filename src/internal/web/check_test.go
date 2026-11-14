@@ -329,3 +329,29 @@ func TestACheckThatIsNoRecheckShowsNoLink(t *testing.T) {
 		t.Errorf("a link to an ID that names no check is shown:\n%s", page.Body)
 	}
 }
+
+func TestTheApprovedCheckShowsTheRecheckThatSupersededItOrFailedTwice(t *testing.T) {
+	f := newFixture(t)
+	f.running()
+	c := f.checks.checks["c1"]
+	c.SupersededBy, c.RecheckFailed = "recheck-1", "recheck-2-retry"
+	f.checks.checks["c1"] = c
+	page := f.answer(t, request(http.MethodGet, "/checks/c1", "GET /checks/{id}"))
+	for _, want := range []string{`<strong>Superseded.</strong>`, `<a href="/checks/recheck-1"><code>recheck-1</code></a>`, `failed twice;`, `<a href="/checks/recheck-2-retry">`} {
+		if !strings.Contains(page.Body, want) {
+			t.Errorf("page lacks %q:\n%s", want, page.Body)
+		}
+	}
+	api := f.answer(t, request(http.MethodGet, "/api/checks/c1", "GET /api/{proxy+}"))
+	if !strings.Contains(api.Body, `"supersededBy":"recheck-1"`) || !strings.Contains(api.Body, `"recheckFailed":"recheck-2-retry"`) {
+		t.Errorf("API %s, want supersededBy and recheckFailed", api.Body)
+	}
+	c.SupersededBy, c.RecheckFailed = `"><script>`, ""
+	f.checks.checks["c1"] = c
+	if page := f.answer(t, request(http.MethodGet, "/checks/c1", "GET /checks/{id}")); strings.Contains(page.Body, "Superseded") {
+		t.Errorf("a link to an ID that names no check is shown:\n%s", page.Body)
+	}
+	if page := f.answer(t, request(http.MethodGet, "/checks/c1", "GET /checks/{id}")); strings.Contains(page.Body, "failed twice") {
+		t.Errorf("a check never re-checked says so:\n%s", page.Body)
+	}
+}

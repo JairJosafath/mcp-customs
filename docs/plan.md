@@ -184,10 +184,14 @@ Rules for the weekend:
 
 ## Done when
 
-- Every row of the friction log has a theos issue number.
 - The entry is submitted, with its demo video and diagram.
-- `docs/results.md` says what theos built alone, what needed
-  a prompt, what needed a hand, and what that cost in time and tokens.
+- `docs/results.md` presents MCP Customs on its own: the problem, how it
+  works, the architecture, the security design, what the demo shows and what
+  only a deploy verifies. One short section says it was built with theos by
+  cloud sessions, with the numbers `hack/runs-stats` counts.
+- The friction log below is the build's internal record. It is not part of
+  the submission, and it gets no new rows until after it (the owner's word
+  of 2026-11-14).
 
 ## Friction log
 
@@ -216,3 +220,4 @@ One row per thing that went wrong or needed a person. Newest last.
 | 19  | Sat  | The guides assume a Lambda handler; a long-running harness in a MicroVM reads them loosely, and gosec flags every `exec.Command` in code whose job is running commands (PR #16)                                                                                               | `docs/agents/`, `.golangci.yml`                                                             | no                                            | [theos#277](https://github.com/JairJosafath/theos/issues/277), [theos#279](https://github.com/JairJosafath/theos/issues/279) |
 | 20  | Sat  | Three PRs (#21, #22, #24) reached round 3 with real but new blocking findings; the limit's only exit is needs-human, so the orchestrator merged and filed each as a follow-up (#23, #25, #36). The guide doesn't separate a defect a PR adds from a hole it doesn't close yet | `docs/agents/reviewer.md`, the operator's round limit                                       | no (decided by hand)                          | [theos#302](https://github.com/JairJosafath/theos/issues/302)                                                                |
 | 21  | Sat  | The Standard's make check runs no build-tagged tests (the mail demo's v1.0.1) and CI runs as non-root, so the egress tests skip there; a conflict from main moving between rounds cost #34 a review round (PR #34)                                                            | aws-standard `Makefile`, CI job, the operator's round loop                                  | no                                            | [theos#303](https://github.com/JairJosafath/theos/issues/303)                                                                |
+| 22  | Sat  | Two blocking findings fell outside anything the Standard says: a Unicode form of the stack's API host passed every allowlist check (PR #58), and a dev tool fetched from any host its mirror list named over plain http (PR #57)                                              | aws-standard `AGENTS.md`, `docs/style/`, reviewer guide                                     | no                                            | [theos#320](https://github.com/JairJosafath/theos/issues/320)                                                                |

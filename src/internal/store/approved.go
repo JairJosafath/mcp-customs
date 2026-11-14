@@ -25,6 +25,9 @@ type Approved struct {
 	// Polled is the newest version a re-check was started for: the
 	// approved version itself until a newer one is seen.
 	Polled string
+	// Retry is a version whose re-check failed once and is to be started
+	// again (MarkRetry), until the poller starts it (ClearRetry).
+	Retry string
 }
 
 // approvedPK holds every APPROVED item, so one query reads them all.
@@ -158,5 +161,8 @@ func approvedFrom(r row) (Approved, error) {
 		"toolListHash": &a.ToolListHash,
 		"polled":       &a.Polled,
 	})
+	if retry, ok := r["retry"].(*types.AttributeValueMemberS); ok {
+		a.Retry = retry.Value
+	}
 	return a, err
 }

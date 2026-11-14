@@ -43,6 +43,12 @@ type Check struct {
 	// RecheckOfRef that version's ref.
 	RecheckOf    string
 	RecheckOfRef string
+	// SupersededBy, on an approved check, is the re-check of a newer
+	// version that ended at review or block.
+	SupersededBy string
+	// RecheckFailed, on an approved check, is the retry of a re-check that
+	// failed a second time.
+	RecheckFailed string
 }
 
 // Finding is one reason for a verdict: who found it (code or model), the

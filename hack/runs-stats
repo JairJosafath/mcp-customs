@@ -1,0 +1,8 @@
+#!/bin/sh
+# Prints the numbers docs/results.md quotes: sessions, merged pull requests,
+# review rounds and cost, counted from docs/runs.md and git log at HEAD (or
+# -rev <commit>). The counting is src/internal/runstats; this only runs it.
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root/src"
+exec go run ./cmd/runstats -repo "$root" "$@"

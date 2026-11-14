@@ -1,0 +1,10 @@
+<repomd xmlns="http://linux.duke.edu/metadata/repo">
+  <data type="filelists">
+    <checksum type="sha256">0000</checksum>
+    <location href="repodata/filelists.xml.gz" />
+  </data>
+  <data type="primary">
+    <checksum type="sha256">{{primary.xml.gz}}</checksum>
+    <location href="repodata/primary.xml.gz" />
+  </data>
+</repomd>

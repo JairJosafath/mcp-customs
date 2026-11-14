@@ -22,6 +22,8 @@ github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.63.13 h1:jm3Xr8rI+KMyhv4G
 github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.63.13/go.mod h1:NPuZ0ShNNdB6H7wZvseRNE66e2Bh0rCvGrowXI+xlvM=
 github.com/aws/aws-sdk-go-v2/service/dynamodb v1.74.0 h1:DSfi8o1qAb2AQwFwfk4gjOE3R9V+33/V5k/ICYkkSac=
 github.com/aws/aws-sdk-go-v2/service/dynamodb v1.74.0/go.mod h1:tzOEVcpLdi8aqyYUKQkuOVVAOfOgfLA0xEomIUTHIFY=
+github.com/aws/aws-sdk-go-v2/service/eventbridge v1.55.11 h1:ojgfcj4mTmmv4oS6tCdLOSE7JREY9ac79Agwqbo6Qhw=
+github.com/aws/aws-sdk-go-v2/service/eventbridge v1.55.11/go.mod h1:dH07c6fNA09NdicyUUIH85aHE3tzUrZnjRwhmERs+S4=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.25 h1:rKwkY3Z+fvt2W0msjdNs6uNewPmXzPayQ961oyuWhes=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.25/go.mod h1:dBuAadQKd1F4Q4ZOg8gnFmuSHMRE40Pe3IfFwbtC4lE=
 github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.11.13 h1:U5HZ8FpTr6tyvulf1nT11Nw4KG1CAsXkuQGdUrIjZ/E=

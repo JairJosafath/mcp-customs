@@ -1,0 +1,12 @@
+{
+  "architecture": "arm64",
+  "os": "linux",
+  "history": [
+    {
+      "created_by": "ADD al2023-container-minimal-2023.12.20261112.0-arm64v8.tar.xz / # buildkit",
+      "comment": "buildkit.dockerfile.v0"
+    },
+    { "created_by": "CMD [\"/bin/bash\"]", "empty_layer": true },
+    { "created_by": "/bin/sh -c dnf swap -y openssl-libs openssl-snapsafe-libs" }
+  ]
+}
