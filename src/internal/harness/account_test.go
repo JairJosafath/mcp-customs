@@ -2,6 +2,7 @@ package harness
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -152,5 +153,16 @@ func TestTheVenvIsListedByTheHarnesssPythonNotOnePlantedInIt(t *testing.T) {
 	got, err := listVenv(t.Context(), sb, venv)
 	if err != nil || string(got) != "evilpy==1.0.0\nhttpx==0.27.0\n" {
 		t.Errorf("listVenv = %q, %v; want the venv's real distributions, not a planted pip's", got, err)
+	}
+}
+
+func TestKillAllWithoutSwitchFailsTheStep(t *testing.T) {
+	a := Account{Name: "dev", Home: t.TempDir()}
+	if err := a.killAll(t.Context()); err == nil {
+		t.Fatal("killAll without Switch = nil, want an error")
+	}
+	sb := Sandbox{Workdir: "/w", Run: (&fakeRun{}).run, KillAll: a.killAll}
+	if err := step(t.Context(), sb, io.Discard, "npm", "ci"); err == nil || !strings.Contains(err.Error(), "left running") {
+		t.Errorf("a step killing without Switch = %v, want it to fail", err)
 	}
 }

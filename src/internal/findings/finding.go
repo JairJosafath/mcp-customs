@@ -65,6 +65,9 @@ const (
 	// A STEP# record of the seal or the last read could not be written,
 	// though the action itself worked: the check's page misses that step.
 	RuleStepNotRecorded = "step-not-recorded"
+	// The harness could not install the server, so nothing else was
+	// checked: a dependency only an sdist ships, for one.
+	RuleInstallFailed = "install-failed"
 )
 
 // The rules of hidden characters Unicode's tables name, beyond those above.

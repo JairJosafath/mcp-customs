@@ -68,8 +68,8 @@ func (f *fakeRun) run(_ context.Context, args []string, out io.Writer) error {
 
 // pipReportJSON is pip's report for weather-mcp 1.0.0 and httpx.
 const pipReportJSON = `{"version":"1","install":[
-{"download_info":{"archive_info":{"hashes":{"sha256":"` + hashA + `"}}},"requested":true,"metadata":{"name":"weather-mcp","version":"1.0.0"}},
-{"download_info":{"archive_info":{"hashes":{"sha256":"` + hashB + `"}}},"requested":false,"metadata":{"name":"httpx","version":"0.27.0"}}]}`
+{"download_info":{"url":"https://files.example/weather_mcp-1.0.0-py3-none-any.whl","archive_info":{"hashes":{"sha256":"` + hashA + `"}}},"requested":true,"metadata":{"name":"weather-mcp","version":"1.0.0"}},
+{"download_info":{"url":"https://files.example/httpx-0.27.0-py3-none-any.whl#sha256=` + hashB + `","archive_info":{"hashes":{"sha256":"` + hashB + `"}}},"requested":false,"metadata":{"name":"httpx","version":"0.27.0"}}]}`
 
 const (
 	hashA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

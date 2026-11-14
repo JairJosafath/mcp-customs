@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/JairJosafath/mcp-customs/src/internal/netaddr"
 	"github.com/JairJosafath/mcp-customs/src/internal/ownapi"
 )
 
@@ -15,7 +16,9 @@ var ErrRefusedAddress = errors.New("the address is refused")
 
 // A Guard dials the upstream connections of allowed requests: it resolves
 // the host once, refuses the connection if any address it resolves to is
-// refused, and dials the address it checked, never the name again, so a
+// refused or isn't public (loopback, link-local, private, the instance
+// metadata: netaddr.Public), so a wildcard-DNS name such as
+// 169.254.169.254.nip.io can't reach inside a network, and dials the address it checked, never the name again, so a
 // DNS answer that changes in between (rebinding) can't reach a refused
 // address. Use its DialContext as the Upstream transport's. The one
 // connection it doesn't check is one dialed for an install's GET under an
@@ -76,7 +79,7 @@ func (g Guard) lookup(ctx context.Context, host string) ([]netip.Addr, error) {
 	return addrs, nil
 }
 
-// refused answers the first of addrs that is refused. A refused name that
+// refused answers the first of addrs that is refused or isn't public. A refused name that
 // doesn't resolve refuses nothing.
 func (g Guard) refused(ctx context.Context, addrs []netip.Addr) (netip.Addr, bool) {
 	deny := map[netip.Addr]bool{}
@@ -88,7 +91,7 @@ func (g Guard) refused(ctx context.Context, addrs []netip.Addr) (netip.Addr, boo
 	}
 	for _, a := range addrs {
 		a = ownapi.Canonical(a)
-		if deny[a] || (g.Refused != nil && g.Refused(a)) {
+		if deny[a] || !netaddr.Public(a) || (g.Refused != nil && g.Refused(a)) {
 			return a, true
 		}
 	}

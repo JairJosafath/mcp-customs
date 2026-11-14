@@ -249,7 +249,7 @@ func (e *Egress) forward(w http.ResponseWriter, r *http.Request, scheme, hostpor
 	target, err := upstreamURL(scheme, host, port, r.URL)
 	done, allowed, installGet := func() {}, false, false
 	if err == nil && readErr == nil {
-		done, allowed, installGet = e.admit(r.Method, host, r.URL)
+		done, allowed, installGet = e.admit(r.Method, scheme, host, port, r.URL)
 	}
 	defer done()
 	if allowed && e.afterAdmit != nil {

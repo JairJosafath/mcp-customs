@@ -15,6 +15,11 @@ import (
 // its message.
 var ErrHarness = errors.New("the harness answered an error")
 
+// ErrInstallFailed says the harness answered 422 to an install: the
+// server could not be installed, which is the server's failure, not the
+// harness's.
+var ErrInstallFailed = errors.New("the server could not be installed")
+
 // harnessAnswer is what every Harness API answer carries besides its own
 // fields: the observations since the last call, and, on an error, a message.
 type harnessAnswer struct {
@@ -24,7 +29,8 @@ type harnessAnswer struct {
 
 // callHarness sends one Harness API call to vm and decodes a 200 answer
 // into out, which may be nil. It answers the observations the call
-// brought back.
+// brought back. A 422, which only /install answers, is decoded into out
+// too, for its log, and is an ErrInstallFailed.
 func callHarness(ctx context.Context, sb sandbox.Client, vm sandbox.VM, method, path string, body, out any) ([]findings.Observation, error) {
 	resp, err := sb.Call(ctx, vm, sandbox.Request{Method: method, Path: path, Body: body})
 	if err != nil {
@@ -36,7 +42,12 @@ func callHarness(ctx context.Context, sb sandbox.Client, vm sandbox.VM, method, 
 			return nil, fmt.Errorf("read the answer to %s %s: %w", method, path, err)
 		}
 	}
-	if resp.Status != http.StatusOK {
+	var answered error
+	switch resp.Status {
+	case http.StatusOK:
+	case http.StatusUnprocessableEntity:
+		answered = fmt.Errorf("%s %s answered %d: %s: %w: %w", method, path, resp.Status, common.Message, ErrHarness, ErrInstallFailed)
+	default:
 		return common.Observations, fmt.Errorf("%s %s answered %d: %s: %w", method, path, resp.Status, common.Message, ErrHarness)
 	}
 	if out != nil {
@@ -44,5 +55,5 @@ func callHarness(ctx context.Context, sb sandbox.Client, vm sandbox.VM, method, 
 			return nil, fmt.Errorf("read the answer to %s %s: %w", method, path, err)
 		}
 	}
-	return common.Observations, nil
+	return common.Observations, answered
 }
