@@ -168,17 +168,23 @@ func Handler(deps Deps) durable.Handler[Input, Output] {
 	}
 }
 
-// check runs the fixed checks and answers the verdict. A dependency set
+// check runs the fixed checks and answers the verdict. A server the
+// sandbox can't install ends at review, decided by code. A dependency set
 // and tool list an earlier check approved pass after resolve, lookup and
 // list, except a re-check, which is probed whatever it lists; anything
 // else is installed, listed, scanned, probed with the
 // judge's arguments, observed, judged and investigated, and a verdict
 // short of pass waits for a person.
 func (r *run) check(ctx durable.Context) (verdict.Verdict, error) {
-	for _, a := range []Action{ActResolve, ActLookup} {
-		if err := r.do(ctx, a, nil); err != nil {
-			return "", err
-		}
+	if err := r.do(ctx, ActResolve, nil); err != nil {
+		return "", err
+	}
+	// Nothing was installed, so there is nothing for a person to approve.
+	if r.resolved.InstallFailed {
+		return r.finish(ctx, verdict.Decide(verdict.Input{Code: r.resolved.Findings}), "code")
+	}
+	if err := r.do(ctx, ActLookup, nil); err != nil {
+		return "", err
 	}
 	if r.approved != nil && r.in.Recheck == nil {
 		if err := r.do(ctx, ActList, nil); err != nil {

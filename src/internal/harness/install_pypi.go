@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -64,6 +66,7 @@ type pipReport struct {
 	Version string `json:"version"`
 	Install []struct {
 		DownloadInfo struct {
+			URL         string `json:"url"`
 			ArchiveInfo *struct {
 				Hashes map[string]string `json:"hashes"`
 			} `json:"archive_info"`
@@ -86,8 +89,9 @@ var (
 // "name==version --hash=sha256:..." a line, sorted by normalized name. It
 // pins every file, so `pip install --no-deps --require-hashes -r` installs
 // exactly what the resolver chose, and nothing that only shares a name.
-// The report must name the requested package, and every entry must be an
-// archive with its SHA-256: a VCS or local directory can't be pinned.
+// The report must name the requested package, and every entry must be a
+// wheel with its SHA-256: a VCS or local directory can't be pinned, and an
+// sdist is built with build dependencies no hash pins.
 func pipSet(raw []byte, requested string) ([]byte, error) {
 	var report pipReport
 	if err := json.Unmarshal(raw, &report); err != nil {
@@ -110,6 +114,9 @@ func pipSet(raw []byte, requested string) ([]byte, error) {
 		if !sha256Hex.MatchString(sum) {
 			return nil, fmt.Errorf("pip resolved %s %s from no archive with a SHA-256, so it can't be pinned", name, version)
 		}
+		if !isWheel(d.DownloadInfo.URL) {
+			return nil, fmt.Errorf("pip resolved %s %s to an sdist, not a wheel: building it needs build dependencies --require-hashes can't pin", name, version)
+		}
 		key := normalizePyPI(name)
 		if _, dup := lines[key]; dup {
 			return nil, fmt.Errorf("pip's report names %s twice", name)
@@ -130,6 +137,12 @@ func pipSet(raw []byte, requested string) ([]byte, error) {
 		out.WriteString(lines[k])
 	}
 	return []byte(out.String()), nil
+}
+
+// isWheel says whether the file pip downloads from rawURL is a wheel.
+func isWheel(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	return err == nil && strings.HasSuffix(path.Base(u.Path), ".whl")
 }
 
 // normalizePyPI is a distribution name as PEP 503 compares them.

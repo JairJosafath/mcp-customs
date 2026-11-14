@@ -37,6 +37,13 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- A server the sandbox can't install ends at review, decided by code,
+  with an `install-failed` finding naming what failed, instead of failing
+  the check (#39). A PyPI dependency only an sdist ships fails the
+  install with a log line naming it, as its build dependencies can't be
+  pinned; a blank line in pip's set no longer panics the harness, and a
+  harness that can't end what an install step left running fails the step.
+
 - The stack's own API is kept out by fixed rules (#56). The Checker's
   refusal compares against API Gateway's published ranges for the region,
   so it no longer changes from run to run, and refuses the API's FIPS and
