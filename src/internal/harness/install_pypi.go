@@ -143,7 +143,11 @@ func normalizePyPI(name string) string {
 func noteClaims(log io.Writer, before, after, set []byte) {
 	want := map[string]bool{}
 	for line := range strings.Lines(string(set)) {
-		name, version, _ := strings.Cut(strings.Fields(line)[0], "==")
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		name, version, _ := strings.Cut(fields[0], "==")
 		want[normalizePyPI(name)+"=="+version] = true
 	}
 	had := map[string]bool{}

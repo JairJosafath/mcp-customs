@@ -81,6 +81,14 @@ func TestAnEmptyVenvListingIsAnErrorNotAnEmptySet(t *testing.T) {
 	}
 }
 
+func TestNoteClaimsSkipsBlankLinesOfTheSet(t *testing.T) {
+	var log bytes.Buffer
+	noteClaims(&log, nil, []byte("weather-mcp==1.0.0\n"), []byte("\n   \nweather-mcp==1.0.0 --hash=sha256:"+hashA+"\n\t\n"))
+	if log.Len() != 0 {
+		t.Errorf("log %q, want nothing to note", log.String())
+	}
+}
+
 func TestTheLogNotesWhatTheVenvClaimsBeyondTheSet(t *testing.T) {
 	var log bytes.Buffer
 	before := []byte("pip==26.0\n")
