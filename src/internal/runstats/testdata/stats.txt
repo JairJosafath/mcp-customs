@@ -1,0 +1,12 @@
+Counted from docs/runs.md as of commit aaaaaaa, and git log --first-parent at bbbbbbb.
+
+Sessions (distinct IDs, docs/runs.md): 6: 3 implementer, 3 reviewer
+Implementer and reviewer rows with no session ID, not counted: 1
+Issues with a row (docs/runs.md): 6
+Rows started (docs/runs.md): 2026-11-14 06:27 to 2026-11-14 10:00 UTC
+Cost reported (docs/runs.md): $19.41 from 5 of 6 sessions: $16.27 from 3 implementer, $3.14 from 2 reviewer
+Sessions that reported no cost: 1: 0 implementer, 1 reviewer
+Pull requests merged (git log at bbbbbbb): 2: #10 #11
+Review rounds of the 2 merged issues (docs/runs.md):
+  1+: 1: #2 (PR #11)
+  2: 1: #1 (PR #10)
