@@ -119,6 +119,11 @@ describe('Sandbox', () => {
     const dockerfile = readFileSync(path.join(dir, 'Dockerfile'), 'utf8');
     expect(dockerfile).toContain('ENTRYPOINT ["/usr/local/sbin/harness"]');
     expect(dockerfile).toMatch(/useradd .* dev/);
+    expect(dockerfile).toMatch(/^USER root$/m);
+    // No setuid binaries, setpriv for no_new_privs, libfaketime for the clock.
+    expect(dockerfile).toContain('-perm /6000 -exec chmod ug-s');
+    expect(dockerfile).toContain('util-linux');
+    expect(dockerfile).toContain('/usr/local/lib/faketime/libfaketime.so.1');
   });
 
   it('lets the build role read only the zip and write only the image’s build logs, kept a set time', () => {

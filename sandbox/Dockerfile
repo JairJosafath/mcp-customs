@@ -15,10 +15,26 @@ ARG NODE_SHA256=2babb9eb5264860d540849f4b064a6fbdebcdc323657d9d382ce23d313fd5e09
 ARG UV_VERSION=0.13.8
 ARG UV_SHA256=74f2f5c6024d397481db228db8fc25eed420db192243f88438c118e7e013e585
 ARG PYTHON_VERSION=3.13
+ARG LIBFAKETIME_VERSION=v0.9.13
+ARG LIBFAKETIME_COMMIT=86b37fde2fed7336ea2d0c17928e3015a55d9b4a
 
+# util-linux gives the harness `setpriv`, which starts the server under test
+# with no_new_privs set.
 RUN dnf install -y --setopt=install_weak_deps=False \
-      ca-certificates findutils git gzip shadow-utils tar xz \
+      ca-certificates findutils git gzip shadow-utils tar util-linux xz \
     && dnf clean all
+
+# libfaketime, for the fake clock (POST /clock): the server under test is
+# run with it preloaded. Built from the tag, checked against its commit;
+# the compiler goes again in the same layer.
+RUN dnf install -y --setopt=install_weak_deps=False gcc make \
+    && git clone --quiet --depth 1 --branch "${LIBFAKETIME_VERSION}" https://github.com/wolfcw/libfaketime /tmp/libfaketime \
+    && test "$(git -C /tmp/libfaketime rev-parse HEAD)" = "${LIBFAKETIME_COMMIT}" \
+    && make -C /tmp/libfaketime PREFIX=/usr/local install \
+    && rm -rf /tmp/libfaketime \
+    && dnf remove -y gcc make \
+    && dnf clean all \
+    && test -f /usr/local/lib/faketime/libfaketime.so.1
 
 # Go, for `go install module@version`.
 RUN curl -fsSLo /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-arm64.tar.gz" \
@@ -53,10 +69,16 @@ RUN useradd --create-home --uid 1000 --shell /bin/bash dev \
     && mkdir -p /home/dev/projects/server \
     && chown -R dev:dev /home/dev/projects
 
-# The harness runs as root, so it can switch to `dev` and keep its own files
+# The harness must run as root (it refuses otherwise: a non-root harness
+# would let the server under test read its token from /proc), so it can switch to `dev` and keep its own files
 # out of dev's reach; only root may write it.
 COPY harness /usr/local/sbin/harness
 RUN chown root:root /usr/local/sbin/harness && chmod 0755 /usr/local/sbin/harness
+
+# No setuid or setgid file anywhere: nothing the server under test runs can
+# raise its privileges back to root. The build fails if one is left.
+RUN find / -xdev -type f -perm /6000 -exec chmod ug-s {} + \
+    && test -z "$(find / -xdev -type f -perm /6000)"
 
 # The Harness API on 8080, the endpoint's default port; Lambda's lifecycle
 # hooks on 9000, a port no token the Checker makes opens.

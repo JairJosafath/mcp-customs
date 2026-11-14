@@ -74,6 +74,14 @@ What Lambda MicroVMs (`sandbox/Dockerfile`, `infra/sandbox.ts`,
   Lambda removes `X-aws-proxy-*` before the harness sees the request, so
   the harness authenticates the `Authorization: Bearer <run token>` header
   only. A 403 or 502 without JSON is Lambda's, not the harness's.
+- **Root, and nothing to climb back to it.** The image runs the harness
+  as root (its `ENTRYPOINT`, `USER root`); Lambda documents nothing that
+  stops that, and runs the container with the standard Linux capabilities,
+  which include switching users. The image has no setuid or setgid file.
+  Lambda offers no `no-new-privileges` switch for the container, so the
+  harness sets it per process: the image ships `setpriv`
+  (`setpriv --no-new-privs`). `libfaketime` is at
+  `/usr/local/lib/faketime/libfaketime.so.1` for `POST /clock`.
 - **No AWS credentials inside.** MicroVMs run with no execution role, so the
   server under test finds none, and Lambda keeps no runtime logs:
   observations come back through the API only.
