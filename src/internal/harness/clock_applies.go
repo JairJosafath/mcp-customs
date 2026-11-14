@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"debug/buildinfo"
 	"debug/elf"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,26 +28,31 @@ const maxShebang = 256
 // script is judged by its interpreter, found on path as the shell would.
 // It is advice for the judge, not a control: a server can still clear its
 // own environment, or set its clock itself.
-func fakeTimeApplies(command []string, path string) (applies, why string) {
+//
+// The command is the server's to point anywhere, so only a file the
+// account could read itself is read, and why names nothing read from a
+// file: only the command's own base name.
+func (a Account) fakeTimeApplies(command []string, path string) (applies, why string) {
 	if len(command) == 0 || command[0] == "" {
 		return appliesUnknown, "no server command is known yet"
 	}
+	name := filepath.Base(command[0])
 	exe := command[0]
 	for range 2 {
-		interp, ok := shebang(exe)
+		interp, ok := a.shebang(exe)
 		if !ok {
 			break
 		}
 		if filepath.Base(interp[0]) == "env" && len(interp) > 1 {
 			interp = interp[1:]
 		}
-		found, ok := interpreter(interp[0], path)
+		found, ok := a.interpreter(interp[0], path)
 		if !ok {
-			return appliesUnknown, "the script's interpreter was not found"
+			return appliesUnknown, "the interpreter of " + name + " was not found"
 		}
 		exe = found
 	}
-	return elfApplies(exe)
+	return a.elfApplies(exe, name)
 }
 
 // interpreterName is the shape of an interpreter's bare name.
@@ -54,7 +60,7 @@ var interpreterName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 
 // interpreter is the file a script's interpreter names: an absolute path
 // as it is, a bare name found on path.
-func interpreter(name, path string) (string, bool) {
+func (a Account) interpreter(name, path string) (string, bool) {
 	if filepath.IsAbs(name) {
 		return filepath.Clean(name), true
 	}
@@ -63,15 +69,15 @@ func interpreter(name, path string) (string, bool) {
 	}
 	for _, dir := range filepath.SplitList(path) {
 		file := filepath.Join(dir, name)
-		if filepath.IsAbs(dir) && isExecutable(file) {
+		if filepath.IsAbs(dir) && a.isExecutable(file) {
 			return file, true
 		}
 	}
 	return "", false
 }
 
-func isExecutable(file string) bool {
-	f, err := openRegular(file)
+func (a Account) isExecutable(file string) bool {
+	f, err := a.openReadable(file)
 	if err != nil {
 		return false
 	}
@@ -81,8 +87,8 @@ func isExecutable(file string) bool {
 }
 
 // shebang is the interpreter and its arguments a script names, if exe is one.
-func shebang(exe string) ([]string, bool) {
-	f, err := openRegular(exe)
+func (a Account) shebang(exe string) ([]string, bool) {
+	f, err := a.openReadable(exe)
 	if err != nil {
 		return nil, false
 	}
@@ -100,37 +106,52 @@ func shebang(exe string) ([]string, bool) {
 	return fields, len(fields) > 0
 }
 
-func elfApplies(exe string) (applies, why string) {
-	f, err := openRegular(exe)
+// elfApplies judges the binary exe; name is what why calls it.
+func (a Account) elfApplies(exe, name string) (applies, why string) {
+	f, err := a.openReadable(exe)
 	if err != nil {
-		return appliesUnknown, filepath.Base(exe) + " can't be read"
+		return appliesUnknown, name + " can't be read as the account"
 	}
 	defer func() { _ = f.Close() }()
 	bin, err := elf.NewFile(f)
 	if err != nil {
-		return appliesUnknown, filepath.Base(exe) + " is not an ELF binary"
+		return appliesUnknown, name + " is neither an ELF binary nor a script that runs one"
 	}
 	if _, err := buildinfo.Read(f); err == nil {
-		return appliesNo, filepath.Base(exe) + " is a Go binary, which reads the time without libc"
+		return appliesNo, name + " runs a Go binary, which reads the time without libc"
 	}
 	for _, p := range bin.Progs {
 		if p.Type == elf.PT_INTERP {
-			return appliesYes, filepath.Base(exe) + " is dynamically linked and loads libfaketime"
+			return appliesYes, name + " runs a dynamically linked binary, which loads libfaketime"
 		}
 	}
-	return appliesNo, filepath.Base(exe) + " is statically linked and loads nothing"
+	return appliesNo, name + " runs a statically linked binary, which loads nothing"
 }
 
-// openRegular opens a regular file for reading, so no FIFO can stall the
-// harness.
-func openRegular(name string) (*os.File, error) {
+// errUnreadable is a file the account couldn't read itself.
+var errUnreadable = errors.New("not a regular file the account can read")
+
+// openReadable opens, as the root harness, only what the account could
+// read itself: a regular file it owns or anyone may read. It looks before
+// it opens, so no device or FIFO is ever opened, and the file opened must
+// be the one it looked at.
+func (a Account) openReadable(name string) (*os.File, error) {
+	seen, err := os.Stat(name)
+	if err != nil || !a.mayRead(seen) {
+		return nil, errUnreadable
+	}
 	f, err := os.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return nil, err
+		return nil, errUnreadable
 	}
-	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+	if info, err := f.Stat(); err != nil || !os.SameFile(seen, info) || !a.mayRead(info) {
 		_ = f.Close()
-		return nil, syscall.EINVAL
+		return nil, errUnreadable
 	}
 	return f, nil
+}
+
+func (a Account) mayRead(info os.FileInfo) bool {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return ok && info.Mode().IsRegular() && (st.Uid == a.UID || info.Mode().Perm()&0o004 != 0)
 }

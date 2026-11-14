@@ -115,3 +115,23 @@ func TestAFileThatGrowsPastTheBoundWhileReadIsTooLargeNotPartlyHashed(t *testing
 		}
 	}
 }
+
+func TestDownloadRefusesAWrittenFilesDirectorySwappedForALinkOrAHardLink(t *testing.T) {
+	run, written := wroteFile(t)
+	cache := filepath.Dir(written)
+	other := filepath.Join(run.home, "other")
+	must(t, os.MkdirAll(other, 0o750))
+	must(t, os.WriteFile(filepath.Join(other, "x"), []byte("NOT-WRITTEN"), 0o600))
+	must(t, os.Rename(cache, cache+".real"))
+	must(t, os.Symlink("other", cache))
+	if status, body := run.do(t, http.MethodPost, "/download", map[string]any{"path": written}); status != http.StatusBadRequest {
+		t.Errorf("POST /download through a swapped directory = %d %v, want 400", status, body)
+	}
+	must(t, os.Remove(cache))
+	must(t, os.Rename(cache+".real", cache))
+	must(t, os.Remove(written))
+	must(t, os.Link(filepath.Join(run.home, ".profile"), written))
+	if status, body := run.do(t, http.MethodPost, "/download", map[string]any{"path": written}); status != http.StatusBadRequest {
+		t.Errorf("POST /download of a hard link = %d %v, want 400", status, body)
+	}
+}

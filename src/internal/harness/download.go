@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -37,12 +38,18 @@ func (h *Harness) download(r *http.Request) (int, answer) {
 	if !ok {
 		return problem(http.StatusBadRequest, p+" is not where written files are watched.")
 	}
-	root, err := openRoot(base, base)
+	// The directory is opened at its real path, so a directory swapped for a
+	// link since the file was seen is refused, and only the last part of
+	// the path is looked up in it.
+	root, err := openRoot(base, filepath.Join(base, filepath.Dir(rel)))
+	if errors.Is(err, fs.ErrNotExist) {
+		return problem(http.StatusNotFound, p+" is gone.")
+	}
 	if err != nil {
-		return problem(http.StatusInternalServerError, "Could not open "+base+": "+err.Error())
+		return problem(http.StatusBadRequest, p+" is no longer where it was written: "+err.Error())
 	}
 	defer func() { _ = root.Close() }()
-	f, info, err := h.cfg.Account.openOwned(root, rel, false)
+	f, info, err := h.cfg.Account.openOwned(root, filepath.Base(rel), false)
 	if errors.Is(err, errNotFound) {
 		return problem(http.StatusNotFound, p+" is gone.")
 	}

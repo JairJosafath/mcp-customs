@@ -108,3 +108,18 @@ func TestAFileTheAccountDoesNotOwnIsNotOpened(t *testing.T) {
 		t.Error("a file of another user was opened")
 	}
 }
+
+func TestAFileSwappedBetweenTheLookAndTheOpenIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(dir, "x"), []byte("written"), 0o600))
+	must(t, os.WriteFile(filepath.Join(dir, "other"), []byte("never written"), 0o600))
+	root, err := os.OpenRoot(dir)
+	must(t, err)
+	defer func() { _ = root.Close() }()
+	afterLook = func(string) { must(t, os.Rename(filepath.Join(dir, "other"), filepath.Join(dir, "x"))) }
+	t.Cleanup(func() { afterLook = nil })
+	if f, _, err := (Account{}).openOwned(root, "x", false); err == nil {
+		_ = f.Close()
+		t.Error("the file swapped in after the look was opened")
+	}
+}

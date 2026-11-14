@@ -107,6 +107,6 @@ func (h *Harness) clockNow() answer {
 	case h.run != nil:
 		command = h.run.command
 	}
-	applies, why := fakeTimeApplies(command, h.serverPath())
+	applies, why := h.cfg.Account.fakeTimeApplies(command, h.serverPath())
 	return answer{"offset": h.clockOffset.String(), "now": h.cfg.Now().Add(h.clockOffset).UTC(), "applies": applies, "why": why}
 }

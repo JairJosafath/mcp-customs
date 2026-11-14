@@ -52,10 +52,14 @@ func openRoot(base, dir string) (*os.Root, error) {
 	return root, nil
 }
 
+// afterLook, when set, runs between openOwned's look at a name and its
+// open: tests swap the file there, to show the swap is refused.
+var afterLook func(name string)
+
 // openOwned opens name in root for reading: a regular file only, so no
-// FIFO or device can stall the harness, and, when the harness switches to
-// the account, one the account owns, so a hard link can't hand it a file
-// of root's. With follow false a link as the last element is refused:
+// FIFO or device can stall the harness; never a hard link, which may be a
+// file from anywhere; and, when the harness switches to the account, one
+// the account owns. With follow false a link as the last element is refused:
 // os.Root follows a link that stays inside it even with O_NOFOLLOW, so the
 // element is looked at first, and the file opened must be the one seen.
 func (a Account) openOwned(root *os.Root, name string, follow bool) (*os.File, fs.FileInfo, error) {
@@ -69,6 +73,9 @@ func (a Account) openOwned(root *os.Root, name string, follow bool) (*os.File, f
 		}
 		if seen.Mode()&fs.ModeSymlink != 0 {
 			return nil, nil, fmt.Errorf("%s is a link", name)
+		}
+		if afterLook != nil {
+			afterLook(name)
 		}
 	}
 	f, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
@@ -86,6 +93,10 @@ func (a Account) openOwned(root *os.Root, name string, follow bool) (*os.File, f
 	if seen != nil && !os.SameFile(seen, info) {
 		_ = f.Close()
 		return nil, nil, fmt.Errorf("%s changed while it was opened", name)
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Nlink != 1 {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("%s is a hard link, which may be a file from anywhere", name)
 	}
 	if st, ok := info.Sys().(*syscall.Stat_t); a.Switch && (!ok || st.Uid != a.UID) {
 		_ = f.Close()

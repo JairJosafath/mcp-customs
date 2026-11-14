@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // maxSource bounds the content /source answers.
@@ -35,7 +34,7 @@ func (h *Harness) source(r *http.Request) (int, answer) {
 		return problem(http.StatusBadRequest, "The installed package can't be read: "+err.Error())
 	}
 	defer func() { _ = root.Close() }()
-	f, info, err := h.cfg.Account.openOwned(root, p, true)
+	f, _, err := h.cfg.Account.openOwned(root, p, true)
 	if errors.Is(err, errNotFound) {
 		return problem(http.StatusNotFound, "The package has no file "+p+".")
 	}
@@ -43,10 +42,6 @@ func (h *Harness) source(r *http.Request) (int, answer) {
 		return problem(http.StatusBadRequest, err.Error())
 	}
 	defer func() { _ = f.Close() }()
-	// A hard link may be a file from outside the package.
-	if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Nlink != 1 {
-		return problem(http.StatusBadRequest, p+" is a hard link, which may lead out of the package.")
-	}
 	content, err := io.ReadAll(io.LimitReader(f, maxSource+1))
 	if err != nil {
 		return problem(http.StatusInternalServerError, "Could not read "+p+": "+err.Error())
