@@ -51,3 +51,17 @@ const (
 	// list, result or flood of observations.
 	RuleOversized = "oversized"
 )
+
+// The rules of hidden characters Unicode's tables name, beyond those above.
+const (
+	// Default-ignorable code points no other rule names, such as U+034F
+	// and the Hangul fillers.
+	RuleDefaultIgnorable = "hidden-default-ignorable"
+	// Format characters no other rule names, such as the interlinear
+	// annotation characters, which can hide the text between them.
+	RuleFormatCharacter = "hidden-format-character"
+	// The line and paragraph separators, U+2028 and U+2029.
+	RuleLineSeparator = "hidden-line-separator"
+	RulePrivateUse    = "hidden-private-use"
+	RuleUnassigned    = "hidden-unassigned"
+)

@@ -642,9 +642,9 @@ func TestBoundFindingsKeepsAtMostSoManyInAllAndCutsLongText(t *testing.T) {
 			fs = append(fs, findings.Finding{Source: findings.Model, Rule: fmt.Sprintf("rule-%d", i), Evidence: strings.Repeat("é", 1000) + strconv.Itoa(j)})
 		}
 	}
-	got := boundFindings(fs)
+	got := boundFindings(fs, maxStepFindings)
 	last := got[len(got)-1]
-	if len(got) != maxStepFindings+1 || last.Rule != ruleMore || !strings.Contains(last.Evidence, "and 400 more") {
+	if len(got) != maxStepFindings+1 || last.Rule != ruleMore || !strings.Contains(last.Evidence, "and 400 more finding(s), of any rule, left off once this step kept 200") {
 		t.Errorf("kept %d, last %+v; want %d and one counting the other 400", len(got), last, maxStepFindings)
 	}
 	for _, f := range got {
@@ -652,8 +652,113 @@ func TestBoundFindingsKeepsAtMostSoManyInAllAndCutsLongText(t *testing.T) {
 			t.Fatalf("evidence of %d bytes, valid %v; want at most %d, whole characters", len(f.Evidence), utf8.ValidString(f.Evidence), maxEvidence)
 		}
 	}
-	if few := boundFindings(fs[:3]); len(few) != 3 || few[0].Rule != "rule-0" {
+	if few := boundFindings(fs[:3], maxStepFindings); len(few) != 3 || few[0].Rule != "rule-0" {
 		t.Errorf("three findings became %d", len(few))
+	}
+}
+
+func TestMoreFindingsCountsThoseOfAnyRuleLeftOffOnceAStepKeptItsMost(t *testing.T) {
+	// 14 rules of 15 findings each, interleaved: the step keeps 200, and the
+	// 10 it leaves off are of rules it kept 14 of.
+	var fs []findings.Finding
+	for j := range 15 {
+		for i := range 14 {
+			fs = append(fs, findings.Finding{Source: findings.Code, Rule: fmt.Sprintf("rule-%d", i), Evidence: strconv.Itoa(j)})
+		}
+	}
+	got := boundFindings(fs, maxStepFindings)
+	last := got[len(got)-1]
+	if len(got) != maxStepFindings+1 || last.Rule != ruleMore || last.Evidence != "and 10 more finding(s), of any rule, left off once this step kept 200" {
+		t.Errorf("kept %d, last %+v; want 200 and the 10 others counted", len(got), last)
+	}
+}
+
+// controlFindings are 200 findings of 512 bytes each, every byte a control
+// character the store's JSON writes as six: about 600 KB once encoded.
+func controlFindings() []findings.Finding {
+	var fs []findings.Finding
+	for i := range 10 {
+		for range maxFindingsPerRule {
+			fs = append(fs, findings.Finding{Source: findings.Model, Rule: fmt.Sprintf("rule-%d", i), Evidence: strings.Repeat("\x01", maxEvidence)})
+		}
+	}
+	return fs
+}
+
+func TestAStepFullOfControlCharactersIsTrimmedToFitDynamoDBsLimit(t *testing.T) {
+	fs := controlFindings()
+	step := store.Step{Seq: 7, Name: "judge", Summary: "The judge found 200 things."}
+	whole := step
+	whole.Findings = storeFindings(boundFindings(fs, maxStepFindings))
+	if size, err := store.StepSize("c1", whole); err != nil || size <= store.MaxItemSize {
+		t.Fatalf("the untrimmed step is %d bytes (%v); want over %d, or the test shows nothing", size, err, store.MaxItemSize)
+	}
+	got := boundStep("c1", step, fs)
+	size, err := store.StepSize("c1", got)
+	if err != nil || size > store.MaxItemSize {
+		t.Fatalf("the step is %d bytes (%v); want at most %d", size, err, store.MaxItemSize)
+	}
+	kept := len(got.Findings) - 1
+	last := got.Findings[kept]
+	want := fmt.Sprintf("and %d more finding(s), of any rule, left off once this step kept %d", len(fs)-kept, kept)
+	if last.Rule != ruleMore || last.Evidence != want {
+		t.Errorf("last finding %+v; want %q", last, want)
+	}
+	// As many as fit are kept: one more would not.
+	one := step
+	one.Findings = storeFindings(boundFindings(fs, kept+1))
+	if size, _ := store.StepSize("c1", one); size <= store.MaxItemSize {
+		t.Errorf("kept %d findings, but %d fit (%d bytes)", kept, kept+1, size)
+	}
+	if got.Seq != 7 || got.Name != "judge" || got.Summary != step.Summary {
+		t.Errorf("step %+v; want its number, name and summary as they were", got)
+	}
+}
+
+func TestARecordedStepOfControlCharactersIsWrittenUnderDynamoDBsLimit(t *testing.T) {
+	w := newWorld(cleanServer())
+	handler := func(ctx durable.Context, in Input) (Output, error) {
+		r := &run{deps: w.deps(), in: in}
+		return Output{}, r.record(ctx, "verdict", outcome{Summary: "Verdict: block.", Findings: controlFindings()})
+	}
+	result, err := durabletest.NewLocalRunner(durable.Handler[Input, Output](handler)).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The recorder refuses an item over 400 KB, as DynamoDB does.
+	if result.Status != durabletest.Succeeded || len(w.rec.steps) != 1 {
+		t.Fatalf("status %s, error %+v, steps %v; want the step written", result.Status, result.Error, w.rec.stepNames())
+	}
+	if last := w.rec.steps[0].Findings[len(w.rec.steps[0].Findings)-1]; last.Rule != ruleMore {
+		t.Errorf("last finding %+v; want the ones left off counted", last)
+	}
+}
+
+func TestAVerdictStepThatCantBeWrittenFailsTheCheckWithNoApproval(t *testing.T) {
+	w := newWorld(cleanServer())
+	w.rec.failStep = "verdict"
+	result, err := durabletest.NewLocalRunner(Handler(w.deps())).RunUntilComplete(Input{CheckID: "c1", Submission: npm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != durabletest.Failed {
+		t.Errorf("status %s, want failed", result.Status)
+	}
+	if check := w.rec.checks[0]; check.Status != store.StatusFailed || check.Verdict != "" {
+		t.Errorf("check %+v, want failed with no verdict", check)
+	}
+	if len(w.rec.verdicts) != 0 || w.rec.verdictPuts != 0 {
+		t.Errorf("approvals %+v; want none", w.rec.verdicts)
+	}
+	if slices.ContainsFunc(w.rec.updates, func(u store.CheckUpdate) bool { return u.Status == store.StatusDone }) {
+		t.Errorf("updates %+v; the check was marked done", w.rec.updates)
+	}
+	if _, ok := w.reports.report(); ok {
+		t.Error("wrote a report")
+	}
+	last := w.rec.steps[len(w.rec.steps)-1]
+	if last.Name != "failed" || last.Summary != "The check failed during verdict." {
+		t.Errorf("last step %+v, want failed during verdict", last)
 	}
 }
 
