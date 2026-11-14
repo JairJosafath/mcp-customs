@@ -109,3 +109,19 @@ test(
     }
   },
 );
+
+test(
+  'a scene that ends at another verdict says which it expected and which it got',
+  { timeout: 60_000 },
+  async () => {
+    const scenes = await record({
+      ...stubOptions(),
+      scenes: ['weather'],
+      // The clean mail server passes, where the weather scene needs a block.
+      weather: { kind: 'npm', ref: 'mail-mcp@1.0.0' },
+    });
+    expect(scenes.map((s) => [s.scene, s.verdict, s.error])).toEqual([
+      ['weather', 'gave up', 'scene weather: expected block, got pass'],
+    ]);
+  },
+);
