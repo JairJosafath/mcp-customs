@@ -88,6 +88,30 @@ func (s *Store) UpdateCheck(ctx context.Context, id string, u CheckUpdate) error
 	if err != nil {
 		return err
 	}
+	expr, names, values, err := checkSets(u)
+	if err != nil {
+		return err
+	}
+	_, err = s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                 aws.String(s.table),
+		Key:                       row{"pk": str(pk), "sk": str(metaSK)},
+		UpdateExpression:          aws.String(expr),
+		ConditionExpression:       aws.String("attribute_exists(pk)"),
+		ExpressionAttributeNames:  names,
+		ExpressionAttributeValues: values,
+	})
+	if failed := new(types.ConditionalCheckFailedException); errors.As(err, &failed) {
+		return fmt.Errorf("update check %s: %w", id, ErrNoCheck)
+	}
+	if err != nil {
+		return fmt.Errorf("update check %s in table %s: %w", id, s.table, err)
+	}
+	return nil
+}
+
+// checkSets is the update expression, names and values that set u's
+// fields that aren't empty, or ErrEmptyUpdate when none is set.
+func checkSets(u CheckUpdate) (string, map[string]string, row, error) {
 	var sets []string
 	names := map[string]string{}
 	values := row{}
@@ -106,23 +130,9 @@ func (s *Store) UpdateCheck(ctx context.Context, id string, u CheckUpdate) error
 		values[":"+field.name] = str(field.value)
 	}
 	if len(sets) == 0 {
-		return ErrEmptyUpdate
+		return "", nil, nil, ErrEmptyUpdate
 	}
-	_, err = s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName:                 aws.String(s.table),
-		Key:                       row{"pk": str(pk), "sk": str(metaSK)},
-		UpdateExpression:          aws.String("SET " + strings.Join(sets, ", ")),
-		ConditionExpression:       aws.String("attribute_exists(pk)"),
-		ExpressionAttributeNames:  names,
-		ExpressionAttributeValues: values,
-	})
-	if failed := new(types.ConditionalCheckFailedException); errors.As(err, &failed) {
-		return fmt.Errorf("update check %s: %w", id, ErrNoCheck)
-	}
-	if err != nil {
-		return fmt.Errorf("update check %s in table %s: %w", id, s.table, err)
-	}
-	return nil
+	return "SET " + strings.Join(sets, ", "), names, values, nil
 }
 
 // GetCheck reads check id's META item, and false when there is none.
@@ -190,15 +200,6 @@ func (s *Store) ListSteps(ctx context.Context, checkID string) ([]Step, error) {
 		}
 	}
 	return steps, nil
-}
-
-// PutVerdict writes v's HASH# item, replacing the one before.
-func (s *Store) PutVerdict(ctx context.Context, v Verdict) error {
-	pk, err := hashPK(v.Hash)
-	if err != nil {
-		return err
-	}
-	return s.put(ctx, verdictRow(pk, v), "the verdict of "+v.Hash)
 }
 
 // GetVerdict reads the verdict of hash, and false when there is none.

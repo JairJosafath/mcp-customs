@@ -22,7 +22,8 @@ import (
 // creates a check only once, as the store does. putErr and stepErr make
 // those writes fail, as an outage would, and failStep makes the write of
 // steps of that name fail, once a step named failAfter is written when
-// that is set; loseFirstReply makes the first
+// that is set; doneErr makes marking a check done fail, and with it every
+// write that goes in its transaction; loseFirstReply makes the first
 // create succeed but answer an error, as a reply lost on the network does.
 type memoryRecorder struct {
 	mu             sync.Mutex
@@ -39,6 +40,7 @@ type memoryRecorder struct {
 	stepErr        error
 	failStep       string
 	failAfter      string
+	doneErr        error
 	loseFirstReply bool
 	puts           int
 	retries        []string
@@ -101,6 +103,9 @@ func (m *memoryRecorder) UpdateCheck(_ context.Context, id string, u store.Check
 	i := slices.IndexFunc(m.checks, func(made store.Check) bool { return made.ID == id })
 	if i < 0 {
 		return store.ErrNoCheck
+	}
+	if u.Status == store.StatusDone && m.doneErr != nil {
+		return m.doneErr
 	}
 	m.updates = append(m.updates, u)
 	c := &m.checks[i]
@@ -184,22 +189,23 @@ func (m *memoryRecorder) GetVerdict(_ context.Context, hash string) (store.Verdi
 	return v, ok, nil
 }
 
-func (m *memoryRecorder) PutVerdict(_ context.Context, v store.Verdict) error {
+// PassCheck writes a pass's approvals and marks its check done, all or
+// none, as the store's transaction does.
+func (m *memoryRecorder) PassCheck(ctx context.Context, p store.Pass) error {
+	if err := m.UpdateCheck(ctx, p.Hash.CheckID, store.CheckUpdate{Status: store.StatusDone, Verdict: p.Verdict}); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.verdicts == nil {
 		m.verdicts = map[string]store.Verdict{}
 	}
-	m.verdicts[v.Hash] = v
+	m.verdicts[p.Hash.Hash] = p.Hash
 	m.verdictPuts++
-	return nil
-}
-
-func (m *memoryRecorder) PutApproved(_ context.Context, a store.Approved, conditional bool) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.approved = append(m.approved, a)
-	m.approvedCond = append(m.approvedCond, conditional)
+	if p.Approved != nil {
+		m.approved = append(m.approved, *p.Approved)
+		m.approvedCond = append(m.approvedCond, p.Conditional)
+	}
 	return nil
 }
 

@@ -27,8 +27,7 @@ type Recorder interface {
 	UpdateCheck(ctx context.Context, id string, u store.CheckUpdate) error
 	AppendStep(ctx context.Context, checkID string, step store.Step) error
 	GetVerdict(ctx context.Context, hash string) (store.Verdict, bool, error)
-	PutVerdict(ctx context.Context, v store.Verdict) error
-	PutApproved(ctx context.Context, a store.Approved, conditional bool) error
+	PassCheck(ctx context.Context, p store.Pass) error
 	MarkRetry(ctx context.Context, kind, name, version string) (bool, error)
 	MarkSuperseded(ctx context.Context, approvedID string, s store.Superseding) (bool, error)
 	LiftSuperseded(ctx context.Context, approvedID, recheckID string) (bool, error)

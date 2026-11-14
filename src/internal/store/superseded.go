@@ -21,7 +21,7 @@ type Superseding struct {
 
 // MarkSuperseded sets, on approved check approvedID's META, supersededBy
 // to s's re-check, in one transaction with a check that s's version is
-// still the newest the poller has polled, as PutApproved gates a
+// still the newest the poller has polled, as PassCheck gates a
 // re-check's approval. So, of two re-checks of one approval, the newer
 // version's link stays whichever ends last; an older version's late
 // review or block changes nothing. It answers whether it marked.
