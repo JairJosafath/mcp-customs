@@ -293,6 +293,9 @@ type server struct {
 	copyHost string
 	// refuse are the paths the harness answers 404, as one without them does.
 	refuse []string
+	// clockApplies is whether /clock says the server's runtime sees a
+	// move: "yes" when empty.
+	clockApplies string
 	// sources are the package's files, by path.
 	sources map[string]string
 	// hang makes /install never answer: the invocation's timeout cuts the
@@ -400,7 +403,11 @@ func (s *server) respond(vm sandbox.VM, req sandbox.Request) (sandbox.Response, 
 		return answer(http.StatusOK, map[string]any{"hosts": body["hosts"], "observations": []any{}}), nil
 	case "/clock":
 		body, _ := req.Body.(map[string]any)
-		return answer(http.StatusOK, map[string]any{"offset": body["offset"], "observations": []any{}}), nil
+		applies := s.clockApplies
+		if applies == "" {
+			applies = "yes"
+		}
+		return answer(http.StatusOK, map[string]any{"offset": body["offset"], "now": "2026-12-14T12:00:00Z", "applies": applies, "why": "node is dynamically linked", "observations": []any{}}), nil
 	case "/source":
 		body, _ := req.Body.(map[string]any)
 		p, _ := body["path"].(string)
@@ -553,9 +560,10 @@ type recordedJudge struct {
 	probes    string
 	judgement string
 	moves     []string
-	// judgeAnswer and probesAnswer, when set, are answered instead of a
-	// fixture.
+	// judgeAnswer, moveAnswer and probesAnswer, when set, are answered
+	// instead of a fixture, past the decoders.
 	judgeAnswer  *Judgement
+	moveAnswer   *Move
 	probesAnswer []ProbeArgs
 	requests     []ProbeRequest
 	evidence     []Evidence
@@ -598,6 +606,9 @@ func (j *recordedJudge) Next(_ context.Context, inv Investigation) (Move, error)
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.asked = append(j.asked, inv)
+	if j.moveAnswer != nil {
+		return *j.moveAnswer, nil
+	}
 	n := len(j.asked) - 1
 	if n >= len(j.moves) {
 		n = len(j.moves) - 1
