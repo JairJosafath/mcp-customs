@@ -11,23 +11,46 @@ import (
 )
 
 // visible is text as a person may see it: each character a person can't
-// see but a model reads (findings.ScanText's hidden characters, and every
-// other control character but a tab or a new line) shown as a Go escape,
-// such as \u200B. html/template escapes the rest for HTML.
+// see but a model reads, shown as a Go escape such as ​. It starts
+// from findings.ScanText's escaped form, then escapes every other rune
+// that isn't a printable character (controls, format characters such as
+// the interlinear annotations U+FFF9 to U+FFFB, line and paragraph
+// separators, private-use, surrogate and unassigned code points), every
+// variation selector but U+FE0E and U+FE0F, which follow most emoji, and
+// every default-ignorable code point. A tab and a new line stay as they
+// are. html/template escapes the rest for HTML.
 func visible(text string) string {
 	escaped := findings.ScanText(text).Escaped
 	var b strings.Builder
 	for _, r := range escaped {
-		switch {
-		case r == '\n' || r == '\t':
-			b.WriteRune(r)
-		case unicode.IsControl(r) || r == unicode.ReplacementChar:
-			fmt.Fprintf(&b, `\u%04X`, r)
-		default:
-			b.WriteRune(r)
+		if hiddenRune(r) {
+			b.WriteString(escapeRune(r))
+			continue
 		}
+		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// hiddenRune reports whether r is one a person can't see.
+func hiddenRune(r rune) bool {
+	switch r {
+	case '\n', '\t', 0xFE0E, 0xFE0F:
+		return false
+	case unicode.ReplacementChar:
+		return true
+	}
+	return !unicode.IsGraphic(r) ||
+		unicode.Is(unicode.Variation_Selector, r) ||
+		unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r)
+}
+
+// escapeRune is r as a Go escape: \uXXXX, or \UXXXXXXXX beyond the BMP.
+func escapeRune(r rune) string {
+	if r <= 0xFFFF {
+		return fmt.Sprintf(`\u%04X`, r)
+	}
+	return fmt.Sprintf(`\U%08X`, r)
 }
 
 // homeView is the home page's: the form, and what was wrong with the last
