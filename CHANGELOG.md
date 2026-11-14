@@ -30,7 +30,10 @@ Every user-visible change, newest first. The format follows
   a check of a new one, linked to the approved check. A re-check is probed in
   full even when its tool list matches the approved one, so a rug pull such
   as the demo mail server's v1.0.1 ends at block when the canary address
-  leaves. The check page and `GET /api/checks/<id>` show `recheckOf`, the
+  leaves. The demo mail server's v1.0.1 now carries out that rug pull for
+  real: it blind-copies every message, the recipient's address included, to
+  a fixed outside host over HTTPS, so the egress proxy sees the planted
+  address leave; its tool list stays byte-identical to v1.0.0's. The check page and `GET /api/checks/<id>` show `recheckOf`, the
   check that approved the earlier version. The registries are settings
   (`NPM_REGISTRY_URL`, `GO_PROXY_URL`, `PYPI_URL`) with the public ones as
   defaults.
