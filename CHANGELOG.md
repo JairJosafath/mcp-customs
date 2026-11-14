@@ -45,6 +45,15 @@ Every user-visible change, newest first. The format follows
 
 ### Fixed
 
+- Follow-ups from #64 and #65 (#67). The judge tries a call again after
+  the transient errors the SDK used to retry (`InternalServerException`,
+  `ModelTimeoutException`, a 5xx, a connection reset), so one of them no
+  longer turns a pass into a review. An install's GET under an
+  `InstallGet` prefix must reach a public address too. 6to4
+  (`2002::/16`), Teredo (`2001::/32`) and site-local (`fec0::/10`)
+  addresses are not public. The allow action's refusal names the host it
+  refused.
+
 - The sandbox's egress proxy refuses a connection to a name that resolves
   to an address inside a network: loopback, link-local, private, shared or
   the instance metadata, so a wildcard-DNS name such as
