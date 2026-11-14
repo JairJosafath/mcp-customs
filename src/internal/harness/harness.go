@@ -264,7 +264,7 @@ func (h *Harness) install(r *http.Request) (int, answer) {
 	sum := sha256.Sum256(installed.Resolved)
 	return http.StatusOK, answer{
 		"log":          installed.Log,
-		"dependencies": h.bounded("the resolved dependency set", string(installed.Resolved), maxDependencies),
+		"dependencies": h.bounded("the resolved dependency set", string(installed.Resolved), maxDependencies, maxDependencies),
 		"sha256":       hex.EncodeToString(sum[:]),
 	}
 }
@@ -354,7 +354,7 @@ func (h *Harness) start(r *http.Request) (int, answer) {
 	}
 	srv.initial = result
 	h.srv = srv
-	return http.StatusOK, answer{"initialize": h.bounded("the server's initialize result", result, maxInitialize)}
+	return http.StatusOK, answer{"initialize": h.bounded("the server's initialize result", result, maxInitialize, maxResultFinding)}
 }
 
 func (h *Harness) list(r *http.Request) (int, answer) {
@@ -421,12 +421,12 @@ func (h *Harness) call(r *http.Request) (int, answer) {
 	defer cancel()
 	result, err := h.srv.conn.call(ctx, "tools/call", map[string]any{"name": req.Tool, "arguments": args})
 	if rpcErr, ok := errors.AsType[*RPCError](err); ok {
-		return http.StatusOK, answer{"error": h.bounded("the error of tools/call", rpcErr, maxCallResult)}
+		return http.StatusOK, answer{"error": h.bounded("the error of tools/call", rpcErr, maxCallResult, maxResultFinding)}
 	}
 	if err != nil {
 		return h.serverFailed("tools/call", err)
 	}
-	return http.StatusOK, answer{"result": h.bounded("the result of tools/call", result, maxCallResult)}
+	return http.StatusOK, answer{"result": h.bounded("the result of tools/call", result, maxCallResult, maxResultFinding)}
 }
 
 // serverFailed answers a request the server didn't answer: it stopped, sent

@@ -81,3 +81,31 @@ func TestPastACapWhatWouldNotBlockIsDroppedAndTheReserveIsBounded(t *testing.T) 
 		t.Errorf("%d file observations kept, want the cap and the reserve, %d", got, maxPerKind+maxTellingPerKind)
 	}
 }
+
+// A flood of cuts at their largest, past every cap, can't crowd a leak out:
+// oversized observations past a cap have a reserve of their own.
+func TestAFloodOfCutsCantCrowdOutALeak(t *testing.T) {
+	key := canary.Set{{Kind: canary.AWSSecretKey, Value: "test-aws-secret-access-key-0123456789"}}
+	r := newRecorder(func() time.Time { return testNow })
+	r.setCanaries(key)
+	for i := range maxPerKind + 10 {
+		r.add(ObservedDNS, egress.DNSDetail{Name: fmt.Sprintf("q%d.example.com", i), Type: "A"})
+	}
+	// The largest cuts, then small ones, so a shared reserve would be full
+	// to the byte.
+	for range maxTellingPerKind {
+		r.add(ObservedOversized, largestCut())
+	}
+	small := OversizedDetail{What: "the result of tools/call", Bytes: maxMessage, Findings: []findings.Finding{{Source: findings.Code, Rule: findings.RuleInstruction}}}
+	for range maxTellingPerKind {
+		r.add(ObservedOversized, small)
+	}
+	r.add(ObservedDNS, egress.DNSDetail{Name: key[0].Value + ".evil.example", Type: "TXT"})
+	all := r.all()
+	if got := decided(t, all, key); got.Verdict != verdict.Block {
+		t.Errorf("verdict %s with %d oversized observations kept, want block", got.Verdict, count(all, ObservedOversized))
+	}
+	if raw := mustJSON(t, Observation{Kind: ObservedOversized, Detail: largestCut()}); len(raw) > maxTellingObservation {
+		t.Errorf("the largest cut encodes to %d bytes, over %d", len(raw), maxTellingObservation)
+	}
+}

@@ -23,10 +23,10 @@ func TestACutAnswerIsRecordedPastEveryCap(t *testing.T) {
 		run.h.obs.add(findings.ObservedProcess, map[string]any{})
 	}
 	small := map[string]string{"text": "Sunny."}
-	if got := run.h.bounded("the result of tools/call", small, maxCallResult); !isSame(got, small) {
+	if got := run.h.bounded("the result of tools/call", small, maxCallResult, maxCallResult); !isSame(got, small) {
 		t.Errorf("a result within the bound became %v", got)
 	}
-	cut := run.h.bounded("the result of tools/call", map[string]string{"text": strings.Repeat("<", maxCallResult) + worstInjection}, maxCallResult)
+	cut := run.h.bounded("the result of tools/call", map[string]string{"text": strings.Repeat("<", maxCallResult) + worstInjection}, maxCallResult, maxCallResult)
 	if c, ok := cut.(CutValue); !ok || !c.Cut || len(c.Excerpt) > maxCutExcerpt || c.SHA256 == "" {
 		t.Errorf("a result over the bound became %+v, want a CutValue", cut)
 	}

@@ -223,19 +223,24 @@ func truncatedWhy(raw json.RawMessage) string {
 }
 
 // oversizedFindings are the findings of an answer the harness cut: one
-// oversized finding, and those its scans found in the whole answer, each
-// a code finding whatever the detail says of its source.
+// oversized finding, unless the harness cut it only to fit a step, and
+// those its scans found in the whole answer, each a code finding whatever
+// the detail says of its source.
 func oversizedFindings(raw json.RawMessage) []Finding {
 	var d struct {
 		What     string    `json:"what"`
 		Bytes    int       `json:"bytes"`
 		SHA256   string    `json:"sha256"`
 		Findings []Finding `json:"findings"`
+		CutOnly  bool      `json:"cutOnly"`
 	}
 	if json.Unmarshal(raw, &d) != nil || d.What == "" {
 		return []Finding{{Source: Code, Rule: RuleOversized, Evidence: "the harness cut an answer of the server"}}
 	}
-	found := []Finding{{Source: Code, Rule: RuleOversized, Evidence: fmt.Sprintf("the harness cut %s: %d bytes, SHA-256 %s", d.What, d.Bytes, d.SHA256)}}
+	var found []Finding
+	if !d.CutOnly {
+		found = append(found, Finding{Source: Code, Rule: RuleOversized, Evidence: fmt.Sprintf("the harness cut %s: %d bytes, SHA-256 %s", d.What, d.Bytes, d.SHA256)})
+	}
 	for _, f := range d.Findings {
 		f.Source = Code
 		found = append(found, f)

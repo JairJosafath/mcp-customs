@@ -49,3 +49,24 @@ func TestFakeTimeAppliesHonoursTheAccountsGroup(t *testing.T) {
 		}
 	}
 }
+
+// underProc refuses every path to /proc by its name alone, before the
+// procfs check: defence in depth for a procfs fstatfs doesn't name.
+func TestUnderProcNamesEveryPathIntoProc(t *testing.T) {
+	for name, want := range map[string]bool{
+		"/proc":                   true,
+		"/proc/":                  true,
+		"/proc/self/maps":         true,
+		"//proc/self/maps":        true,
+		"/proc/./self/environ":    true,
+		"/tmp/../proc/1/environ":  true,
+		"/proc/self/task/../maps": true,
+		"/procfs/maps":            false,
+		"/tmp/proc/self/maps":     false,
+		"/usr/bin/node":           false,
+	} {
+		if got := underProc(name); got != want {
+			t.Errorf("underProc(%q) = %v, want %v", name, got, want)
+		}
+	}
+}

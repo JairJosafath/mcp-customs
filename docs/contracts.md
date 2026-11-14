@@ -196,18 +196,21 @@ and why. Each is an `observations-truncated` code finding, at least
 review. Past a cap, an observation that would raise a block finding (a
 canary leaving, a write to an agent's config or a shell's startup file)
 is still recorded, up to 200 of a kind and 2 MiB in all, so a flood can't
-turn a block into a review. One over 32 KiB encoded, such as a request
+turn a block into a review. An `oversized` observation that raises a
+finding (below) has a reserve of its own past the caps, 1 MiB, so a flood
+of cuts can't crowd a leak out of that one. One over 32 KiB encoded, such as a request
 with a padded path, is kept compact rather than dropped:
 `{"host","path","canaries","cut":true}`, its host and path cut to 1 KiB
 and the canaries found in the whole of it. A run makes at most 32
 `truncated` observations, each naming the kind and why in the harness's
 words, at most 64 and 256 bytes, never the server's text. So every
-answer's observations together stay under 10.1 MiB, every byte escaped.
+answer's observations together stay under 11.1 MiB, every byte escaped.
 
 What an answer holds of the server is bounded too, so that with its
 observations it stays under the 16 MiB the Checker reads and no answer
 fails a check without a code finding. Each bound is counted as the
-harness encodes it, every byte escaped:
+Checker encodes it, every byte escaped, and each byte that isn't UTF-8,
+which the harness passes on as it is, as the six of `\ufffd`:
 
 - a tool's `result`, or its `error`, 64 KiB: under the 200 KB a step of
   the Checker keeps, so a probe of a cut result still reaches a verdict;
@@ -224,11 +227,19 @@ A value over its bound is answered as `{"cut":true,"bytes","sha256",
 "excerpt"}`: its size and SHA-256 as encoded, and the first 8 KiB of its
 strings as the Checker reads them. Every scan runs on the whole value
 before it is cut, and the cut is an `oversized` observation:
-`{"what","bytes","sha256","findings"}`, the harness's own name for what
-was cut and what `ScanText` found in all of it (at most 24 findings,
-each evidence cut to 128 bytes). Each is an `oversized` code finding, at
-least review, with those findings beside it, and it is kept past every
-cap, as an observation that would block is.
+`{"what","bytes","sha256","findings","cutOnly"}`, the harness's own name
+for what was cut and what `ScanText` found in all of it (at most 24
+findings, each evidence cut to 128 bytes). Those findings are code
+findings at any size. The cut itself is an `oversized` code finding, at
+least review, for the lists and the dependency set, and for a tool's
+result or error or the `initialize` result only past 8 MiB. Below that,
+`cutOnly` is true and the cut is on the report with no finding of its
+own: real file readers, searches and listings answer more than 64 KiB,
+the judge reads no more than 4 KiB of a probe and never the `initialize`
+result, and every scan has run on the whole. 8 MiB is half the 16 MiB a
+message may be, past what a step or the judge could ever use, so only a
+server padding its answers reaches it. A cut that raises a finding is
+kept past every cap, in its own reserve.
 
 `/install`'s `log` is kept as it is written: its first 16 KiB, its last
 64 KiB, where an install says what failed, and, from the lines cut

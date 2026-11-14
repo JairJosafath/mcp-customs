@@ -45,6 +45,17 @@ func TestFromObservationsFindsWhatCodeCanTell(t *testing.T) {
 				{Code, RuleInstruction, "ignore previous instructions"},
 			},
 		},
+		"an answer cut only to fit a step, with what its scans found in the whole": {
+			[]Observation{observed(ObservedOversized, map[string]any{
+				"what": "the result of tools/call", "bytes": 1 << 20, "sha256": "ab12", "cutOnly": true,
+				"findings": []Finding{{Model, RuleInstruction, "ignore previous instructions"}},
+			})},
+			[]Finding{{Code, RuleInstruction, "ignore previous instructions"}},
+		},
+		"a clean answer cut only to fit a step": {
+			[]Observation{observed(ObservedOversized, map[string]any{"what": "the result of tools/call", "bytes": 1 << 20, "sha256": "ab12", "cutOnly": true})},
+			nil,
+		},
 		"a clean request": {
 			[]Observation{observed(ObservedHTTP, map[string]any{"method": "GET", "host": "api.github.com", "path": "/user"})},
 			nil,

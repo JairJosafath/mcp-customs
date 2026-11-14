@@ -11,9 +11,13 @@ Every user-visible change, newest first. The format follows
 - No answer of the harness is larger than the Checker reads (#76). A
   tool's result or error, the `initialize` result, the lists, the
   resolved dependency set and messages are bounded; a value over its
-  bound is answered cut, with its size, SHA-256 and an excerpt, and is an
-  `oversized` code finding (at least review) carrying what the scans
-  found in the whole of it. The install log keeps its start, its end and
+  bound is answered cut, with its size, SHA-256 and an excerpt, carrying
+  what the scans found in the whole of it. A cut list or dependency set
+  is an `oversized` code finding (at least review); a cut tool result,
+  error or `initialize` result is one only past 8 MiB, so a clean
+  server's large result still passes, with the cut on the report (#84).
+  Bounds count each byte that isn't UTF-8 as the Checker encodes it, and
+  cuts past the caps have a reserve of their own. The install log keeps its start, its end and
   the lines naming a failure. `/clock` reads nothing on a procfs, and
   honours the account's own group.
 - The harness can't be exhausted or blinded quietly by the server it runs

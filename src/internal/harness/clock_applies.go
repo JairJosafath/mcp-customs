@@ -196,7 +196,9 @@ const procSuperMagic = 0x9fa0
 
 // underProc says whether name is in /proc by its path. A server command
 // never lives there, and the harness's own files there open to the
-// account's thread, which shares the harness's thread group.
+// account's thread, which shares the harness's thread group. inProc
+// catches every path into a procfs too; this is defence in depth, by name,
+// before anything is opened.
 func underProc(name string) bool {
 	p := filepath.Clean(name)
 	return p == "/proc" || strings.HasPrefix(p, "/proc/")

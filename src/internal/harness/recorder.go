@@ -16,8 +16,8 @@ import (
 // memory, nor make an answer larger than the Checker reads (16 MiB, its
 // sandbox.maxResponseBytes). Reaching one stops recording that kind, with
 // one truncated observation, which is a code finding. Every observation is
-// counted as encoded, so all of them together, the telling ones past a
-// cap and the truncated ones included, stay under 11 MiB.
+// counted as encoded, so all of them together, the telling and oversized
+// ones past a cap and the truncated ones included, stay under 12 MiB.
 const (
 	// maxPerKind is far above what a real server does in a check: the demo
 	// servers make a handful of DNS queries, connections and requests, and
@@ -37,6 +37,11 @@ const (
 	// is blocked by those already kept.
 	maxTellingPerKind = 200
 	maxTellingBytes   = 2 << 20
+	// maxOversizedBytes bounds the oversized observations still recorded
+	// past their kind's cap, in a reserve of their own, so a flood of cuts
+	// can't crowd a leak out of the telling one. Only a cut that raises a
+	// finding is kept there; each is under maxTellingObservation.
+	maxOversizedBytes = 1 << 20
 	// maxRequestParams bounds what a sampling or elicitation observation
 	// keeps of the request's params; past it, the start is kept as a string.
 	maxRequestParams = 64 << 10
@@ -56,7 +61,7 @@ const (
 	// maxObservationsAnswer bounds every observation a run keeps, encoded
 	// as an answer's "observations": what GET /observations answers at
 	// most, under the 16 MiB the Checker reads.
-	maxObservationsAnswer = maxObservedBytes + maxTellingBytes + maxTruncations*maxTruncatedSize + 64
+	maxObservationsAnswer = maxObservedBytes + maxTellingBytes + maxOversizedBytes + maxTruncations*maxTruncatedSize + 64
 )
 
 // CompactDetail is what a telling observation over maxTellingObservation
@@ -87,14 +92,15 @@ type recorder struct {
 	// count and size are how many observations of each kind were kept and
 	// how large they were encoded, total all of them; stopped are the
 	// kinds no longer kept but for telling ones, counted in telling and
-	// tellingSize.
-	count       map[ObservationKind]int
-	size        map[ObservationKind]int
-	total       int
-	stopped     map[ObservationKind]bool
-	telling     map[ObservationKind]int
-	tellingSize int
-	truncations int
+	// tellingSize, and oversized ones, counted in oversizedSize.
+	count         map[ObservationKind]int
+	size          map[ObservationKind]int
+	total         int
+	stopped       map[ObservationKind]bool
+	telling       map[ObservationKind]int
+	tellingSize   int
+	oversizedSize int
+	truncations   int
 }
 
 func newRecorder(now func() time.Time) *recorder {
@@ -134,7 +140,27 @@ func (r *recorder) add(kind ObservationKind, detail any) {
 		}
 		r.stopLocked(kind, why)
 	}
+	if kind == ObservedOversized {
+		r.keepOversizedLocked(o, size)
+		return
+	}
 	r.keepTellingLocked(o, size)
+}
+
+// keepOversizedLocked keeps o, an oversized observation, past its kind's
+// cap if it raises a finding, the cut's or its scans': they are nowhere
+// else. Only its own reserve, full, refuses one, so cuts never take the
+// telling reserve's room.
+func (r *recorder) keepOversizedLocked(o Observation, size int) {
+	raw, err := json.Marshal(o.Detail)
+	if err != nil || r.oversizedSize+size > maxOversizedBytes {
+		return
+	}
+	if len(findings.FromObservations([]findings.Observation{{Kind: string(o.Kind), Detail: raw}}, nil)) == 0 {
+		return
+	}
+	r.oversizedSize += size
+	r.list = append(r.list, o)
 }
 
 // keepTellingLocked keeps o past its kind's cap if it would raise a block
@@ -196,12 +222,8 @@ func (r *recorder) overLocked(kind ObservationKind, size int) string {
 }
 
 // tellsLocked says whether an observation would raise a block finding: a
-// canary leaving, or a write to an agent's config or a shell's startup. An
-// oversized one tells too: the scans of what was cut are nowhere else.
+// canary leaving, or a write to an agent's config or a shell's startup.
 func (r *recorder) tellsLocked(kind ObservationKind, raw json.RawMessage) bool {
-	if kind == ObservedOversized {
-		return true
-	}
 	found := findings.FromObservations([]findings.Observation{{Kind: string(kind), Detail: raw}}, r.canaries)
 	return slices.ContainsFunc(found, func(f findings.Finding) bool { return slices.Contains(blockRules, f.Rule) })
 }
