@@ -12,6 +12,7 @@ Problem" (deadline Monday 2026-11-16, 13:00 PT), built by
 | --- | --- |
 | [brief.yaml](brief.yaml) | The whole input theos gets: the product in plain words |
 | [docs/plan.md](docs/plan.md) | The product, the security review, the steps, and the friction log of what theos got wrong |
+| [docs/kickoff.md](docs/kickoff.md) | The prompt that starts the build, for a session on the owner's machine |
 | [docs/c4.html](docs/c4.html) | The C4 views: context, containers, and where code decides and the model judges ([published](https://claude.ai/artifact/NLmoPPJJBK9V3KgXNLpLDq)) |
 
 The code is not here. theos makes one repository per Container (`checker`,

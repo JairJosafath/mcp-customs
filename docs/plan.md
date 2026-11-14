@@ -144,13 +144,13 @@ Choices made, and why:
 
 | When | Who | Step |
 | --- | --- | --- |
-| Fri | owner | Install the chart with `gitea.projects={mcp-customs}`, apply the Brief |
-| Fri | theos | Planner writes the model, Crews and first issues |
-| Fri | owner + session | Review the plan against this section; correct with `spec.prompts`, never by hand-editing the model. Log every correction |
-| Sat | theos | Crews build the Checker, the sandbox harness, the web page and the demo server |
-| Sat | owner | First `cdk deploy` to us-east-2; one real check end to end |
-| Sun | theos + owner | The re-check path, the report page; record the demo |
-| Mon AM | owner + session | Mirror the repositories to public GitHub, diagram, write-up, submit before 13:00 PT |
+| Sat | session | Install or reuse theos on the owner's Kind cluster, add project `mcp-customs`, apply the Brief ([kickoff.md](kickoff.md)) |
+| Sat | theos | Planner writes the model, Crews and first issues |
+| Sat | session | Check the plan against this file; correct with `spec.prompts`, never by hand-editing the model. Log every correction |
+| Sat | theos | Crews build the weather-tool demo end to end first: Checker, sandbox with egress proxy, code findings, web page |
+| Sun | session | First `cdk deploy` to us-east-2; one real check end to end |
+| Sun | theos + session | The rug-pull demo, the "new and fine" path; a recorded demo run |
+| Mon AM | session, then owner | Mirror the repositories to GitHub, diagram, write-up; the owner uploads the video and submits before 13:00 PT |
 
 Rules for the weekend:
 
@@ -160,8 +160,9 @@ Rules for the weekend:
   issue says so.
 - **No hand-written product code in the Containers' repositories** unless
   theos can't get there by Sunday noon. Each such commit is logged, with why.
-- **Agents never touch a cluster.** The owner runs the factory and the
-  deploys; sessions write the Brief, prompts, theos issues and the log.
+- **The session runs the factory and the deploys** on the owner's machine,
+  by the owner's word of 2026-11-14 (CLAUDE.md says what only the owner
+  can do).
 
 ## Done when
 
